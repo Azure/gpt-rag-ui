@@ -13,6 +13,8 @@ This project provides a user interface built with [Chainlit](https://www.chainli
 - Python 3.11+
 - [Azure CLI](https://learn.microsoft.com/en-us/cli/azure/install-azure-cli)
 
+---
+
 ### **1. Setup Environment and Install Dependencies**
 
 ```bash
@@ -21,65 +23,55 @@ source .venv/bin/activate       # On Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
+---
+
 ### 🔧 **2. Environment Variable Configuration**
 
-Before running the application, make sure to configure all required environment variables. These can be defined in a `.env` file or set manually in your environment or App Service configuration panel.
+Before running the application, define required variables in a `.env` file or export them to your environment.
+
+You can copy the `.env.template` as a starting point:
+
+```bash
+cp .env.template .env
+```
 
 #### ✅ **Required Variables**
 
 | Variable | Description |
 |---------|-------------|
-| `ORCHESTRATOR_STREAM_ENDPOINT` | URL of the orchestrator streaming endpoint (e.g., `https://<your-func>.azurewebsites.net/api/orcstream`) |
-| `AZURE_SUBSCRIPTION_ID` | Azure subscription ID used for function key retrieval |
-| `AZURE_RESOURCE_GROUP_NAME` | Resource group where the orchestrator function app is deployed |
+| `ORCHESTRATOR_STREAM_ENDPOINT` | URL of the orchestrator's `/api/orcstream` endpoint |
+| `AZURE_SUBSCRIPTION_ID` | Your Azure subscription ID |
+| `AZURE_RESOURCE_GROUP_NAME` | Resource group where your Function App is deployed |
 | `AZURE_ORCHESTRATOR_FUNC_NAME` | Name of the orchestrator Function App |
-| `BLOB_STORAGE_ACCOUNT_NAME` | Azure Storage account name where documents are stored |
-| `BLOB_STORAGE_CONTAINER` | Container name within the blob storage account |
+| `BLOB_STORAGE_ACCOUNT_NAME` | Storage account where source documents are located |
+| `BLOB_STORAGE_CONTAINER` | Container within the storage account |
+| `CHAINLIT_SECRET_KEY` | Secret used for session security in Chainlit |
 
-#### 🔐 **Session Configuration (Chainlit UI)**
+#### 🔐 **Optional: Entra ID Authentication (Azure AD)**
 
-| Variable | Description |
-|---------|-------------|
-| `CHAINLIT_SECRET_KEY` | Secret key for securing sessions in Chainlit (define any strong random value) |
-
-#### 🔑 **(Optional) Authentication Settings**
-
-If you want to enable Entra ID-based authentication (optional), configure the variables below and set `ENABLE_AUTHENTICATION=true`:
+To enable user authentication via Microsoft Entra ID (formerly Azure AD), set `ENABLE_AUTHENTICATION=true` and define:
 
 | Variable | Description |
 |---------|-------------|
-| `CLIENT_ID` | Application (client) ID registered in Entra ID |
-| `AUTHORITY` | Entra ID authority URL (e.g., `https://login.microsoftonline.com/<tenant-id>`) |
-| `APP_SERVICE_CLIENT_SECRET` | Client secret used in Azure App Service authentication |
-| `REDIRECT_PATH` | Redirect path used in OAuth flow (e.g., `/getAToken`) |
-| `ENABLE_AUTHENTICATION` | Set to `true` to enable authentication (default is `false`) |
+| `ENABLE_AUTHENTICATION` | Set to `true` to require login (default: `false`) |
+| `OAUTH_AZURE_AD_CLIENT_ID` | App registration's Client ID |
+| `OAUTH_AZURE_AD_CLIENT_SECRET` | App registration's secret |
+| `OAUTH_AZURE_AD_TENANT_ID` | Entra tenant ID (directory ID) |
+| `OAUTH_AZURE_AD_ENABLE_SINGLE_TENANT` | Set to `true` if app is single-tenant |
+| `OAUTH_AZURE_AD_SCOPES` | *(Optional)* Comma-separated scopes used to request an access token for API calls. The access token can be used to call protected APIs such as Microsoft Graph or Power BI REST API. Default is `User.Read`. To access Power BI, for example, add `https://analysis.windows.net/powerbi/api/.default` |
 
-> 💡 You can create a `.env` file with all these variables and Chainlit will automatically load them when starting the app locally.  
-> Start by copying the `.env.template` file:
-```bash
-cp .env.template .env
-```
 
-#### Example `.env` file (values for illustration only):
-```ini
-# Required settings
-ORCHESTRATOR_STREAM_ENDPOINT=https://your-func.azurewebsites.net/api/orcstream
-AZURE_SUBSCRIPTION_ID=your-subscription-id
-AZURE_RESOURCE_GROUP_NAME=your-resource-group
-AZURE_ORCHESTRATOR_FUNC_NAME=your-function-app-name
-BLOB_STORAGE_ACCOUNT_NAME=your-storage-account
-BLOB_STORAGE_CONTAINER=your-container
+#### 🎯 **Optional: Authorization Filters**
 
-# Chainlit session key
-CHAINLIT_SECRET_KEY=your-secret-key
+To restrict access to specific users or groups, use:
 
-# Optional authentication
-CLIENT_ID=your-client-id
-AUTHORITY=https://login.microsoftonline.com/your-tenant-id
-APP_SERVICE_CLIENT_SECRET=your-client-secret
-REDIRECT_PATH=/getAToken
-ENABLE_AUTHENTICATION=false
-```
+| Variable | Description |
+|----------|-------------|
+| `ALLOWED_USER_NAMES` | Comma-separated list of allowed usernames |
+| `ALLOWED_USER_PRINCIPALS` | Comma-separated list of allowed object IDs |
+| `ALLOWED_GROUP_NAMES` | Comma-separated list of allowed group names |
+
+---
 
 ### **3. Run the Application Locally**
 
@@ -91,32 +83,25 @@ python -m uvicorn main:app --host 0.0.0.0 --port 8000
 
 ## ☁️ Deploy to Azure
 
-You can deploy the UI to Azure App Service using either:
+### **Option 1: Azure App Service (via VS Code or Portal)**
 
-### **Option 1: Deploy via Azure App Service Extension (VS Code or Portal)**
+Use the App Service extension to deploy the code. Then configure the **Startup Command**:
 
-Use the App Service extension to deploy the code folder.
-
-> ⚠️ **Important:** After deployment, set the **Startup Command** as:
-```
+```bash
 python -m uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}
 ```
 
-### **Option 2: Deploy via Azure CLI**
+### **Option 2: Azure CLI**
 
-#### 2.3. Zip the source code
+#### Zip the source code
 
-- **Linux/Mac:**
 ```bash
-rm -f deploy.zip && zip -r ./deploy.zip *
+rm -f deploy.zip && zip -r deploy.zip *  # Linux/macOS
+# or
+Remove-Item -Force deploy.zip; tar -a -c -f deploy.zip *  # Windows PowerShell
 ```
 
-- **Windows:**
-```powershell
-Remove-Item -Force deploy.zip; tar -a -c -f ./deploy.zip *
-```
-
-#### 2.4. Deploy to Web App
+#### Deploy it
 
 ```bash
 az webapp deploy \
@@ -132,63 +117,37 @@ az webapp deploy \
 
 ## 🔐 Required Permissions
 
-Ensure that the user running the UI locally or accessing it via deployment has the following Azure role assignments:
+Ensure the user/service principal running the UI has these roles:
 
-### **Orchestrator Function App**
+### Function App
 
 ```bash
 az role assignment create \
   --assignee <principalId> \
   --role "Contributor" \
-  --scope "/subscriptions/<subscriptionId>/resourceGroups/<resourceGroupName>/providers/Microsoft.Web/sites/<functionAppName>"
+  --scope "/subscriptions/<subscriptionId>/resourceGroups/<resourceGroup>/providers/Microsoft.Web/sites/<functionAppName>"
 ```
 
-### **Storage Account**
+### Storage Account
 
 ```bash
 az role assignment create \
   --assignee <principalId> \
   --role "Storage Blob Data Reader" \
-  --scope "/subscriptions/<subscriptionId>/resourceGroups/<resourceGroupName>/providers/Microsoft.Storage/storageAccounts/<storageAccountName>"
-```
-
-### **Key Vault**
-
-```bash
-az role assignment create \
-  --assignee <principalId> \
-  --role "Key Vault Secrets User" \
-  --scope "/subscriptions/<subscriptionId>/resourceGroups/<resourceGroupName>/providers/Microsoft.KeyVault/vaults/<keyVaultName>"
+  --scope "/subscriptions/<subscriptionId>/resourceGroups/<resourceGroup>/providers/Microsoft.Storage/storageAccounts/<storageAccount>"
 ```
 
 ---
 
 ## 🎨 Customization
 
-### **1. Styling and Theme**
-
-- Customize colors and fonts in `public/theme.json`
-- Customize CSS styles in `public/custom.css`
-- Replace logos and icons directly in the `public/` folder
-
-### **2. Additional Chainlit Configurations**
-
-Edit `.chainlit/config.toml` to configure:
-- Session timeout
-- Allowed origins
-- UI behavior (e.g., themes, assistant name, custom links)
-
-Refer to the official [Chainlit documentation](https://docs.chainlit.io/) for more customization options.
+- Modify theme in `public/theme.json`
+- Customize layout with `public/custom.css`
+- Adjust app behavior in `.chainlit/config.toml`
 
 ---
 
 ## 🤝 Contributing
 
-We welcome contributions! Please see [CONTRIBUTING.md](https://github.com/Azure/GPT-RAG/blob/main/CONTRIBUTING.md) for guidelines.
+We welcome contributions! See [CONTRIBUTING.md](https://github.com/Azure/GPT-RAG/blob/main/CONTRIBUTING.md) for guidelines.
 
----
-
-## 📄 Trademarks
-
-This project may include Microsoft trademarks or logos. Use must comply with [Microsoft's Trademark & Brand Guidelines](https://www.microsoft.com/en-us/legal/intellectualproperty/trademarks/usage/general). Third-party trademarks are subject to their respective policies.
-```
