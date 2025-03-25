@@ -45,7 +45,7 @@ def get_function_key():
     
     return function_key
 
-async def call_orchestrator_stream(conversation_id: str, question: str):
+async def call_orchestrator_stream(conversation_id: str, question: str, auth_info: dict):
 
     url = os.getenv("ORCHESTRATOR_STREAM_ENDPOINT")
     if not url:
@@ -66,8 +66,10 @@ async def call_orchestrator_stream(conversation_id: str, question: str):
     payload = {
         "conversation_id": conversation_id,
         "question": question,
-        "text_only": True,        
-        # Add authentication fields if needed.
+        "client_principal_id": auth_info.get('client_principal_id', 'no-auth'),
+        "client_principal_name": auth_info.get('client_principal_name', 'anonymous'),
+        "client_group_names": auth_info.get('client_group_names', []),
+        "access_token": auth_info.get('access_token')
     }
 
     async with httpx.AsyncClient(timeout=None) as client:
