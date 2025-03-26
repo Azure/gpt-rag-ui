@@ -110,7 +110,7 @@ async def handle_message(message: cl.Message):
 
     try:
         async for chunk in generator:
-            logging.info("[app] Chunk received: %s", chunk)
+            # logging.info("[app] Chunk received: %s", chunk)
 
             # Extract and update conversation ID
             extracted_id, cleaned_chunk = extract_conversation_id_from_chunk(chunk)
