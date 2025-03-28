@@ -45,7 +45,7 @@ You can simply copy its content and paste it into **Azure Portal > App Service >
 | `AZURE_SUBSCRIPTION_ID` | Your Azure subscription ID where Orchestrator Function App is deployed |
 | `AZURE_RESOURCE_GROUP_NAME` | Resource group where Orchestrator Function App is deployed |
 | `AZURE_ORCHESTRATOR_FUNC_NAME` | Name of the orchestrator Function App |
-| `BLOB_STORAGE_ACCOUNT_NAME` | Storage account where source documents are located |
+| `STORAGE_ACCOUNT_NAME` | Storage account where source documents are located |
 | `APPLICATIONINSIGHTS_CONNECTION_STRING` | Connection string for Azure Application Insights to enable telemetry and monitoring for the application. Use the connection string provided by your Application Insights resource. |
 #### 🔐 **Optional: Entra ID Authentication (Azure AD)**
 
