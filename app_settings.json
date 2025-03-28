@@ -1,0 +1,103 @@
+[
+    {
+      "name": "ORCHESTRATOR_STREAM_ENDPOINT",
+      "value": "https://<your-function-app>.azurewebsites.net/api/orcstream",
+      "slotSetting": false
+    },
+    {
+      "name": "AZURE_SUBSCRIPTION_ID",
+      "value": "<your-subscription-id>",
+      "slotSetting": false
+    },
+    {
+      "name": "AZURE_RESOURCE_GROUP_NAME",
+      "value": "<your-resource-group>",
+      "slotSetting": false
+    },
+    {
+      "name": "AZURE_ORCHESTRATOR_FUNC_NAME",
+      "value": "<your-function-app-name>",
+      "slotSetting": false
+    },
+    {
+      "name": "BLOB_STORAGE_ACCOUNT_NAME",
+      "value": "<your-blob-storage-account>",
+      "slotSetting": false
+    },
+    {
+      "name": "ENABLE_AUTHENTICATION",
+      "value": "false",
+      "slotSetting": false
+    },
+    {
+      "name": "CHAINLIT_SECRET_KEY",
+      "value": "<your-secret-key-if-authentication-enabled>",
+      "slotSetting": false
+    },
+    {
+      "name": "OAUTH_AZURE_AD_CLIENT_ID",
+      "value": "<your-client-id>",
+      "slotSetting": false
+    },
+    {
+      "name": "OAUTH_AZURE_AD_CLIENT_SECRET",
+      "value": "<your-client-secret>",
+      "slotSetting": false
+    },
+    {
+      "name": "OAUTH_AZURE_AD_TENANT_ID",
+      "value": "<your-tenant-id>",
+      "slotSetting": false
+    },
+    {
+      "name": "OAUTH_AZURE_AD_ENABLE_SINGLE_TENANT",
+      "value": "true",
+      "slotSetting": false
+    },
+    {
+      "name": "OAUTH_AZURE_AD_SCOPES",
+      "value": "User.Read",
+      "slotSetting": false
+    },
+    {
+      "name": "ALLOWED_USER_NAMES",
+      "value": "<comma-separated-emails-if-needed>",
+      "slotSetting": false
+    },
+    {
+      "name": "ALLOWED_USER_PRINCIPALS",
+      "value": "<comma-separated-object-ids-if-needed>",
+      "slotSetting": false
+    },
+    {
+      "name": "ALLOWED_GROUP_NAMES",
+      "value": "<comma-separated-group-names-if-needed>",
+      "slotSetting": false
+    },
+    {
+      "name": "BUILD_FLAGS",
+      "value": "UseExpressBuild",
+      "slotSetting": false
+    },
+    {
+      "name": "ENABLE_ORYX_BUILD",
+      "value": "True",
+      "slotSetting": false
+    },
+    {
+      "name": "SCM_DO_BUILD_DURING_DEPLOYMENT",
+      "value": "True",
+      "slotSetting": false
+    },
+    {
+      "name": "WEBSITE_HTTPLOGGING_RETENTION_DAYS",
+      "value": "1",
+      "slotSetting": false
+    },
+    {
+      "name": "XDG_CACHE_HOME",
+      "value": "/tmp/.cache",
+      "slotSetting": false
+    }
+  ]
+  
