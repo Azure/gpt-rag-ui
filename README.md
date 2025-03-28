@@ -27,26 +27,26 @@ pip install -r requirements.txt
 
 ### 🔧 **2. Environment Variable Configuration**
 
-Before running the application, define required variables in a `.env` file or export them to your environment.
-
-You can copy the `.env.template` as a starting point:
+To run the application locally, you must define the required environment variables using a `.env` file or by exporting them directly to your local environment.  
+You can use the provided `.env.template` as a starting point:
 
 ```bash
 cp .env.template .env
 ```
+
+For cloud deployments on **Azure App Service**, this repository also provides a ready-to-use `app_settings.json` file containing all the recommended environment variables, already formatted for direct use.  
+You can simply copy its content and paste it into **Azure Portal > App Service > Configuration > Application settings > Advanced Edit**.
 
 #### ✅ **Required Variables**
 
 | Variable | Description |
 |---------|-------------|
 | `ORCHESTRATOR_STREAM_ENDPOINT` | URL of the orchestrator's `/api/orcstream` endpoint |
-| `AZURE_SUBSCRIPTION_ID` | Your Azure subscription ID |
-| `AZURE_RESOURCE_GROUP_NAME` | Resource group where your Function App is deployed |
+| `AZURE_SUBSCRIPTION_ID` | Your Azure subscription ID where Orchestrator Function App is deployed |
+| `AZURE_RESOURCE_GROUP_NAME` | Resource group where Orchestrator Function App is deployed |
 | `AZURE_ORCHESTRATOR_FUNC_NAME` | Name of the orchestrator Function App |
 | `BLOB_STORAGE_ACCOUNT_NAME` | Storage account where source documents are located |
-| `BLOB_STORAGE_CONTAINER` | Container within the storage account |
-| `CHAINLIT_SECRET_KEY` | Secret used for session security in Chainlit |
-
+| `APPLICATIONINSIGHTS_CONNECTION_STRING` | Connection string for Azure Application Insights to enable telemetry and monitoring for the application. Use the connection string provided by your Application Insights resource. |
 #### 🔐 **Optional: Entra ID Authentication (Azure AD)**
 
 To enable user authentication via Microsoft Entra ID (formerly Azure AD), set `ENABLE_AUTHENTICATION=true` and define:
@@ -54,6 +54,7 @@ To enable user authentication via Microsoft Entra ID (formerly Azure AD), set `E
 | Variable | Description |
 |---------|-------------|
 | `ENABLE_AUTHENTICATION` | Set to `true` to require login (default: `false`) |
+| `CHAINLIT_SECRET_KEY` | Secret used for session security in Chainlit |
 | `OAUTH_AZURE_AD_CLIENT_ID` | App registration's Client ID |
 | `OAUTH_AZURE_AD_CLIENT_SECRET` | App registration's secret |
 | `OAUTH_AZURE_AD_TENANT_ID` | Entra tenant ID (directory ID) |
@@ -70,6 +71,22 @@ To restrict access to specific users or groups, use:
 | `ALLOWED_USER_NAMES` | Comma-separated list of allowed usernames |
 | `ALLOWED_USER_PRINCIPALS` | Comma-separated list of allowed object IDs |
 | `ALLOWED_GROUP_NAMES` | Comma-separated list of allowed group names |
+
+Perfeito! Aqui está a versão ajustada e mais direta, orientando a pessoa a usar exatamente essas variáveis como estão:
+
+### ⚙ **Platform Required Variables (Azure App Service Variables)**
+
+When deploying to **Azure App Service**, make sure to configure the following variables exactly as shown below. These variables are required to ensure proper build, deployment, and observability.
+
+| Variable | Description |
+|----------|-------------|
+| `BUILD_FLAGS` | Must be set to `UseExpressBuild` to enable express build mode. |
+| `ENABLE_ORYX_BUILD` | Must be set to `True` to enable the Oryx build system. |
+| `SCM_DO_BUILD_DURING_DEPLOYMENT` | Must be set to `True` to allow the App Service to build the application during deployment. |
+| `WEBSITE_HTTPLOGGING_RETENTION_DAYS` | Set the number of days to retain HTTP logs. Recommended value is `1`. |
+| `XDG_CACHE_HOME` | Defines the cache directory used during build and runtime. Recommended value is `/tmp/.cache`. |
+
+> ✅ **Recommendation**: For consistency and to avoid deployment issues, use these exact values unless you have a strong reason to customize them.
 
 ---
 

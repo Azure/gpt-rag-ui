@@ -48,7 +48,7 @@ def replace_source_reference_links(text: str) -> str:
         source_file = match.group(1)
         decoded = urllib.parse.unquote(source_file)
         encoded = urllib.parse.quote(decoded)
-        return f"[{decoded}](/download/{encoded})"
+        return f"[{decoded}](/source/{encoded})"
     return re.sub(REFERENCE_REGEX, replacer, text)
 
 
@@ -164,7 +164,7 @@ async def handle_message(message: cl.Message):
     await response_msg.update()
 
     # Final reference handling and update
-    references.update(REFERENCE_REGEX.findall(full_text))
-    final_text = replace_source_reference_links(full_text.replace(TERMINATE_TOKEN, ""))
-    response_msg.content = final_text
+    # references.update(REFERENCE_REGEX.findall(full_text))
+    # final_text = replace_source_reference_links(full_text.replace(TERMINATE_TOKEN, ""))
+    # response_msg.content = final_text
     await response_msg.update()
