@@ -18,7 +18,7 @@ def get_env_var(var_name: str) -> str:
 def download_from_blob(file_name: str) -> bytes:
     logging.info("[chainlit_app] Downloading file: %s", file_name)
     
-    account_name = get_env_var("STORAGE_ACCOUNT_NAME")
+    account_name = get_env_var("STORAGE_ACCOUNT")
 
     blob_url = f"https://{account_name}.blob.core.windows.net/{file_name}"
     logging.debug(f"[chainlit_app] Constructed blob URL: {blob_url}")

@@ -45,8 +45,9 @@ You can simply copy its content and paste it into **Azure Portal > App Service >
 | `AZURE_SUBSCRIPTION_ID` | Your Azure subscription ID where Orchestrator Function App is deployed |
 | `AZURE_RESOURCE_GROUP_NAME` | Resource group where Orchestrator Function App is deployed |
 | `AZURE_ORCHESTRATOR_FUNC_NAME` | Name of the orchestrator Function App |
-| `STORAGE_ACCOUNT_NAME` | Storage account where source documents are located |
+| `STORAGE_ACCOUNT` | Storage account where source documents are located |
 | `APPLICATIONINSIGHTS_CONNECTION_STRING` | Connection string for Azure Application Insights to enable telemetry and monitoring for the application. Use the connection string provided by your Application Insights resource. |
+
 #### 🔐 **Optional: Entra ID Authentication (Azure AD)**
 
 To enable user authentication via Microsoft Entra ID (formerly Azure AD), set `ENABLE_AUTHENTICATION=true` and define:
@@ -141,7 +142,7 @@ Ensure the user/service principal running the UI has these roles:
 ```bash
 az role assignment create \
   --assignee <principalId> \
-  --role "Contributor" \
+  --role "Website Contributor" \
   --scope "/subscriptions/<subscriptionId>/resourceGroups/<resourceGroup>/providers/Microsoft.Web/sites/<functionAppName>"
 ```
 
