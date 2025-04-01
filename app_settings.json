@@ -20,7 +20,7 @@
       "slotSetting": false
     },
     {
-      "name": "STORAGE_ACCOUNT_NAME",
+      "name": "STORAGE_ACCOUNT",
       "value": "<your-blob-storage-account>",
       "slotSetting": false
     },
