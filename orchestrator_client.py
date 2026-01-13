@@ -39,6 +39,9 @@ def get_managed_identity_token():
 
 
 async def call_orchestrator_stream(conversation_id: str, question: str, auth_info: dict, question_id: str | None = None):    
+    # Get access token from auth info
+    access_token = auth_info.get('access_token')
+    
     # Read Dapr settings and target app ID
     orchestrator_app_id = "orchestrator"
     base_url = _get_orchestrator_base_url()
@@ -68,19 +71,18 @@ async def call_orchestrator_stream(conversation_id: str, question: str, auth_inf
     if api_key:
         headers["X-API-KEY"] = api_key
     
-    # Construct request body
+    # Add Authorization header with Bearer token
+    if access_token:
+        headers["Authorization"] = f"Bearer {access_token}"
+    
     payload = {
         "conversation_id": conversation_id,
         "question": question, #for backward compatibility
         "ask": question,
-        "client_principal_id": auth_info.get('client_principal_id', 'no-auth'),
-        "client_principal_name": auth_info.get('client_principal_name', 'anonymous'),
-        "client_group_names": auth_info.get('client_group_names', []),
-        "access_token": auth_info.get('access_token')
     }
 
     if question_id:
-        payload["question_id"] = question_id 
+        payload["question_id"] = question_id
 
 
     # Invoke through Dapr sidecar and stream response
@@ -135,12 +137,16 @@ async def call_orchestrator_for_feedback(
     api_key = _get_config_value("ORCHESTRATOR_APP_APIKEY", default="")
     if api_key:
         headers["X-API-KEY"] = api_key
+    
+    # Add Authorization header with Bearer token
+    access_token = auth_info.get('access_token')
+    if access_token:
+        headers["Authorization"] = f"Bearer {access_token}"
 
     payload = {
         "type": "feedback",
         "conversation_id": conversation_id,
         "question_id": question_id,
-        "access_token": auth_info.get('access_token'),
         "is_positive": is_positive,
     }
     # Include optional fields only when provided
