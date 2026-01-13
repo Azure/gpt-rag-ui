@@ -36,11 +36,6 @@ class AppConfigClient:
             raise e
         
         self.connected: bool = False
-        self.allow_env_vars: bool = False
-
-        if "allow_environment_variables" in os.environ:
-            raw_allow_env = str(os.environ.get("allow_environment_variables", "")).strip().lower()
-            self.allow_env_vars = raw_allow_env in {"1", "true", "yes", "y", "on"}
 
         endpoint = os.getenv("APP_CONFIG_ENDPOINT")
 
@@ -113,11 +108,6 @@ class AppConfigClient:
             raise Exception('The key parameter is required for get_value().')
 
         value = None
-
-        allow_env_vars = self.allow_env_vars
-
-        if allow_env_vars is True:
-            value = os.environ.get(key)
 
         if value is None:
             try:

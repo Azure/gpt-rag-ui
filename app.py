@@ -25,6 +25,12 @@ config = get_config()
 Telemetry.configure_monitoring(config, APPLICATION_INSIGHTS_CONNECTION_STRING, APP_NAME)
 
 ENABLE_FEEDBACK = config.get("ENABLE_USER_FEEDBACK", False, bool)
+_is_running_in_azure_host = bool(
+    os.environ.get("WEBSITE_SITE_NAME")
+    or os.environ.get("CONTAINER_APP_NAME")
+    or os.environ.get("CONTAINER_APP_REVISION")
+)
+ALLOW_ANONYMOUS = config.get("ALLOW_ANONYMOUS", not _is_running_in_azure_host, bool)
 STORAGE_ACCOUNT_NAME = config.get("STORAGE_ACCOUNT_NAME", "", str)
 
 
@@ -183,17 +189,15 @@ def check_authorization() -> dict:
         }
 
     return {
-        'authorized': True,
+        'authorized': ALLOW_ANONYMOUS,
         'client_principal_id': 'no-auth',
         'client_principal_name': 'anonymous',
         'client_group_names': [],
         'access_token': None
     }
 
-# Check if authentication is enabled
-ENABLE_AUTHENTICATION = config.get("ENABLE_AUTHENTICATION", False, bool)
-if ENABLE_AUTHENTICATION:
-    import auth
+# Authentication is always enabled. Importing `auth` registers the OAuth callback.
+import auth
 
 tracer = Telemetry.get_tracer(__name__)
 
@@ -224,8 +228,10 @@ async def handle_message(message: cl.Message):
                 return f"{clean_value[:limit].rstrip()}..."
             return clean_value
 
-        app_user = cl.user_session.get("user")
-        if app_user and not app_user.metadata.get('authorized', True):
+        auth_info = check_authorization()
+        principal = auth_info.get('client_principal_name', 'anonymous')
+
+        if not auth_info.get('authorized', False):
             await response_msg.stream_token(
                 "Oops! It looks like you don’t have access to this service. "
                 "If you think you should, please reach out to your administrator for help."
@@ -233,15 +239,15 @@ async def handle_message(message: cl.Message):
             logger.warning(
                 "Blocked unauthorized request: conversation=%s user=%s",
                 conversation_id or "new",
-                app_user.metadata.get('client_principal_id', 'unknown'),
+                auth_info.get('client_principal_id', 'unknown'),
             )
             return
+
+        app_user = cl.user_session.get("user")
         
         span.set_attribute('question_id', message.id)
         span.set_attribute('conversation_id', conversation_id)
-        span.set_attribute('user_id', app_user.metadata.get('client_principal_id', 'no-auth') if app_user else 'anonymous')
-
-        principal = app_user.metadata.get('client_principal_name', 'anonymous') if app_user else 'anonymous'
+        span.set_attribute('user_id', auth_info.get('client_principal_id', 'anonymous'))
         logger.info(
             "User request received: conversation=%s question_id=%s user=%s preview='%s'",
             conversation_id or "new",
@@ -255,7 +261,6 @@ async def handle_message(message: cl.Message):
         buffer = ""
         full_text = ""
         references = set()
-        auth_info = check_authorization()
         logger.info(
             "Forwarding request to orchestrator: conversation=%s question_id=%s user=%s authorized=%s groups=%d",
             conversation_id or "new",

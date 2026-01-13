@@ -1,5 +1,6 @@
 import logging
 import os
+import secrets
 from io import BytesIO
 
 from fastapi import Response, Request, FastAPI
@@ -92,6 +93,23 @@ if not connected:
 
 else:
     # Import chainlit_app AFTER config is ready
+
+    # Chainlit requires env var CHAINLIT_AUTH_SECRET to sign its session JWT.
+    # Prefer storing it in App Configuration (key `chainlitAuthSecret`) backed by Key Vault.
+    # If missing, generate a temporary secret (sessions will be invalidated on restart).
+    if not os.environ.get("CHAINLIT_AUTH_SECRET"):
+        chainlit_secret = config.get("chainlitAuthSecret", "", str)
+        if chainlit_secret:
+            os.environ["CHAINLIT_AUTH_SECRET"] = chainlit_secret
+            logger.info("Configured CHAINLIT_AUTH_SECRET from App Configuration key 'chainlitAuthSecret'")
+        else:
+            temp_secret = secrets.token_urlsafe(48)
+            os.environ["CHAINLIT_AUTH_SECRET"] = temp_secret
+            logger.warning(
+                "App Configuration key 'chainlitAuthSecret' is not set; using a temporary secret. "
+                "Set 'chainlitAuthSecret' (ideally Key Vault-backed) to avoid session resets on restart."
+            )
+
     from chainlit.server import app as chainlit_app
     from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
     from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor

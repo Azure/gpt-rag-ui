@@ -28,10 +28,25 @@ def _get_config_value(key: str, *, default=None, allow_none: bool = False):
         return default
 
 
+def _get_dapr_api_token() -> Optional[str]:
+    # Prefer process environment (VS Code launch.json / container env), then App Configuration.
+    value = os.getenv("DAPR_API_TOKEN")
+    if value:
+        return value
+    value = _get_config_value("DAPR_API_TOKEN", default=None, allow_none=True)
+    return value if value else None
+
+
 def _get_orchestrator_base_url() -> Optional[str]:
-    value = _get_config_value("ORCHESTRATOR_BASE_URL", default=None, allow_none=True)
+    # Prefer the process environment (e.g., VS Code launch.json / container env)
+    # so local debug doesn't depend on App Configuration for this one value.
+    value = os.getenv("ORCHESTRATOR_BASE_URL")
     if value:
         return value.rstrip("/")
+
+    value = _get_config_value("ORCHESTRATOR_BASE_URL", default=None, allow_none=True)
+    if value:
+        return str(value).rstrip("/")
     return None
 
 
@@ -40,7 +55,9 @@ def _build_orchestrator_url() -> tuple[str, dict]:
     orchestrator_app_id = "orchestrator"
     base_url = _get_orchestrator_base_url()
     if base_url:
-        url = f"{base_url}/orchestrator"
+        # Allow callers to pass either the service root ("https://host")
+        # or the full endpoint ("https://host/orchestrator").
+        url = base_url if base_url.endswith("/orchestrator") else f"{base_url}/orchestrator"
         return url, {"mode": "direct", "base_url": base_url, "dapr_port": None, "app_id": orchestrator_app_id}
 
     dapr_port = _get_config_value("DAPR_HTTP_PORT", default="3500")
@@ -85,19 +102,18 @@ async def call_orchestrator_stream(conversation_id: str, question: str, auth_inf
     
     url, target_context = _build_orchestrator_url()
 
-    # Read the Dapr sidecar API token, favoring environment variables to avoid config churn
-    dapr_token = os.getenv("DAPR_API_TOKEN")
-    if dapr_token is None:
-        dapr_token = _get_config_value("DAPR_API_TOKEN", default=None, allow_none=True)
-    if not dapr_token:
-        logger.debug("DAPR_API_TOKEN is not set; proceeding without Dapr token header")
-
     # Prepare headers: content-type and optional Dapr token
     headers = {
         "Content-Type": "application/json",
     }
+
+    # The orchestrator endpoint enforces the same shared secret used by the Dapr sidecar.
+    # Include it whenever present (both 'dapr' and 'direct' modes).
+    dapr_token = _get_dapr_api_token()
     if dapr_token:
         headers["dapr-api-token"] = dapr_token
+    else:
+        logger.debug("DAPR_API_TOKEN is not set; proceeding without dapr-api-token header")
 
     api_key = _get_config_value("ORCHESTRATOR_APP_APIKEY", default="")
     if api_key:
@@ -184,17 +200,16 @@ async def call_orchestrator_for_feedback(
         logger.warning("call_orchestrator_for_feedback called without question_id; feedback will have null question_id")
     url, target_context = _build_orchestrator_url()
 
-    # Read the Dapr sidecar API token
-    dapr_token = os.getenv("DAPR_API_TOKEN")
-    if not dapr_token:
-        logger.debug("DAPR_API_TOKEN is not set; proceeding without Dapr token header")
-
     # Prepare headers: content-type and optional Dapr token
     headers = {
         "Content-Type": "application/json",
     }
+
+    dapr_token = _get_dapr_api_token()
     if dapr_token:
         headers["dapr-api-token"] = dapr_token
+    else:
+        logger.debug("DAPR_API_TOKEN is not set; proceeding without dapr-api-token header")
 
     api_key = _get_config_value("ORCHESTRATOR_APP_APIKEY", default="")
     if api_key:
