@@ -7,6 +7,7 @@ from typing import Optional, Set, Tuple
 from datetime import datetime, timedelta
 
 import chainlit as cl
+import httpx
 
 from orchestrator_client import call_orchestrator_stream
 from feedback import register_feedback_handlers,create_feedback_actions
@@ -340,6 +341,38 @@ async def handle_message(message: cl.Message):
                 if safe_flush_length > 0:
                     await response_msg.stream_token(buffer[:safe_flush_length])
                     buffer = buffer[safe_flush_length:]
+
+        except httpx.ConnectError as e:
+            logger.error(
+                "Orchestrator unreachable (connection error): conversation=%s question_id=%s error=%s",
+                conversation_id or "pending",
+                message.id,
+                e,
+            )
+            user_error_message = (
+                "We couldn't reach the orchestrator service. "
+                "Please contact the application support team and share reference "
+                f"{message.id}."
+            )
+            full_text = user_error_message
+            buffer = ""
+            await response_msg.stream_token(user_error_message)
+
+        except httpx.TimeoutException as e:
+            logger.error(
+                "Orchestrator request timed out: conversation=%s question_id=%s error=%s",
+                conversation_id or "pending",
+                message.id,
+                e,
+            )
+            user_error_message = (
+                "The orchestrator service took too long to respond. "
+                "Please contact the application support team and share reference "
+                f"{message.id}."
+            )
+            full_text = user_error_message
+            buffer = ""
+            await response_msg.stream_token(user_error_message)
 
         except Exception as e:
             user_error_message = (
