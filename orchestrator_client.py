@@ -1,5 +1,8 @@
 import os
 import logging
+import base64
+import json
+import re
 from typing import Optional
 
 import httpx
@@ -9,6 +12,132 @@ from dependencies import get_config
 
 logger = logging.getLogger("gpt_rag_ui.orchestrator_client")
 config = get_config()
+
+
+_SENSITIVE_HEADER_KEYS = {
+    "authorization",
+    "proxy-authorization",
+    "cookie",
+    "set-cookie",
+    "dapr-api-token",
+    "x-api-key",
+}
+
+_SENSITIVE_JSON_KEY_RE = re.compile(r"(authorization|token|secret|password|api[_-]?key|cookie)", re.IGNORECASE)
+
+
+def _mask_secret(value: object, *, keep_start: int = 6, keep_end: int = 4) -> str:
+    if value is None:
+        return "<empty>"
+    text = str(value)
+    stripped = text.strip()
+    if not stripped:
+        return "<empty>"
+    if len(stripped) <= keep_start + keep_end + 3:
+        return "<redacted>"
+    return f"{stripped[:keep_start]}…{stripped[-keep_end:]}"
+
+
+def _sanitize_for_log(obj: object, *, depth: int = 0, max_depth: int = 6) -> object:
+    """Return a log-safe representation: redacts secrets and truncates very large values."""
+    if depth > max_depth:
+        return "<max-depth>"
+
+    if obj is None or isinstance(obj, (bool, int, float)):
+        return obj
+
+    if isinstance(obj, str):
+        s = obj
+        if len(s) > 800:
+            return s[:800] + "…"
+        return s
+
+    if isinstance(obj, (list, tuple)):
+        items = list(obj)
+        if len(items) > 50:
+            return [_sanitize_for_log(x, depth=depth + 1, max_depth=max_depth) for x in items[:50]] + [
+                f"<truncated: {len(items) - 50} more items>"
+            ]
+        return [_sanitize_for_log(x, depth=depth + 1, max_depth=max_depth) for x in items]
+
+    if isinstance(obj, dict):
+        sanitized: dict = {}
+        for key, value in obj.items():
+            key_str = str(key)
+            if _SENSITIVE_JSON_KEY_RE.search(key_str):
+                sanitized[key_str] = "<redacted>"
+            else:
+                sanitized[key_str] = _sanitize_for_log(value, depth=depth + 1, max_depth=max_depth)
+        return sanitized
+
+    # Fallback for unknown objects
+    return str(obj)
+
+
+def _format_outgoing_request_debug(*, method: str, url: str, headers: dict, json_body: object) -> str:
+    safe_headers = {}
+    for k, v in (headers or {}).items():
+        key = str(k)
+        if key.lower() in _SENSITIVE_HEADER_KEYS:
+            # Keep a hint of token shape without leaking the full value.
+            if key.lower() == "authorization" and isinstance(v, str) and v.lower().startswith("bearer "):
+                token = v[7:].strip()
+                safe_headers[key] = f"Bearer {_mask_secret(token)}"
+            else:
+                safe_headers[key] = _mask_secret(v)
+        else:
+            safe_headers[key] = str(v)
+
+    payload = {
+        "method": method,
+        "url": url,
+        "headers": safe_headers,
+        "json": _sanitize_for_log(json_body),
+    }
+    return json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True)
+
+
+def _decode_jwt_unverified(token: str) -> dict | None:
+    """Decode JWT payload without verifying signature.
+
+    Debug-only helper. Never use this to authorize.
+    """
+
+    try:
+        parts = (token or "").split(".")
+        if len(parts) < 2:
+            return None
+        payload_b64 = parts[1]
+        payload_b64 += "=" * (-len(payload_b64) % 4)
+        payload = base64.urlsafe_b64decode(payload_b64.encode("utf-8"))
+        data = json.loads(payload.decode("utf-8"))
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def _access_token_debug_summary(access_token: str) -> dict:
+    claims = _decode_jwt_unverified(access_token) or {}
+    aud = claims.get("aud")
+    if isinstance(aud, list):
+        aud_value = ",".join(str(x) for x in aud)
+    else:
+        aud_value = str(aud) if aud is not None else None
+
+    def _short(value: object) -> str:
+        s = str(value or "")
+        if len(s) <= 10:
+            return s
+        return f"{s[:4]}…{s[-4:]}"
+
+    return {
+        "aud": aud_value,
+        "tid": _short(claims.get("tid")) if claims.get("tid") else None,
+        "oid": _short(claims.get("oid")) if claims.get("oid") else None,
+        "iss": claims.get("iss"),
+        "scp": claims.get("scp"),
+        "ver": claims.get("ver"),
+    }
 
 
 def _bool_env(value: Optional[str]) -> bool:
@@ -113,7 +242,9 @@ async def call_orchestrator_stream(conversation_id: str, question: str, auth_inf
     if dapr_token:
         headers["dapr-api-token"] = dapr_token
     else:
-        logger.debug("DAPR_API_TOKEN is not set; proceeding without dapr-api-token header")
+        logger.debug(
+            "DAPR_API_TOKEN not set; omitting 'dapr-api-token' header (expected in ACA; set only for local enforced sidecar)"
+        )
 
     api_key = _get_config_value("ORCHESTRATOR_APP_APIKEY", default="")
     if api_key:
@@ -122,6 +253,25 @@ async def call_orchestrator_stream(conversation_id: str, question: str, auth_inf
     # Add Authorization header with Bearer token
     if access_token:
         headers["Authorization"] = f"Bearer {access_token}"
+
+    if access_token and logger.isEnabledFor(logging.DEBUG):
+        logger.debug(
+            "Orchestrator bearer token claims (unverified): question_id=%s conversation_id=%s %s",
+            question_id or "n/a",
+            conversation_id or "new",
+            _access_token_debug_summary(access_token),
+        )
+
+    # INFO-level auth health log (never prints secrets)
+    logger.info(
+        "Orchestrator request auth health: question_id=%s conversation_id=%s mode=%s has_access_token=%s access_token_len=%s has_authorization_header=%s",
+        question_id or "n/a",
+        conversation_id or "new",
+        target_context.get("mode"),
+        bool(access_token),
+        (len(str(access_token)) if access_token else 0),
+        ("Authorization" in headers),
+    )
     
     payload = {
         "conversation_id": conversation_id,
@@ -140,6 +290,12 @@ async def call_orchestrator_stream(conversation_id: str, question: str, auth_inf
         url,
         _headers_summary(headers),
     )
+
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(
+            "Outgoing orchestrator request (sanitized):\n%s",
+            _format_outgoing_request_debug(method="POST", url=url, headers=headers, json_body=payload),
+        )
 
     timeout = httpx.Timeout(connect=10.0, read=None, write=30.0, pool=10.0)
     # Invoke through Dapr sidecar and stream response
@@ -209,7 +365,9 @@ async def call_orchestrator_for_feedback(
     if dapr_token:
         headers["dapr-api-token"] = dapr_token
     else:
-        logger.debug("DAPR_API_TOKEN is not set; proceeding without dapr-api-token header")
+        logger.debug(
+            "DAPR_API_TOKEN not set; omitting 'dapr-api-token' header (expected in ACA; set only for local enforced sidecar)"
+        )
 
     api_key = _get_config_value("ORCHESTRATOR_APP_APIKEY", default="")
     if api_key:
@@ -219,6 +377,24 @@ async def call_orchestrator_for_feedback(
     access_token = auth_info.get('access_token')
     if access_token:
         headers["Authorization"] = f"Bearer {access_token}"
+
+    if access_token and logger.isEnabledFor(logging.DEBUG):
+        logger.debug(
+            "Orchestrator bearer token claims (unverified): question_id=%s conversation_id=%s %s",
+            question_id or "n/a",
+            conversation_id or "new",
+            _access_token_debug_summary(access_token),
+        )
+
+    logger.info(
+        "Orchestrator feedback auth health: question_id=%s conversation_id=%s mode=%s has_access_token=%s access_token_len=%s has_authorization_header=%s",
+        question_id or "n/a",
+        conversation_id or "new",
+        target_context.get("mode"),
+        bool(access_token),
+        (len(str(access_token)) if access_token else 0),
+        ("Authorization" in headers),
+    )
 
     payload = {
         "type": "feedback",
@@ -240,6 +416,12 @@ async def call_orchestrator_for_feedback(
         url,
         _headers_summary(headers),
     )
+
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(
+            "Outgoing orchestrator feedback request (sanitized):\n%s",
+            _format_outgoing_request_debug(method="POST", url=url, headers=headers, json_body=payload),
+        )
 
     timeout = httpx.Timeout(connect=10.0, read=30.0, write=30.0, pool=10.0)
     try:

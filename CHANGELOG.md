@@ -3,6 +3,10 @@
 All notable changes to this project will be documented in this file.  
 This format follows [Keep a Changelog](https://keepachangelog.com/) and adheres to [Semantic Versioning](https://semver.org/).
 
+## [v2.2.0] – 2026-01-15
+### Added
+- Added support for Microsoft Entra ID authentication in the UI and forwarding the end-user access token to the orchestrator; this token is used to validate the user and propagate retrieval authorization, enabling document-level security.
+
 ## [v2.1.1] – 2025-10-21
 ### Added
 - Added more troubleshooting logs.

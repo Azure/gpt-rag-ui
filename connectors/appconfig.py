@@ -21,8 +21,7 @@ class AppConfigClient:
 
     def __init__(self):
         """
-        Bulk-loads all keys labeled 'gpt-rag-orchestrator' and 'gpt-rag' into an in-memory dict,
-        giving precedence to 'gpt-rag-orchestrator' where a key exists in both.
+        Bulk-loads configuration keys into an in-memory dict.
         """
         # ==== Load all config parameters in one place ====
         try:
@@ -63,6 +62,9 @@ class AppConfigClient:
         logger = logging.getLogger("gpt_rag_ui.appconfig")
 
         try:
+            logger.info(
+                "Loading Azure App Configuration keys using labels: 'gpt-rag-ui', 'gpt-rag', and <no label>"
+            )
             self.client = load(
                 selects=[app_label_selector, base_label_selector, no_label_selector],
                 endpoint=endpoint,
