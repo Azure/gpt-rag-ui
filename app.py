@@ -1,4 +1,6 @@
 import os
+import base64
+import json
 import re
 import uuid
 import logging
@@ -7,6 +9,7 @@ from typing import Optional, Set, Tuple
 from datetime import datetime, timedelta
 
 import chainlit as cl
+import httpx
 
 from orchestrator_client import call_orchestrator_stream
 from feedback import register_feedback_handlers,create_feedback_actions
@@ -24,6 +27,26 @@ config = get_config()
 Telemetry.configure_monitoring(config, APPLICATION_INSIGHTS_CONNECTION_STRING, APP_NAME)
 
 ENABLE_FEEDBACK = config.get("ENABLE_USER_FEEDBACK", False, bool)
+_is_running_in_azure_host = bool(
+    os.environ.get("WEBSITE_SITE_NAME")
+    or os.environ.get("CONTAINER_APP_NAME")
+    or os.environ.get("CONTAINER_APP_REVISION")
+)
+
+
+def _oauth_is_configured() -> bool:
+    # Consider OAuth configured only when the required AAD fields exist.
+    # If OAuth isn't configured, we treat requests as anonymous (do not block).
+    client_id = config.get("OAUTH_AZURE_AD_CLIENT_ID", "", str) or config.get("CLIENT_ID", "", str)
+    client_secret = config.get("OAUTH_AZURE_AD_CLIENT_SECRET", "", str) or config.get("authClientSecret", "", str)
+    tenant_id = config.get("OAUTH_AZURE_AD_TENANT_ID", "", str)
+    return bool(client_id and client_secret and tenant_id)
+
+
+OAUTH_CONFIGURED = _oauth_is_configured()
+
+# If OAuth isn't configured, default to allowing anonymous even in Azure.
+ALLOW_ANONYMOUS = config.get("ALLOW_ANONYMOUS", (not _is_running_in_azure_host) or (not OAUTH_CONFIGURED), bool)
 STORAGE_ACCOUNT_NAME = config.get("STORAGE_ACCOUNT_NAME", "", str)
 
 
@@ -181,24 +204,130 @@ def check_authorization() -> dict:
             'access_token': metadata.get('access_token')
         }
 
+    # If OAuth is configured but we don't have a user in session,
+    # treat as unauthorized (forces the UI to require auth).
+    # Otherwise, allow anonymous.
     return {
-        'authorized': True,
+        'authorized': (ALLOW_ANONYMOUS if not OAUTH_CONFIGURED else False),
         'client_principal_id': 'no-auth',
         'client_principal_name': 'anonymous',
         'client_group_names': [],
         'access_token': None
     }
 
-# Check if authentication is enabled
-ENABLE_AUTHENTICATION = config.get("ENABLE_AUTHENTICATION", False, bool)
-if ENABLE_AUTHENTICATION:
-    import auth
+
+async def get_auth_info() -> dict:
+    """Return the effective auth info for the current session.
+
+    If OAuth is configured and a user session exists, automatically refreshes the access token
+    when it is close to expiry to avoid "invalid token" failures in the orchestrator.
+    """
+
+    app_user = cl.user_session.get("user")
+    if app_user:
+        # Opportunistic token refresh (OAuth mode only).
+        if OAUTH_CONFIGURED:
+            try:
+                # Import is safe because we import auth_oauth only when OAUTH_CONFIGURED.
+                refreshed = await auth_oauth.ensure_fresh_user_access_token(app_user, min_ttl_seconds=120)
+                if refreshed:
+                    cl.user_session.set("user", app_user)
+            except Exception:
+                # If refresh fails, clear the user session so the UI can re-auth.
+                logger.warning("User access token refresh failed; clearing session to force re-auth", exc_info=True)
+                cl.user_session.set("user", None)
+                return {
+                    'authorized': False,
+                    'client_principal_id': 'no-auth',
+                    'client_principal_name': 'anonymous',
+                    'client_group_names': [],
+                    'access_token': None,
+                    'auth_error': 'session_expired',
+                }
+
+        metadata = app_user.metadata or {}
+        return {
+            'authorized': metadata.get('authorized', True),
+            'client_principal_id': metadata.get('client_principal_id', 'no-auth'),
+            'client_principal_name': metadata.get('client_principal_name', 'anonymous'),
+            'client_group_names': metadata.get('client_group_names', []),
+            'access_token': metadata.get('access_token'),
+        }
+
+    return {
+        'authorized': (ALLOW_ANONYMOUS if not OAUTH_CONFIGURED else False),
+        'client_principal_id': 'no-auth',
+        'client_principal_name': 'anonymous',
+        'client_group_names': [],
+        'access_token': None
+    }
+
+
+def _decode_jwt_unverified(token: str) -> dict | None:
+    """Decode JWT payload without verifying signature.
+
+    Debug-only helper. Never use this to authorize.
+    """
+
+    try:
+        parts = (token or "").split(".")
+        if len(parts) < 2:
+            return None
+        payload_b64 = parts[1]
+        payload_b64 += "=" * (-len(payload_b64) % 4)
+        payload = base64.urlsafe_b64decode(payload_b64.encode("utf-8"))
+        data = json.loads(payload.decode("utf-8"))
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def _access_token_debug_summary(access_token: str) -> dict:
+    claims = _decode_jwt_unverified(access_token) or {}
+    aud = claims.get("aud")
+    if isinstance(aud, list):
+        aud_value = ",".join(str(x) for x in aud)
+    else:
+        aud_value = str(aud) if aud is not None else None
+
+    def _short(value: object) -> str:
+        s = str(value or "")
+        if len(s) <= 10:
+            return s
+        return f"{s[:4]}…{s[-4:]}"
+
+    return {
+        "aud": aud_value,
+        "tid": _short(claims.get("tid")) if claims.get("tid") else None,
+        "oid": _short(claims.get("oid")) if claims.get("oid") else None,
+        "iss": claims.get("iss"),
+        "scp": claims.get("scp"),
+        "ver": claims.get("ver"),
+    }
+
+# Importing `auth_oauth` registers @cl.oauth_callback as a side effect.
+# Only register OAuth when the minimum configuration is present.
+if OAUTH_CONFIGURED:
+    ENABLE_AUTHENTICATION = True
+    import auth_oauth  # noqa: F401
+    logger.info("Authentication enabled: Chainlit OAuth (Azure AD)")
+else:
+    ENABLE_AUTHENTICATION = False
+    if ALLOW_ANONYMOUS:
+        logger.warning(
+            "Authentication disabled: OAuth not configured; running in anonymous mode (ALLOW_ANONYMOUS=true)"
+        )
+    else:
+        raise RuntimeError(
+            "OAuth is not configured (missing client_id/tenant_id/client_secret) and ALLOW_ANONYMOUS=false. "
+            "Set OAUTH_AZURE_AD_CLIENT_ID, OAUTH_AZURE_AD_TENANT_ID, and OAUTH_AZURE_AD_CLIENT_SECRET (or authClientSecret)."
+        )
 
 tracer = Telemetry.get_tracer(__name__)
 
 # Register feedback handlers
 if ENABLE_FEEDBACK:
-    register_feedback_handlers(check_authorization)
+    register_feedback_handlers(get_auth_info)
 
 # Chainlit event handlers
 @cl.on_chat_start
@@ -223,8 +352,20 @@ async def handle_message(message: cl.Message):
                 return f"{clean_value[:limit].rstrip()}..."
             return clean_value
 
-        app_user = cl.user_session.get("user")
-        if app_user and not app_user.metadata.get('authorized', True):
+        auth_info = await get_auth_info()
+        principal = auth_info.get('client_principal_name', 'anonymous')
+
+        if auth_info.get('auth_error') == 'session_expired':
+            await response_msg.stream_token(
+                "Your session has expired. Please sign out and sign in again to continue."
+            )
+            logger.warning(
+                "Blocked request due to expired auth session: conversation=%s",
+                conversation_id or "new",
+            )
+            return
+
+        if not auth_info.get('authorized', False):
             await response_msg.stream_token(
                 "Oops! It looks like you don’t have access to this service. "
                 "If you think you should, please reach out to your administrator for help."
@@ -232,15 +373,15 @@ async def handle_message(message: cl.Message):
             logger.warning(
                 "Blocked unauthorized request: conversation=%s user=%s",
                 conversation_id or "new",
-                app_user.metadata.get('client_principal_id', 'unknown'),
+                auth_info.get('client_principal_id', 'unknown'),
             )
             return
+
+        app_user = cl.user_session.get("user")
         
         span.set_attribute('question_id', message.id)
         span.set_attribute('conversation_id', conversation_id)
-        span.set_attribute('user_id', app_user.metadata.get('client_principal_id', 'no-auth') if app_user else 'anonymous')
-
-        principal = app_user.metadata.get('client_principal_name', 'anonymous') if app_user else 'anonymous'
+        span.set_attribute('user_id', auth_info.get('client_principal_id', 'anonymous'))
         logger.info(
             "User request received: conversation=%s question_id=%s user=%s preview='%s'",
             conversation_id or "new",
@@ -254,7 +395,6 @@ async def handle_message(message: cl.Message):
         buffer = ""
         full_text = ""
         references = set()
-        auth_info = check_authorization()
         logger.info(
             "Forwarding request to orchestrator: conversation=%s question_id=%s user=%s authorized=%s groups=%d",
             conversation_id or "new",
@@ -263,6 +403,14 @@ async def handle_message(message: cl.Message):
             auth_info.get("authorized"),
             len(auth_info.get("client_group_names", [])),
         )
+
+        if logger.isEnabledFor(logging.DEBUG) and auth_info.get("access_token"):
+            logger.debug(
+                "Orchestrator call access token claims (unverified): conversation=%s question_id=%s %s",
+                conversation_id or "new",
+                message.id,
+                _access_token_debug_summary(str(auth_info.get("access_token"))),
+            )
         logger.debug(
             "Orchestrator payload preview: conversation=%s question_id=%s preview='%s'",
             conversation_id or "new",
@@ -340,6 +488,38 @@ async def handle_message(message: cl.Message):
                 if safe_flush_length > 0:
                     await response_msg.stream_token(buffer[:safe_flush_length])
                     buffer = buffer[safe_flush_length:]
+
+        except httpx.ConnectError as e:
+            logger.error(
+                "Orchestrator unreachable (connection error): conversation=%s question_id=%s error=%s",
+                conversation_id or "pending",
+                message.id,
+                e,
+            )
+            user_error_message = (
+                "We couldn't reach the orchestrator service. "
+                "Please contact the application support team and share reference "
+                f"{message.id}."
+            )
+            full_text = user_error_message
+            buffer = ""
+            await response_msg.stream_token(user_error_message)
+
+        except httpx.TimeoutException as e:
+            logger.error(
+                "Orchestrator request timed out: conversation=%s question_id=%s error=%s",
+                conversation_id or "pending",
+                message.id,
+                e,
+            )
+            user_error_message = (
+                "The orchestrator service took too long to respond. "
+                "Please contact the application support team and share reference "
+                f"{message.id}."
+            )
+            full_text = user_error_message
+            buffer = ""
+            await response_msg.stream_token(user_error_message)
 
         except Exception as e:
             user_error_message = (

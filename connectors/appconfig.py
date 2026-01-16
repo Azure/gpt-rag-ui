@@ -5,7 +5,7 @@ from typing import Dict, Any
 from azure.identity import ChainedTokenCredential, ManagedIdentityCredential, AzureCliCredential
 from azure.identity.aio import ChainedTokenCredential as AsyncChainedTokenCredential, ManagedIdentityCredential as AsyncManagedIdentityCredential, AzureCliCredential as AsyncAzureCliCredential
 from azure.appconfiguration import AzureAppConfigurationClient
-from azure.core.exceptions import AzureError
+from azure.core.exceptions import AzureError, ClientAuthenticationError
 from azure.appconfiguration.provider import (
     AzureAppConfigurationKeyVaultOptions,
     load,
@@ -21,8 +21,7 @@ class AppConfigClient:
 
     def __init__(self):
         """
-        Bulk-loads all keys labeled 'gpt-rag-orchestrator' and 'gpt-rag' into an in-memory dict,
-        giving precedence to 'gpt-rag-orchestrator' where a key exists in both.
+        Bulk-loads configuration keys into an in-memory dict.
         """
         # ==== Load all config parameters in one place ====
         try:
@@ -35,15 +34,17 @@ class AppConfigClient:
         except Exception as e:
             raise e
         
-        self.allow_env_vars = False
-
-        if "allow_environment_variables" in os.environ:
-            self.allow_env_vars = bool(os.environ["allow_environment_variables"])
+        self.connected: bool = False
 
         endpoint = os.getenv("APP_CONFIG_ENDPOINT")
 
+        # Local/dev friendly behavior: if endpoint is not provided, run with env vars only.
         if not endpoint:
-            raise EnvironmentError("APP_CONFIG_ENDPOINT must be set")
+            logging.getLogger("gpt_rag_ui.appconfig").warning(
+                "APP_CONFIG_ENDPOINT is not set; running with environment variables only."
+            )
+            self.client = {}
+            return
 
         self.credential = ChainedTokenCredential(
             ManagedIdentityCredential(client_id=self.client_id),
@@ -58,16 +59,46 @@ class AppConfigClient:
         base_label_selector = SettingSelector(label_filter='gpt-rag', key_filter='*')
         no_label_selector = SettingSelector(label_filter=None, key_filter='*')
 
+        logger = logging.getLogger("gpt_rag_ui.appconfig")
+
         try:
-            self.client = load(selects=[app_label_selector, base_label_selector, no_label_selector],endpoint=endpoint, credential=self.credential,key_vault_options=AzureAppConfigurationKeyVaultOptions(credential=self.credential))
+            logger.info(
+                "Loading Azure App Configuration keys using labels: 'gpt-rag-ui', 'gpt-rag', and <no label>"
+            )
+            self.client = load(
+                selects=[app_label_selector, base_label_selector, no_label_selector],
+                endpoint=endpoint,
+                credential=self.credential,
+                key_vault_options=AzureAppConfigurationKeyVaultOptions(credential=self.credential),
+            )
+            self.connected = True
+        except (ClientAuthenticationError, AzureError) as e:
+            # Most common local dev issue: not logged in / no managed identity.
+            logger.warning(
+                "Azure App Configuration unavailable (auth/network). Running with env vars only. "
+                "If using Azure CLI auth, run: az login. Error: %s",
+                e,
+            )
+            self.client = {}
         except Exception as e:
-            logging.log("error", f"Unable to connect to Azure App Configuration. Please check APP_CONFIGURATION_URI setting. {e}")
+            # Fallback: try connection string if provided, otherwise keep env-only.
+            logger.warning(
+                "Unable to connect to Azure App Configuration endpoint; trying connection string (if set). Error: %s",
+                e,
+            )
             try:
                 connection_string = os.environ["AZURE_APPCONFIG_CONNECTION_STRING"]
-                # Connect to Azure App Configuration using a connection string.
-                self.client = load(connection_string=connection_string, key_vault_options=AzureAppConfigurationKeyVaultOptions(credential=self.credential))
-            except Exception as e:
-                raise Exception(f"Unable to connect to Azure App Configuration. Please check your connection string or endpoint. {e}")
+                self.client = load(
+                    connection_string=connection_string,
+                    key_vault_options=AzureAppConfigurationKeyVaultOptions(credential=self.credential),
+                )
+                self.connected = True
+            except Exception as e2:
+                logger.warning(
+                    "Azure App Configuration connection string not available/failed; running with env vars only. Error: %s",
+                    e2,
+                )
+                self.client = {}
 
 
     def get(self, key: str, default: Any = None, type: type = str) -> Any:
@@ -80,19 +111,11 @@ class AppConfigClient:
 
         value = None
 
-        allow_env_vars = False
-        if "allow_environment_variables" in os.environ:
-            allow_env_vars = bool(os.environ[
-                    "allow_environment_variables"
-                    ])
-
-        if allow_env_vars is True:
-            value = os.environ.get(key)
-
         if value is None:
             try:
                 value = self.get_config_with_retry(name=key)
-            except Exception as e:
+            except Exception:
+                # Config backend unavailable; rely on defaults/env vars.
                 pass
 
         if value is not None:

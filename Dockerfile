@@ -17,6 +17,5 @@ COPY . .
 # Expose port 80
 EXPOSE 80
 
-# Launch via Uvicorn
-#CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port 80 || sleep 3600"]
-CMD ["chainlit", "run", "app.py", "--host", "0.0.0.0", "--port", "80"]
+# Launch via Uvicorn (main.py configures CHAINLIT_AUTH_SECRET before importing Chainlit)
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "80"]
