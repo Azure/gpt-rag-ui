@@ -1,8 +1,4 @@
-FROM mcr.microsoft.com/devcontainers/python:dev-3.12
-
-RUN apt-get update  
-RUN apt-get install ca-certificates -y
-RUN update-ca-certificates 
+FROM mcr.microsoft.com/devcontainers/python:3.12-bookworm
 
 # Set app dir
 WORKDIR /app
@@ -14,8 +10,8 @@ RUN pip install -r requirements.txt
 # Copy app code
 COPY . .
 
-# Expose port 80
-EXPOSE 80
+# Expose port 8080
+EXPOSE 8080
 
 # Launch via Uvicorn (main.py configures CHAINLIT_AUTH_SECRET before importing Chainlit)
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "80"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]

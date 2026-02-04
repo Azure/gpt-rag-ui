@@ -3,6 +3,15 @@
 All notable changes to this project will be documented in this file.  
 This format follows [Keep a Changelog](https://keepachangelog.com/) and adheres to [Semantic Versioning](https://semver.org/).
 
+## [v2.2.1] – 2026-02-04
+### Fixed
+- Simplified docker image
+- Fixed Docker builds on ARM-based machines by explicitly setting the target platform to `linux/amd64`, preventing Azure Container Apps deployment failures.
+### Changed
+- Pinned the Docker base image to `mcr.microsoft.com/devcontainers/python:3.12-bookworm` to ensure stable package verification behavior across environments.
+- Bumped `aiohttp` to `3.13.3`.
+- Standardized on the container best practice of using a non-privileged port (`8080`) instead of a privileged port (`80`), reducing the risk of runtime/permission friction and improving stability of long-running ingestion workloads.
+
 ## [v2.2.0] – 2026-01-15
 ### Added
 - Added support for Microsoft Entra ID authentication in the UI and forwarding the end-user access token to the orchestrator; this token is used to validate the user and propagate retrieval authorization, enabling document-level security.
