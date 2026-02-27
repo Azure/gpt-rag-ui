@@ -1,5 +1,6 @@
 import chainlit as cl
 import logging
+import inspect
 
 from orchestrator_client import call_orchestrator_for_feedback
 from dependencies import get_config
@@ -156,6 +157,9 @@ def register_feedback_handlers(auth_info=None):
                 raise ValueError("[app] Ask ID is missing; cannot submit feedback.")
 
             # Call orchestrator
+            auth_payload = auth_info() if auth_info else {}
+            if inspect.isawaitable(auth_payload):
+                auth_payload = await auth_payload
             orc_feedback_response = await call_orchestrator_for_feedback(
                 conversation_id=conversation_id,
                 question_id=question_id,
@@ -163,7 +167,7 @@ def register_feedback_handlers(auth_info=None):
                 is_positive=is_positive,
                 star_rating=rating,
                 feedback_text=text,
-                auth_info=auth_info() if auth_info else {},
+                auth_info=auth_payload,
             )
             # Remove the feedback form message
             if feedback_msg is not None:

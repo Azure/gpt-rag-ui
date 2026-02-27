@@ -1,5 +1,6 @@
 import os
 import logging
+import logging.config
 import platform
 
 from azure.monitor.opentelemetry import configure_azure_monitor
@@ -59,9 +60,27 @@ class Telemetry:
 
     @staticmethod
     def configure_monitoring(config: AppConfigClient, telemetry_connection_string: str, api_name : str):
-
-        Telemetry.telemetry_connection_string = config.get(telemetry_connection_string)
+        # Connection string may come from App Configuration; in env-only mode it might be missing.
+        Telemetry.telemetry_connection_string = config.get_value(
+            telemetry_connection_string,
+            default=None,
+            allow_none=True,
+            type=str,
+        )
         Telemetry.api_name = api_name
+
+        if not Telemetry.telemetry_connection_string:
+            logging.getLogger(__name__).warning(
+                "Telemetry disabled: missing %s.",
+                telemetry_connection_string,
+            )
+            # Still configure application logging defaults.
+            try:
+                Telemetry.configure_logging(config)
+            except Exception:
+                Telemetry.configure_basic(config)
+            return
+
         resource = Resource.create(
             {
                 SERVICE_NAME: f"{Telemetry.api_name}",
