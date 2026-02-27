@@ -447,5 +447,6 @@ async def oauth_callback(
             "client_principal_id": user_id,
             "client_principal_name": principal_name,
             "client_group_names": groups,
+            "principal_id": user_id,
         },
     )

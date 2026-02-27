@@ -50,7 +50,8 @@ edit_message = true
 [features.audio]
     # Sample rate of the audio
     sample_rate = 24000
-
+[features.mcp]
+enabled = false
 [UI]
 # Name of the assistant.
 name = "GPT-RAG"
@@ -88,6 +89,9 @@ custom_css = "/public/custom.css"
 #     name = "Issues"
 #     icon_url = "https://avatars.githubusercontent.com/u/128686189?s=200&v=4"
 #     url = "https://github.com/Chainlit/chainlit/issues"
+
+[persistence]
+enabled = true
 
 [meta]
 generated_by = "2.4.0"

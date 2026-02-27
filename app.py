@@ -19,7 +19,7 @@ from connectors import BlobClient
 from constants import APPLICATION_INSIGHTS_CONNECTION_STRING, APP_NAME, UUID_REGEX, REFERENCE_REGEX, TERMINATE_TOKEN
 from telemetry import Telemetry
 from opentelemetry.trace import SpanKind
-
+from chainlit.types import ThreadDict
 logger = logging.getLogger("gpt_rag_ui.app")
 
 config = get_config()
@@ -311,6 +311,8 @@ if OAUTH_CONFIGURED:
     ENABLE_AUTHENTICATION = True
     import auth_oauth  # noqa: F401
     logger.info("Authentication enabled: Chainlit OAuth (Azure AD)")
+    import datalayer
+
 else:
     ENABLE_AUTHENTICATION = False
     if ALLOW_ANONYMOUS:
@@ -337,6 +339,18 @@ async def on_chat_start():
     # if app_user:
         # await cl.Message(content=f"Hello {app_user.metadata.get('user_name')}").send()
 
+@cl.on_chat_resume
+async def on_chat_resume(thread: ThreadDict):
+    cl.user_session.set("conversation_id", thread["id"])
+    messages=[m for m in thread["steps"]]
+    for message in messages:
+        author="assistant"
+        if message.get("type")=="user_message":
+            author="user"
+        txt=message.get("output") or message.get("input") or ""
+        msg=cl.Message(content=txt, author=author, created_at=message.get("createdAt"))
+        await msg.send()
+    logger.info("Chat resumed: thread=%s", thread)
 @cl.on_message
 async def handle_message(message: cl.Message):
     
