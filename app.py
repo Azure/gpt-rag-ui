@@ -421,10 +421,28 @@ async def handle_message(message: cl.Message):
 
         chunk_count = 0
         first_content_seen = False
+        is_first_chunk = True
+        uuid_buffer = ""
 
         try:
-            async for chunk in generator:
-                # logging.info("[app] Chunk received: %s", chunk)
+            async for raw_chunk in generator:
+                if not raw_chunk:
+                    continue
+
+                if "[ERROR en MAF Streaming]:" in raw_chunk or "[ERROR]:" in raw_chunk:
+                    await cl.ErrorMessage(content=f"Error de Servicio: {raw_chunk.strip()}").send()
+                    break
+
+                if is_first_chunk:
+                    uuid_buffer += raw_chunk
+                    if len(uuid_buffer) >= 37:
+                        is_first_chunk = False
+                        chunk = uuid_buffer
+                        uuid_buffer = ""
+                    else:
+                        continue
+                else:
+                    chunk = raw_chunk
 
                 # Extract and update conversation ID
                 extracted_id, cleaned_chunk = extract_conversation_id_from_chunk(chunk)

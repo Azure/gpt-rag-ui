@@ -3,6 +3,13 @@
 All notable changes to this project will be documented in this file.  
 This format follows [Keep a Changelog](https://keepachangelog.com/) and adheres to [Semantic Versioning](https://semver.org/).
 
+## [v2.2.2] – 2026-03-01
+### Added
+- Integrated **Low Latency Streaming** compatibility with MAF V2 Orchestrator. The UI now implements native `fetch` with `Transfer-Encoding: chunked`.
+- Added reactive buffering UI logic parsing to safely extract 36-char `conversation_id` from the raw byte stream chunk.
+### Fixed
+- Fixed streaming network fragmentation loss when reading UTF-8 characters via `TextDecoder(stream=True)`.
+
 ## [v2.2.1] – 2026-02-04
 ### Fixed
 - Simplified docker image
