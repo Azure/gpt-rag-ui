@@ -246,7 +246,7 @@ async def call_orchestrator_stream(conversation_id: str, question: str, auth_inf
             "DAPR_API_TOKEN not set; omitting 'dapr-api-token' header (expected in ACA; set only for local enforced sidecar)"
         )
 
-    api_key = _get_config_value("ORCHESTRATOR_APP_APIKEY", default="")
+    api_key = _get_config_value("ORCHESTRATOR_APP_APIKEY", default=os.getenv("ORCHESTRATOR_APP_APIKEY", ""))
     if api_key:
         headers["X-API-KEY"] = api_key
     
@@ -369,7 +369,7 @@ async def call_orchestrator_for_feedback(
             "DAPR_API_TOKEN not set; omitting 'dapr-api-token' header (expected in ACA; set only for local enforced sidecar)"
         )
 
-    api_key = _get_config_value("ORCHESTRATOR_APP_APIKEY", default="")
+    api_key = _get_config_value("ORCHESTRATOR_APP_APIKEY", default=os.getenv("ORCHESTRATOR_APP_APIKEY", ""))
     if api_key:
         headers["X-API-KEY"] = api_key
     
