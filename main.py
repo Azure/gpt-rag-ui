@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from io import BytesIO
 
 from fastapi import FastAPI, Response
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from connectors import AppConfigClient, BlobClient
 from dependencies import get_config
@@ -95,13 +95,7 @@ def _clear_oauth_env_vars() -> bool:
 
 def _startup_banner() -> None:
     name = "GPT-RAG UI"
-    version = None
-    try:
-        if os.path.exists("VERSION"):
-            with open("VERSION", "r", encoding="utf-8") as f:
-                version = f.read().strip()
-    except Exception:
-        version = None
+    version = _read_local_ui_version()
 
     banner_lines = [
         "",
@@ -113,6 +107,33 @@ def _startup_banner() -> None:
     ]
     for line in banner_lines:
         logger.info(line)
+
+
+def _read_local_ui_version() -> str | None:
+    try:
+        if os.path.exists("VERSION"):
+            with open("VERSION", "r", encoding="utf-8") as f:
+                value = (f.read() or "").strip()
+                return value or None
+    except Exception:
+        logger.exception("Failed to read local VERSION file")
+    return None
+
+
+def _normalize_version_prefix(value: str | None) -> str | None:
+    normalized = (value or "").strip()
+    if not normalized:
+        return None
+    if normalized.lower().startswith("v"):
+        return normalized
+    return f"v{normalized}"
+
+
+def _format_release_value(value: str | None, missing_message: str) -> str:
+    normalized = _normalize_version_prefix(value)
+    if normalized:
+        return normalized
+    return missing_message
 
 
 def _configure_chainlit_prereqs(config: AppConfigClient) -> None:
@@ -524,6 +545,25 @@ def _create_chainlit_app(config: AppConfigClient, auth_state: AuthState | None =
 
         return handle_file_download(f"{target_container}/{file_path}")
 
+    @chainlit_app.get("/api/version-footer")
+    async def get_version_footer_data():
+        show_release_footer = config.get("SHOW_RELEASE_FOOTER", True, bool)
+        gpt_rag_release = config.get("RELEASE", "", str)
+        gpt_rag_ui_release = _read_local_ui_version()
+
+        payload = {
+            "show_release_footer": show_release_footer,
+            "gpt_rag_release": _format_release_value(
+                gpt_rag_release,
+                "gpt-rag release information is missing",
+            ),
+            "gpt_rag_ui_release": _format_release_value(
+                gpt_rag_ui_release,
+                "gpt-rag-ui release information is missing",
+            ),
+        }
+        return JSONResponse(payload)
+
     logger.debug("Registered download_blob_file route on blob_download_app")
 
     # Mount the blob download app BEFORE importing Chainlit handlers.
@@ -542,9 +582,9 @@ def _create_chainlit_app(config: AppConfigClient, auth_state: AuthState | None =
     # Provide friendly app metadata used by OpenAPI.
     chainlit_app.title = getattr(chainlit_app, "title", "GPT-RAG UI")
     try:
-        if os.path.exists("VERSION"):
-            with open("VERSION", "r", encoding="utf-8") as f:
-                chainlit_app.version = f.read().strip()
+        version = _read_local_ui_version()
+        if version:
+            chainlit_app.version = version
     except Exception:
         chainlit_app.version = getattr(chainlit_app, "version", "dev")
 
