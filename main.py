@@ -109,10 +109,15 @@ def _startup_banner() -> None:
         logger.info(line)
 
 
+def _local_version_file_path() -> str:
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "VERSION")
+
+
 def _read_local_ui_version() -> str | None:
     try:
-        if os.path.exists("VERSION"):
-            with open("VERSION", "r", encoding="utf-8") as f:
+        version_path = _local_version_file_path()
+        if os.path.exists(version_path):
+            with open(version_path, "r", encoding="utf-8") as f:
                 value = (f.read() or "").strip()
                 return value or None
     except Exception:
@@ -504,8 +509,9 @@ def _create_chainlit_app(config: AppConfigClient, auth_state: AuthState | None =
             headers={"Content-Disposition": f'attachment; filename="{actual_file_name}"'},
         )
 
-    # Create a separate FastAPI app for blob downloads that will be mounted.
+    # Create separate FastAPI sub-applications that will be mounted.
     blob_download_app = FastAPI()
+    metadata_app = FastAPI()
     logger.info("Created FastAPI sub-application for blob downloads")
 
     # One-time runtime auth-mode log (useful when operators attach to logs after startup).
@@ -545,10 +551,10 @@ def _create_chainlit_app(config: AppConfigClient, auth_state: AuthState | None =
 
         return handle_file_download(f"{target_container}/{file_path}")
 
-    @chainlit_app.get("/version-footer")
+    @metadata_app.get("/version-footer")
     async def get_version_footer_data():
         show_release_footer = config.get("SHOW_RELEASE_FOOTER", True, bool)
-        gpt_rag_release = config.get("RELEASE", "", str)
+        gpt_rag_release = (config.get("RELEASE", "", str) or os.environ.get("RELEASE", "")).strip()
         gpt_rag_ui_release = _read_local_ui_version()
 
         payload = {
@@ -568,6 +574,8 @@ def _create_chainlit_app(config: AppConfigClient, auth_state: AuthState | None =
 
     # Mount the blob download app BEFORE importing Chainlit handlers.
     try:
+        chainlit_app.mount("/_meta", metadata_app)
+        logger.info("Mounted metadata app at /_meta")
         chainlit_app.mount("/api/download", blob_download_app)
         logger.info("Mounted blob download app at /api/download")
         logger.debug("Chainlit routes post-mount: %s", [r.path for r in chainlit_app.routes])

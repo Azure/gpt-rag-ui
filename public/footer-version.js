@@ -18,11 +18,11 @@
 
   function renderTextNode(target, leftValue, rightValue) {
     target.replaceChildren(
-      createLabel("gpt-rag:"),
+      createLabel("GPT Rag version:"),
       document.createTextNode(" " + leftValue + " "),
       createDivider(),
       document.createTextNode(" "),
-      createLabel("gpt-rag-ui:"),
+      createLabel("GPT R UI version:"),
       document.createTextNode(" " + rightValue)
     );
   }
@@ -73,7 +73,7 @@
 
   async function loadVersionFooter() {
     try {
-      const response = await fetch("/version-footer", { cache: "no-store" });
+      const response = await fetch("/_meta/version-footer", { cache: "no-store" });
       if (!response.ok) {
         renderFooterText({
           gpt_rag_release: "gpt-rag release information is missing",

@@ -19,23 +19,23 @@ div.relative.hidden.bg-muted.lg\:block {
 }
 
 .has-version-footer {
-  padding-bottom: 34px;
+  padding-bottom: 0;
 }
 
 .version-footer {
   position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: 6px;
   z-index: 40;
-  border-top: 1px solid #d8dde5;
-  background: rgba(249, 250, 252, 0.92);
-  backdrop-filter: blur(4px);
+  background: transparent;
+  border: none;
+  pointer-events: none;
 }
 
 .version-footer-text {
   margin: 0;
-  padding: 8px 12px;
+  padding: 0;
   text-align: center;
   font-size: 12px;
   font-weight: 500;
@@ -57,11 +57,11 @@ div.relative.hidden.bg-muted.lg\:block {
 
 @media (max-width: 640px) {
   .has-version-footer {
-    padding-bottom: 40px;
+    padding-bottom: 0;
   }
 
   .version-footer-text {
     font-size: 11px;
-    padding: 8px;
+    padding: 0;
   }
 }
