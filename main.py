@@ -545,7 +545,7 @@ def _create_chainlit_app(config: AppConfigClient, auth_state: AuthState | None =
 
         return handle_file_download(f"{target_container}/{file_path}")
 
-    @chainlit_app.get("/api/version-footer")
+    @chainlit_app.get("/version-footer")
     async def get_version_footer_data():
         show_release_footer = config.get("SHOW_RELEASE_FOOTER", True, bool)
         gpt_rag_release = config.get("RELEASE", "", str)

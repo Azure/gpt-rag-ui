@@ -73,9 +73,21 @@
 
   async function loadVersionFooter() {
     try {
-      const response = await fetch("/api/version-footer", { cache: "no-store" });
+      const response = await fetch("/version-footer", { cache: "no-store" });
       if (!response.ok) {
-        removeFooter();
+        renderFooterText({
+          gpt_rag_release: "gpt-rag release information is missing",
+          gpt_rag_ui_release: "gpt-rag-ui release information is missing",
+        });
+        return;
+      }
+
+      const contentType = response.headers.get("content-type") || "";
+      if (!contentType.toLowerCase().includes("application/json")) {
+        renderFooterText({
+          gpt_rag_release: "gpt-rag release information is missing",
+          gpt_rag_ui_release: "gpt-rag-ui release information is missing",
+        });
         return;
       }
 
@@ -87,7 +99,10 @@
 
       renderFooterText(data);
     } catch (_error) {
-      removeFooter();
+      renderFooterText({
+        gpt_rag_release: "gpt-rag release information is missing",
+        gpt_rag_ui_release: "gpt-rag-ui release information is missing",
+      });
     }
   }
 
