@@ -73,7 +73,7 @@
 
   async function loadVersionFooter() {
     try {
-      const response = await fetch("/_meta/version-footer", { cache: "no-store" });
+      const response = await fetch("/api/download/version-footer", { cache: "no-store" });
       if (!response.ok) {
         renderFooterText({
           gpt_rag_release: "gpt-rag release information is missing",

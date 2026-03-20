@@ -509,9 +509,8 @@ def _create_chainlit_app(config: AppConfigClient, auth_state: AuthState | None =
             headers={"Content-Disposition": f'attachment; filename="{actual_file_name}"'},
         )
 
-    # Create separate FastAPI sub-applications that will be mounted.
+    # Create a separate FastAPI sub-application that will be mounted.
     blob_download_app = FastAPI()
-    metadata_app = FastAPI()
     logger.info("Created FastAPI sub-application for blob downloads")
 
     # One-time runtime auth-mode log (useful when operators attach to logs after startup).
@@ -535,23 +534,7 @@ def _create_chainlit_app(config: AppConfigClient, auth_state: AuthState | None =
             )
         return await call_next(request)
 
-    @blob_download_app.get("/{container_name}/{file_path:path}")
-    async def download_blob_file(container_name: str, file_path: str):
-        logger.info("Download request received: container=%s file=%s", container_name, file_path)
-        normalized = container_name.strip().strip("/")
-        target_container = None
-        if normalized == documents_container:
-            target_container = documents_container
-        elif normalized == images_container:
-            target_container = images_container
-
-        if not target_container:
-            logger.warning("Rejected download for unknown container '%s'", container_name)
-            return Response("Container not found", status_code=404, media_type="text/plain")
-
-        return handle_file_download(f"{target_container}/{file_path}")
-
-    @metadata_app.get("/version-footer")
+    @blob_download_app.get("/version-footer")
     async def get_version_footer_data():
         show_release_footer = config.get("SHOW_RELEASE_FOOTER", True, bool)
         gpt_rag_release = (config.get("RELEASE", "", str) or os.environ.get("RELEASE", "")).strip()
@@ -570,12 +553,26 @@ def _create_chainlit_app(config: AppConfigClient, auth_state: AuthState | None =
         }
         return JSONResponse(payload)
 
+    @blob_download_app.get("/{container_name}/{file_path:path}")
+    async def download_blob_file(container_name: str, file_path: str):
+        logger.info("Download request received: container=%s file=%s", container_name, file_path)
+        normalized = container_name.strip().strip("/")
+        target_container = None
+        if normalized == documents_container:
+            target_container = documents_container
+        elif normalized == images_container:
+            target_container = images_container
+
+        if not target_container:
+            logger.warning("Rejected download for unknown container '%s'", container_name)
+            return Response("Container not found", status_code=404, media_type="text/plain")
+
+        return handle_file_download(f"{target_container}/{file_path}")
+
     logger.debug("Registered download_blob_file route on blob_download_app")
 
     # Mount the blob download app BEFORE importing Chainlit handlers.
     try:
-        chainlit_app.mount("/_meta", metadata_app)
-        logger.info("Mounted metadata app at /_meta")
         chainlit_app.mount("/api/download", blob_download_app)
         logger.info("Mounted blob download app at /api/download")
         logger.debug("Chainlit routes post-mount: %s", [r.path for r in chainlit_app.routes])
