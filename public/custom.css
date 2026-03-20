@@ -27,7 +27,7 @@ div.relative.hidden.bg-muted.lg\:block {
   left: 50%;
   transform: translateX(-50%);
   bottom: 6px;
-  z-index: 40;
+  z-index: 20;
   background: transparent;
   border: none;
   pointer-events: none;
@@ -40,11 +40,11 @@ div.relative.hidden.bg-muted.lg\:block {
   font-size: 12px;
   font-weight: 500;
   letter-spacing: 0.02em;
-  color: #7b8593;
+  color: #b7bfcb;
 }
 
 .version-label {
-  color: #6a7380;
+  color: #adb6c2;
 }
 
 .version-divider {
@@ -52,7 +52,7 @@ div.relative.hidden.bg-muted.lg\:block {
   width: 1px;
   height: 11px;
   margin: 0 10px -1px;
-  background-color: #c5ccd6;
+  background-color: #d9dfe7;
 }
 
 @media (max-width: 640px) {

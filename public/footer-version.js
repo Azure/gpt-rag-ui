@@ -1,6 +1,31 @@
 (function versionFooterBootstrap() {
   const FOOTER_ID = "gpt-rag-version-footer";
   const FOOTER_TEXT_ID = "gpt-rag-version-footer-text";
+  const COMPOSER_OFFSET_PX = 18;
+
+  function getComposerForm() {
+    const textarea = document.querySelector("textarea[placeholder]");
+    if (!textarea) {
+      return null;
+    }
+    return textarea.closest("form");
+  }
+
+  function applyComposerOffset() {
+    const composerForm = getComposerForm();
+    if (!composerForm) {
+      return;
+    }
+    composerForm.style.marginBottom = COMPOSER_OFFSET_PX + "px";
+  }
+
+  function clearComposerOffset() {
+    const composerForm = getComposerForm();
+    if (!composerForm) {
+      return;
+    }
+    composerForm.style.marginBottom = "";
+  }
 
   function createLabel(text) {
     const label = document.createElement("span");
@@ -45,6 +70,7 @@
     footer.appendChild(text);
     document.body.appendChild(footer);
     document.body.classList.add("has-version-footer");
+    applyComposerOffset();
 
     return footer;
   }
@@ -55,6 +81,7 @@
       footer.remove();
     }
     document.body.classList.remove("has-version-footer");
+    clearComposerOffset();
   }
 
   function renderFooterText(data) {
@@ -108,6 +135,12 @@
 
   function boot() {
     loadVersionFooter();
+    const observer = new MutationObserver(() => {
+      if (document.getElementById(FOOTER_ID)) {
+        applyComposerOffset();
+      }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
   }
 
   if (document.readyState === "loading") {
