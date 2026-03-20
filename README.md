@@ -102,7 +102,7 @@ The UI can show release versions in a subtle footer at the bottom of the page.
 
 Display format:
 
-`GPT Rag version: vX.Y.Z | GPT R UI version: vA.B.C`
+`gpt-rag vX.Y.Z | gpt-rag-ui vA.B.C`
 
 Behavior:
 

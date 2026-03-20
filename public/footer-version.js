@@ -18,11 +18,11 @@
 
   function renderTextNode(target, leftValue, rightValue) {
     target.replaceChildren(
-      createLabel("GPT Rag version:"),
+      createLabel("gpt-rag"),
       document.createTextNode(" " + leftValue + " "),
       createDivider(),
       document.createTextNode(" "),
-      createLabel("GPT R UI version:"),
+      createLabel("gpt-rag-ui"),
       document.createTextNode(" " + rightValue)
     );
   }
