@@ -108,7 +108,7 @@ Behavior:
 
 - If a value does not start with `v`, the prefix is added automatically.
 - If one value is missing, the footer shows an English fallback message for that side.
-- The frontend fetches release data from `/api/download/version-footer`.
+- The frontend fetches release data from `/version-footer`.
 
 ## Found an Issue?
 
