@@ -92,6 +92,23 @@ cd gpt-rag-ui
 - Customize layout with `public/custom.css`
 - Adjust app behavior in `.chainlit/config.toml`
 
+### Release footer
+
+The UI can show release versions in a subtle footer at the bottom of the page.
+
+- `SHOW_RELEASE_FOOTER` (boolean, default `true`): enables or disables footer display.
+- `RELEASE` (string): GPT-RAG release value from App Configuration.
+- `VERSION` file: GPT-RAG UI release value (local file in this repository).
+
+Display format:
+
+`gpt-rag: vX.Y.Z | gpt-rag-ui: vA.B.C`
+
+Behavior:
+
+- If a value does not start with `v`, the prefix is added automatically.
+- If one value is missing, the footer shows an English fallback message for that side.
+
 ## Found an Issue?
 
 Encountered an error or bug? Help us improve the quality of this accelerator by reporting issues or suggesting enhancements on our [GitHub Issues page](https://github.com/Azure/GPT-RAG/issues). Your feedback helps make GPT-RAG better for everyone!
