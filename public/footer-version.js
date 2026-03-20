@@ -1,7 +1,7 @@
 (function versionFooterBootstrap() {
   const FOOTER_ID = "gpt-rag-version-footer";
   const FOOTER_TEXT_ID = "gpt-rag-version-footer-text";
-  const COMPOSER_OFFSET_PX = 18;
+  const FOOTER_GAP_PX = 8;
 
   function getComposerForm() {
     const textarea = document.querySelector("textarea[placeholder]");
@@ -11,20 +11,21 @@
     return textarea.closest("form");
   }
 
-  function applyComposerOffset() {
-    const composerForm = getComposerForm();
-    if (!composerForm) {
+  function positionFooter() {
+    const footer = document.getElementById(FOOTER_ID);
+    if (!footer) {
       return;
     }
-    composerForm.style.marginBottom = COMPOSER_OFFSET_PX + "px";
-  }
 
-  function clearComposerOffset() {
     const composerForm = getComposerForm();
     if (!composerForm) {
+      footer.style.bottom = "6px";
       return;
     }
-    composerForm.style.marginBottom = "";
+
+    const rect = composerForm.getBoundingClientRect();
+    const spaceBelowComposer = Math.max(0, window.innerHeight - rect.bottom);
+    footer.style.bottom = `${spaceBelowComposer + FOOTER_GAP_PX}px`;
   }
 
   function createLabel(text) {
@@ -70,7 +71,7 @@
     footer.appendChild(text);
     document.body.appendChild(footer);
     document.body.classList.add("has-version-footer");
-    applyComposerOffset();
+    positionFooter();
 
     return footer;
   }
@@ -81,7 +82,6 @@
       footer.remove();
     }
     document.body.classList.remove("has-version-footer");
-    clearComposerOffset();
   }
 
   function renderFooterText(data) {
@@ -135,12 +135,20 @@
 
   function boot() {
     loadVersionFooter();
-    const observer = new MutationObserver(() => {
+
+    const reposition = () => {
       if (document.getElementById(FOOTER_ID)) {
-        applyComposerOffset();
+        positionFooter();
       }
+    };
+
+    const observer = new MutationObserver(() => {
+      reposition();
     });
+
     observer.observe(document.body, { childList: true, subtree: true });
+    window.addEventListener("resize", reposition);
+    setInterval(reposition, 1000);
   }
 
   if (document.readyState === "loading") {
