@@ -31,6 +31,7 @@ div.relative.hidden.bg-muted.lg\:block {
   background: transparent;
   border: none;
   pointer-events: none;
+  transition: top 0.15s ease;
 }
 
 .version-footer-text {

@@ -20,12 +20,20 @@
     const composerForm = getComposerForm();
     if (!composerForm) {
       footer.style.bottom = "6px";
+      footer.style.top = "auto";
       return;
     }
 
     const rect = composerForm.getBoundingClientRect();
-    const spaceBelowComposer = Math.max(0, window.innerHeight - rect.bottom);
-    footer.style.bottom = `${spaceBelowComposer + FOOTER_GAP_PX}px`;
+    const topPosition = rect.bottom + FOOTER_GAP_PX;
+
+    if (topPosition + footer.offsetHeight > window.innerHeight) {
+      footer.style.display = "none";
+    } else {
+      footer.style.display = "";
+      footer.style.top = topPosition + "px";
+      footer.style.bottom = "auto";
+    }
   }
 
   function createLabel(text) {
