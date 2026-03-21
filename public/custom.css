@@ -18,20 +18,15 @@ div.relative.hidden.bg-muted.lg\:block {
   display: none !important;
 }
 
-.has-version-footer {
-  padding-bottom: 0;
-}
-
 .version-footer {
   position: fixed;
   left: 50%;
   transform: translateX(-50%);
-  bottom: 6px;
+  bottom: 4px;
   z-index: 20;
   background: transparent;
   border: none;
   pointer-events: none;
-  transition: top 0.15s ease;
 }
 
 .version-footer-text {
@@ -57,12 +52,7 @@ div.relative.hidden.bg-muted.lg\:block {
 }
 
 @media (max-width: 640px) {
-  .has-version-footer {
-    padding-bottom: 0;
-  }
-
   .version-footer-text {
     font-size: 11px;
-    padding: 0;
   }
 }

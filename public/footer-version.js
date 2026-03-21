@@ -1,50 +1,71 @@
 (function versionFooterBootstrap() {
-  const FOOTER_ID = "gpt-rag-version-footer";
-  const FOOTER_TEXT_ID = "gpt-rag-version-footer-text";
-  const FOOTER_GAP_PX = 8;
+  var FOOTER_ID = "gpt-rag-version-footer";
+  var FOOTER_TEXT_ID = "gpt-rag-version-footer-text";
+  var RESERVE_PX = 28;
 
-  function getComposerForm() {
-    const textarea = document.querySelector("textarea[placeholder]");
-    if (!textarea) {
-      return null;
+  var cachedData = null;
+  var footerEnabled = false;
+  var wrapperCache = null;
+
+  /* ── Find the compositor wrapper ─────────────────── */
+
+  /**
+   * Walk up from #chat-input to find the compositor wrapper div.
+   * The wrapper is a flex child of the main page flex column,
+   * next to the scroll area sibling (which has flex-grow).
+   * Adding margin-bottom to this element pushes the compositor up,
+   * creating space for the fixed footer at the viewport bottom.
+   */
+  function findCompositorWrapper() {
+    var input = document.getElementById("chat-input");
+    if (!input) return null;
+
+    var candidate = null;
+    var el = input;
+    for (var i = 0; i < 8 && el && el.parentElement; i++) {
+      el = el.parentElement;
+      var parent = el.parentElement;
+      if (!parent || parent === document.body) continue;
+
+      var ps = getComputedStyle(parent);
+      if (ps.display !== "flex" || ps.flexDirection !== "column") continue;
+
+      for (var j = 0; j < parent.children.length; j++) {
+        var sibling = parent.children[j];
+        if (sibling !== el && getComputedStyle(sibling).flexGrow !== "0") {
+          candidate = el;
+          break;
+        }
+      }
     }
-    return textarea.closest("form");
+    return candidate;
   }
 
-  function positionFooter() {
-    const footer = document.getElementById(FOOTER_ID);
-    if (!footer) {
-      return;
-    }
+  function getWrapper() {
+    if (wrapperCache && wrapperCache.isConnected) return wrapperCache;
+    wrapperCache = findCompositorWrapper();
+    return wrapperCache;
+  }
 
-    const composerForm = getComposerForm();
-    if (!composerForm) {
-      footer.style.bottom = "6px";
-      footer.style.top = "auto";
-      return;
-    }
-
-    const rect = composerForm.getBoundingClientRect();
-    const topPosition = rect.bottom + FOOTER_GAP_PX;
-
-    if (topPosition + footer.offsetHeight > window.innerHeight) {
-      footer.style.display = "none";
-    } else {
-      footer.style.display = "";
-      footer.style.top = topPosition + "px";
-      footer.style.bottom = "auto";
+  function ensureSpacing() {
+    var w = getWrapper();
+    if (!w) return;
+    if (w.style.marginBottom !== RESERVE_PX + "px") {
+      w.style.marginBottom = RESERVE_PX + "px";
     }
   }
+
+  /* ── Footer element helpers ──────────────────────── */
 
   function createLabel(text) {
-    const label = document.createElement("span");
+    var label = document.createElement("span");
     label.className = "version-label";
     label.textContent = text;
     return label;
   }
 
   function createDivider() {
-    const divider = document.createElement("span");
+    var divider = document.createElement("span");
     divider.className = "version-divider";
     divider.setAttribute("aria-hidden", "true");
     return divider;
@@ -62,101 +83,101 @@
   }
 
   function ensureFooter() {
-    let footer = document.getElementById(FOOTER_ID);
-    if (footer) {
-      return footer;
-    }
+    var footer = document.getElementById(FOOTER_ID);
+    if (footer) return footer;
 
     footer = document.createElement("div");
     footer.id = FOOTER_ID;
     footer.className = "version-footer";
 
-    const text = document.createElement("p");
+    var text = document.createElement("p");
     text.id = FOOTER_TEXT_ID;
     text.className = "version-footer-text";
-    renderTextNode(text, "loading", "loading");
-
     footer.appendChild(text);
-    document.body.appendChild(footer);
-    document.body.classList.add("has-version-footer");
-    positionFooter();
 
+    document.body.appendChild(footer);
     return footer;
   }
 
   function removeFooter() {
-    const footer = document.getElementById(FOOTER_ID);
-    if (footer) {
-      footer.remove();
-    }
-    document.body.classList.remove("has-version-footer");
+    var el = document.getElementById(FOOTER_ID);
+    if (el) el.remove();
   }
 
-  function renderFooterText(data) {
-    const footer = ensureFooter();
-    const text = footer.querySelector("#" + FOOTER_TEXT_ID);
-    if (!text) {
-      return;
-    }
+  function renderFooterContent() {
+    if (!footerEnabled || !cachedData) return;
+    var footer = ensureFooter();
+    var text = footer.querySelector("#" + FOOTER_TEXT_ID);
+    if (!text) return;
 
     renderTextNode(
       text,
-      data.gpt_rag_release || "gpt-rag release information is missing",
-      data.gpt_rag_ui_release || "gpt-rag-ui release information is missing"
+      cachedData.gpt_rag_release || "gpt-rag release information is missing",
+      cachedData.gpt_rag_ui_release || "gpt-rag-ui release information is missing"
     );
+    ensureSpacing();
   }
 
+  /* ── Fetch version data ──────────────────────────── */
+
   async function loadVersionFooter() {
+    var fallback = {
+      gpt_rag_release: "gpt-rag release information is missing",
+      gpt_rag_ui_release: "gpt-rag-ui release information is missing",
+    };
+
     try {
-      const response = await fetch("/version-footer", { cache: "no-store" });
+      var response = await fetch("/version-footer", { cache: "no-store" });
       if (!response.ok) {
-        renderFooterText({
-          gpt_rag_release: "gpt-rag release information is missing",
-          gpt_rag_ui_release: "gpt-rag-ui release information is missing",
-        });
+        cachedData = fallback;
+        footerEnabled = true;
+        renderFooterContent();
         return;
       }
 
-      const contentType = response.headers.get("content-type") || "";
+      var contentType = response.headers.get("content-type") || "";
       if (!contentType.toLowerCase().includes("application/json")) {
-        renderFooterText({
-          gpt_rag_release: "gpt-rag release information is missing",
-          gpt_rag_ui_release: "gpt-rag-ui release information is missing",
-        });
+        cachedData = fallback;
+        footerEnabled = true;
+        renderFooterContent();
         return;
       }
 
-      const data = await response.json();
+      var data = await response.json();
       if (!data || data.show_release_footer === false) {
+        footerEnabled = false;
         removeFooter();
         return;
       }
 
-      renderFooterText(data);
+      cachedData = data;
+      footerEnabled = true;
+      renderFooterContent();
     } catch (_error) {
-      renderFooterText({
-        gpt_rag_release: "gpt-rag release information is missing",
-        gpt_rag_ui_release: "gpt-rag-ui release information is missing",
-      });
+      cachedData = fallback;
+      footerEnabled = true;
+      renderFooterContent();
     }
   }
+
+  /* ── Boot ─────────────────────────────────────────── */
 
   function boot() {
     loadVersionFooter();
 
-    const reposition = () => {
-      if (document.getElementById(FOOTER_ID)) {
-        positionFooter();
-      }
+    var rafId = null;
+    var scheduleSync = function () {
+      if (rafId) return;
+      rafId = requestAnimationFrame(function () {
+        rafId = null;
+        if (!footerEnabled) return;
+        ensureSpacing();
+      });
     };
 
-    const observer = new MutationObserver(() => {
-      reposition();
-    });
-
+    var observer = new MutationObserver(scheduleSync);
     observer.observe(document.body, { childList: true, subtree: true });
-    window.addEventListener("resize", reposition);
-    setInterval(reposition, 1000);
+    window.addEventListener("resize", scheduleSync);
   }
 
   if (document.readyState === "loading") {
