@@ -102,12 +102,13 @@ The UI can show release versions in a subtle footer at the bottom of the page.
 
 Display format:
 
-`gpt-rag: vX.Y.Z | gpt-rag-ui: vA.B.C`
+`gpt-rag vX.Y.Z | gpt-rag-ui vA.B.C`
 
 Behavior:
 
 - If a value does not start with `v`, the prefix is added automatically.
 - If one value is missing, the footer shows an English fallback message for that side.
+- The frontend fetches release data from `/version-footer`.
 
 ## Found an Issue?
 

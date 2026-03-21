@@ -109,10 +109,15 @@ def _startup_banner() -> None:
         logger.info(line)
 
 
+def _local_version_file_path() -> str:
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "VERSION")
+
+
 def _read_local_ui_version() -> str | None:
     try:
-        if os.path.exists("VERSION"):
-            with open("VERSION", "r", encoding="utf-8") as f:
+        version_path = _local_version_file_path()
+        if os.path.exists(version_path):
+            with open(version_path, "r", encoding="utf-8") as f:
                 value = (f.read() or "").strip()
                 return value or None
     except Exception:
@@ -504,7 +509,7 @@ def _create_chainlit_app(config: AppConfigClient, auth_state: AuthState | None =
             headers={"Content-Disposition": f'attachment; filename="{actual_file_name}"'},
         )
 
-    # Create a separate FastAPI app for blob downloads that will be mounted.
+    # Create a separate FastAPI sub-application that will be mounted.
     blob_download_app = FastAPI()
     logger.info("Created FastAPI sub-application for blob downloads")
 
@@ -545,35 +550,7 @@ def _create_chainlit_app(config: AppConfigClient, auth_state: AuthState | None =
 
         return handle_file_download(f"{target_container}/{file_path}")
 
-    @chainlit_app.get("/api/version-footer")
-    async def get_version_footer_data():
-        show_release_footer = config.get("SHOW_RELEASE_FOOTER", True, bool)
-        gpt_rag_release = config.get("RELEASE", "", str)
-        gpt_rag_ui_release = _read_local_ui_version()
-
-        payload = {
-            "show_release_footer": show_release_footer,
-            "gpt_rag_release": _format_release_value(
-                gpt_rag_release,
-                "gpt-rag release information is missing",
-            ),
-            "gpt_rag_ui_release": _format_release_value(
-                gpt_rag_ui_release,
-                "gpt-rag-ui release information is missing",
-            ),
-        }
-        return JSONResponse(payload)
-
     logger.debug("Registered download_blob_file route on blob_download_app")
-
-    # Mount the blob download app BEFORE importing Chainlit handlers.
-    try:
-        chainlit_app.mount("/api/download", blob_download_app)
-        logger.info("Mounted blob download app at /api/download")
-        logger.debug("Chainlit routes post-mount: %s", [r.path for r in chainlit_app.routes])
-    except Exception:
-        logger.exception("Failed to mount blob_download_app")
-        raise
 
     # Import Chainlit event handlers.
     import app as chainlit_handlers  # noqa: F401
@@ -610,9 +587,36 @@ def _create_chainlit_app(config: AppConfigClient, auth_state: AuthState | None =
 
     chainlit_app.openapi = _safe_openapi
 
-    FastAPIInstrumentor.instrument_app(chainlit_app)
+    host_app = FastAPI(title="GPT-RAG UI host")
+
+    @host_app.get("/version-footer")
+    async def get_version_footer_data():
+        show_release_footer = config.get("SHOW_RELEASE_FOOTER", True, bool)
+        gpt_rag_release = (config.get("RELEASE", "", str) or os.environ.get("RELEASE", "")).strip()
+        gpt_rag_ui_release = _read_local_ui_version()
+
+        payload = {
+            "show_release_footer": show_release_footer,
+            "gpt_rag_release": _format_release_value(
+                gpt_rag_release,
+                "gpt-rag release information is missing",
+            ),
+            "gpt_rag_ui_release": _format_release_value(
+                gpt_rag_ui_release,
+                "gpt-rag-ui release information is missing",
+            ),
+        }
+        return JSONResponse(payload)
+
+    host_app.mount("/api/download", blob_download_app)
+    host_app.mount("/", chainlit_app)
+
+    logger.info("Mounted blob download app at /api/download on host app")
+    logger.info("Mounted Chainlit app at / on host app")
+
+    FastAPIInstrumentor.instrument_app(host_app)
     HTTPXClientInstrumentor().instrument()
-    return chainlit_app
+    return host_app
 
 
 def build_app() -> FastAPI:
