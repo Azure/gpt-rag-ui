@@ -5,6 +5,8 @@ This format follows [Keep a Changelog](https://keepachangelog.com/) and adheres 
 
 ## [Unreleased]
 
+## [v2.2.3] – 2026-03-24
+
 ### Added
 - **Release Footer**: Added a configurable release footer that displays GPT-RAG and GPT-RAG UI version numbers at the bottom of the chat interface. The footer fetches version data from a new `/version-footer` endpoint and is controlled by the `SHOW_RELEASE_FOOTER` App Configuration setting (default `true`). Missing version values display a descriptive fallback message, and non-prefixed values receive an automatic `v` prefix.
 - **Version Footer JavaScript Module**: Introduced `public/footer-version.js`, a self-contained script that creates, positions, and updates the footer element, including layout-aware spacing to prevent overlap with the Chainlit composer input area.
