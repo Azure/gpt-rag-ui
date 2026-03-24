@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.  
 This format follows [Keep a Changelog](https://keepachangelog.com/) and adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **Release Footer**: Added a configurable release footer that displays GPT-RAG and GPT-RAG UI version numbers at the bottom of the chat interface. The footer fetches version data from a new `/version-footer` endpoint and is controlled by the `SHOW_RELEASE_FOOTER` App Configuration setting (default `true`). Missing version values display a descriptive fallback message, and non-prefixed values receive an automatic `v` prefix.
+- **Version Footer JavaScript Module**: Introduced `public/footer-version.js`, a self-contained script that creates, positions, and updates the footer element, including layout-aware spacing to prevent overlap with the Chainlit composer input area.
+- **Version Footer CSS Styles**: Added footer styling in `public/custom.css` with fixed positioning, responsive font sizing for mobile, and visually subtle divider between the two version labels.
+
+### Changed
+- **Application Architecture Refactor**: Restructured `main.py` to use a host `FastAPI` app that mounts both the Chainlit app (`/`) and the blob download sub-app (`/api/download`), enabling top-level routes like `/version-footer` that are independent of the Chainlit middleware stack.
+- **VERSION File Reading**: Consolidated duplicated VERSION file reading logic into reusable `_read_local_ui_version()` and `_local_version_file_path()` helpers, eliminating code duplication and improving error handling.
+
 ## [v2.2.2] – 2026-03-01
 ### Added
 - Integrated **Low Latency Streaming** compatibility with MAF V2 Orchestrator. The UI now implements native `fetch` with `Transfer-Encoding: chunked`.
