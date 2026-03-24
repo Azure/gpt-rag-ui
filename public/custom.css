@@ -17,3 +17,42 @@ img[src*="favicon"] {
 div.relative.hidden.bg-muted.lg\:block {
   display: none !important;
 }
+
+.version-footer {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: 4px;
+  z-index: 20;
+  background: transparent;
+  border: none;
+  pointer-events: none;
+}
+
+.version-footer-text {
+  margin: 0;
+  padding: 0;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: #b7bfcb;
+}
+
+.version-label {
+  color: #adb6c2;
+}
+
+.version-divider {
+  display: inline-block;
+  width: 1px;
+  height: 11px;
+  margin: 0 10px -1px;
+  background-color: #d9dfe7;
+}
+
+@media (max-width: 640px) {
+  .version-footer-text {
+    font-size: 11px;
+  }
+}
