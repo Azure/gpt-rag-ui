@@ -5,6 +5,8 @@ This format follows [Keep a Changelog](https://keepachangelog.com/) and adheres 
 
 ## [Unreleased]
 
+## [v2.3.0] – 2026-03-31
+
 ### Added
 - **Conversation History**: Implemented full conversation history support allowing users to list, resume, and delete past conversations. Introduced `datalayer.py` with a Chainlit `BaseDataLayer` backed by the orchestrator API, enabling persistent thread management without direct database access.
 - **Conversation Resume with Markdown Links**: Source reference links (e.g., `[document](file.pdf)`) are now correctly rendered when resuming past conversations. The `replace_source_reference_links()` transform is applied in `_messages_to_steps()` within the data layer so that Chainlit's native thread resume renders clickable SAS-URL links.
