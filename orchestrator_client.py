@@ -532,7 +532,16 @@ async def call_orchestrator_list_conversations(
                     response.status_code, url, snippet,
                 )
                 return {"conversations": [], "has_more": False, "skip": skip, "limit": limit}
-            return response.json()
+            data = response.json()
+            logger.info(
+                "List conversations response: status=%s conversations_count=%s has_more=%s",
+                response.status_code,
+                len(data.get("conversations", [])),
+                data.get("has_more"),
+            )
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug("List conversations raw response: %s", _sanitize_for_log(data))
+            return data
     except Exception:
         logger.exception("Failed to list conversations: url=%s", url)
         return {"conversations": [], "has_more": False, "skip": skip, "limit": limit}

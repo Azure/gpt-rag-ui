@@ -41,12 +41,29 @@ def _get_current_timestamp() -> str:
 
 def _get_session_metadata() -> Optional[dict]:
     """Safely retrieve user metadata from the current Chainlit session context."""
+    # Primary: Chainlit internal context
     try:
         from chainlit.context import context
         if context and context.session and context.session.user:
-            return context.session.user.metadata
-    except Exception:
-        pass
+            metadata = context.session.user.metadata
+            if metadata:
+                logger.debug("_get_session_metadata: found via context.session.user (keys=%s)", sorted(metadata.keys()))
+                return metadata
+            else:
+                logger.debug("_get_session_metadata: context.session.user exists but metadata is empty")
+    except Exception as e:
+        logger.debug("_get_session_metadata: context.session.user not available: %s", e)
+
+    # Secondary: cl.user_session (different API, may work in different contexts)
+    try:
+        user = cl.user_session.get("user")
+        if user and hasattr(user, "metadata") and user.metadata:
+            logger.debug("_get_session_metadata: found via cl.user_session (keys=%s)", sorted(user.metadata.keys()))
+            return user.metadata
+    except Exception as e:
+        logger.debug("_get_session_metadata: cl.user_session not available: %s", e)
+
+    logger.warning("_get_session_metadata: no metadata found via any source")
     return None
 
 
@@ -97,6 +114,8 @@ class OrchestratorDataLayer(BaseDataLayer):
             pageInfo=PageInfo(hasNextPage=False, startCursor=None, endCursor=None),
         )
 
+        logger.info("list_threads called: pagination=%s filters=%s", pagination, filters)
+
         metadata = _get_session_metadata()
         if not metadata:
             # Fallback: try in-memory user store
@@ -108,6 +127,12 @@ class OrchestratorDataLayer(BaseDataLayer):
                 return empty
 
         access_token = metadata.get("access_token")
+        logger.info(
+            "list_threads: metadata found (has_access_token=%s, user_name=%s, principal_id=%s)",
+            bool(access_token),
+            metadata.get("user_name"),
+            metadata.get("principal_id") or metadata.get("client_principal_id"),
+        )
         if not access_token:
             logger.warning("list_threads: no access_token in session metadata; returning empty (user may not be authenticated)")
             return empty
@@ -141,7 +166,9 @@ class OrchestratorDataLayer(BaseDataLayer):
                     createdAt=conv.get("lastUpdated"),
                     userId=metadata.get("principal_id", ""),
                     userIdentifier=metadata.get("user_name", ""),
+                    tags=[],
                     metadata={},
+                    steps=[],
                 )
             )
 
