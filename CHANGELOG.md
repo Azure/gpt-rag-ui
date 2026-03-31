@@ -3,7 +3,7 @@
 All notable changes to this project will be documented in this file.  
 This format follows [Keep a Changelog](https://keepachangelog.com/) and adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [v2.3.0] – 2026-03-31
 
 ### Added
 - **Conversation History**: Implemented full conversation history support allowing users to list, resume, and delete past conversations. Introduced `datalayer.py` with a Chainlit `BaseDataLayer` backed by the orchestrator API, enabling persistent thread management without direct database access.
@@ -22,6 +22,8 @@ This format follows [Keep a Changelog](https://keepachangelog.com/) and adheres 
 
 ### Fixed
 - **Thread Resume Authorization**: Fixed "Authorization for the thread failed" errors when resuming conversations by sourcing `userIdentifier` from session metadata (`metadata.get("user_name")`) instead of the orchestrator conversation document, ensuring it matches Chainlit's internal auth check.
+
+## [v2.2.3] – 2026-03-24
 
 ## [v2.2.2] – 2026-03-01
 ### Added
