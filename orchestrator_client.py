@@ -194,6 +194,26 @@ def _build_orchestrator_url() -> tuple[str, dict]:
     return url, {"mode": "dapr", "base_url": None, "dapr_port": str(dapr_port), "app_id": orchestrator_app_id}
 
 
+def _build_orchestrator_service_url(path: str) -> tuple[str, dict]:
+    """Return (url, context) for a non-/orchestrator endpoint (e.g. /conversations).
+
+    Unlike _build_orchestrator_url which always appends '/orchestrator',
+    this builds URLs for arbitrary service paths at the root of the orchestrator service.
+    """
+    orchestrator_app_id = "orchestrator"
+    base_url = _get_orchestrator_base_url()
+    path = path.lstrip("/")
+    if base_url:
+        # Strip trailing /orchestrator if present to get the service root.
+        root = base_url.removesuffix("/orchestrator").rstrip("/")
+        url = f"{root}/{path}"
+        return url, {"mode": "direct", "base_url": base_url, "dapr_port": None, "app_id": orchestrator_app_id}
+
+    dapr_port = _get_config_value("DAPR_HTTP_PORT", default="3500")
+    url = f"http://127.0.0.1:{dapr_port}/v1.0/invoke/{orchestrator_app_id}/method/{path}"
+    return url, {"mode": "dapr", "base_url": None, "dapr_port": str(dapr_port), "app_id": orchestrator_app_id}
+
+
 def _headers_summary(headers: dict) -> dict:
     # Never log secrets. Only presence flags.
     return {
@@ -461,3 +481,121 @@ async def call_orchestrator_for_feedback(
             target_context.get("mode"),
         )
         raise RuntimeError(f"Orchestrator HTTP error. url={url} error={e}") from e
+
+
+def _build_conversation_headers(access_token: Optional[str] = None) -> dict:
+    """Build common headers for conversation history API calls."""
+    headers = {"Content-Type": "application/json"}
+
+    dapr_token = _get_dapr_api_token()
+    if dapr_token:
+        headers["dapr-api-token"] = dapr_token
+
+    api_key = _get_config_value("ORCHESTRATOR_APP_APIKEY", default=os.getenv("ORCHESTRATOR_APP_APIKEY", ""))
+    if api_key:
+        headers["X-API-KEY"] = api_key
+
+    if access_token:
+        headers["Authorization"] = f"Bearer {access_token}"
+
+    return headers
+
+
+async def call_orchestrator_list_conversations(
+    access_token: str,
+    skip: int = 0,
+    limit: int = 10,
+    name: Optional[str] = None,
+) -> dict:
+    """List conversations for the authenticated user via GET /conversations."""
+    url, target_context = _build_orchestrator_service_url("conversations")
+    headers = _build_conversation_headers(access_token)
+
+    params = {"skip": skip, "limit": limit}
+    if name:
+        params["name"] = name
+
+    logger.info(
+        "Listing conversations: mode=%s url=%s skip=%s limit=%s",
+        target_context.get("mode"), url, skip, limit,
+    )
+
+    timeout = httpx.Timeout(connect=10.0, read=30.0, write=30.0, pool=10.0)
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.get(url, params=params, headers=headers)
+            if response.status_code >= 400:
+                body_text = response.text
+                snippet = (body_text[:2000] + "...") if len(body_text) > 2000 else body_text
+                logger.error(
+                    "List conversations failed (HTTP %s): url=%s details=%s",
+                    response.status_code, url, snippet,
+                )
+                return {"conversations": [], "has_more": False, "skip": skip, "limit": limit}
+            return response.json()
+    except Exception:
+        logger.exception("Failed to list conversations: url=%s", url)
+        return {"conversations": [], "has_more": False, "skip": skip, "limit": limit}
+
+
+async def call_orchestrator_get_conversation(
+    access_token: str,
+    conversation_id: str,
+) -> Optional[dict]:
+    """Get a single conversation with messages via GET /conversations/{id}."""
+    url, target_context = _build_orchestrator_service_url(f"conversations/{conversation_id}")
+    headers = _build_conversation_headers(access_token)
+
+    logger.info(
+        "Getting conversation: mode=%s url=%s conversation_id=%s",
+        target_context.get("mode"), url, conversation_id,
+    )
+
+    timeout = httpx.Timeout(connect=10.0, read=30.0, write=30.0, pool=10.0)
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.get(url, headers=headers)
+            if response.status_code >= 400:
+                body_text = response.text
+                snippet = (body_text[:2000] + "...") if len(body_text) > 2000 else body_text
+                logger.error(
+                    "Get conversation failed (HTTP %s): url=%s conversation_id=%s details=%s",
+                    response.status_code, url, conversation_id, snippet,
+                )
+                return None
+            return response.json()
+    except Exception:
+        logger.exception("Failed to get conversation: url=%s conversation_id=%s", url, conversation_id)
+        return None
+
+
+async def call_orchestrator_delete_conversation(
+    access_token: str,
+    conversation_id: str,
+) -> bool:
+    """Delete a conversation via DELETE /conversations/{id}."""
+    url, target_context = _build_orchestrator_service_url(f"conversations/{conversation_id}")
+    headers = _build_conversation_headers(access_token)
+
+    logger.info(
+        "Deleting conversation: mode=%s url=%s conversation_id=%s",
+        target_context.get("mode"), url, conversation_id,
+    )
+
+    timeout = httpx.Timeout(connect=10.0, read=30.0, write=30.0, pool=10.0)
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.delete(url, headers=headers)
+            if response.status_code >= 400:
+                body_text = response.text
+                snippet = (body_text[:2000] + "...") if len(body_text) > 2000 else body_text
+                logger.error(
+                    "Delete conversation failed (HTTP %s): url=%s conversation_id=%s details=%s",
+                    response.status_code, url, conversation_id, snippet,
+                )
+                return False
+            logger.info("Conversation deleted successfully: conversation_id=%s", conversation_id)
+            return True
+    except Exception:
+        logger.exception("Failed to delete conversation: url=%s conversation_id=%s", url, conversation_id)
+        return False
