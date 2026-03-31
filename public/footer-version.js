@@ -160,10 +160,49 @@
     }
   }
 
+  /* ── Suppress auth error toasts on logout / deploy ── */
+
+  var AUTH_ERROR_PATTERNS = [
+    "invalid authentication token",
+    "authentication failed",
+    "could not reach the server",
+  ];
+
+  function isAuthErrorToast(node) {
+    if (node.nodeType !== 1) return false;
+    var text = (node.textContent || "").toLowerCase();
+    return AUTH_ERROR_PATTERNS.some(function (p) { return text.indexOf(p) !== -1; });
+  }
+
+  function suppressAuthErrorToasts() {
+    var toastObserver = new MutationObserver(function (mutations) {
+      mutations.forEach(function (m) {
+        m.addedNodes.forEach(function (node) {
+          if (isAuthErrorToast(node)) {
+            node.style.display = "none";
+            // Also try removing from Sonner's toast list
+            setTimeout(function () { try { node.remove(); } catch (_) {} }, 50);
+          }
+          // Check children (toast container may wrap the actual toast)
+          if (node.querySelectorAll) {
+            node.querySelectorAll("li, div").forEach(function (child) {
+              if (isAuthErrorToast(child)) {
+                child.style.display = "none";
+                setTimeout(function () { try { child.remove(); } catch (_) {} }, 50);
+              }
+            });
+          }
+        });
+      });
+    });
+    toastObserver.observe(document.body, { childList: true, subtree: true });
+  }
+
   /* ── Boot ─────────────────────────────────────────── */
 
   function boot() {
     loadVersionFooter();
+    suppressAuthErrorToasts();
 
     var rafId = null;
     var scheduleSync = function () {
