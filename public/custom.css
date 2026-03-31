@@ -18,6 +18,37 @@ div.relative.hidden.bg-muted.lg\:block {
   display: none !important;
 }
 
+/* Center login form when right pane is hidden */
+.grid.min-h-svh {
+  display: flex !important;
+  justify-content: center !important;
+}
+
+.grid.min-h-svh > .flex.flex-col {
+  width: 100% !important;
+  max-width: 480px !important;
+  align-items: center !important;
+}
+
+/* Login title styling */
+.grid.min-h-svh h1.text-2xl {
+  font-size: 1.1rem !important;
+  font-weight: 500 !important;
+  color: #64748b !important;
+  letter-spacing: 0.02em !important;
+}
+
+/* Login button styling */
+.grid.min-h-svh form button {
+  border-radius: 8px !important;
+  font-weight: 500 !important;
+  transition: box-shadow 0.2s ease !important;
+}
+
+.grid.min-h-svh form button:hover {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08) !important;
+}
+
 .version-footer {
   position: fixed;
   left: 50%;

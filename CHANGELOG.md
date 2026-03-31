@@ -6,13 +6,22 @@ This format follows [Keep a Changelog](https://keepachangelog.com/) and adheres 
 ## [Unreleased]
 
 ### Added
+- **Conversation History**: Implemented full conversation history support allowing users to list, resume, and delete past conversations. Introduced `datalayer.py` with a Chainlit `BaseDataLayer` backed by the orchestrator API, enabling persistent thread management without direct database access.
+- **Conversation Resume with Markdown Links**: Source reference links (e.g., `[document](file.pdf)`) are now correctly rendered when resuming past conversations. The `replace_source_reference_links()` transform is applied in `_messages_to_steps()` within the data layer so that Chainlit's native thread resume renders clickable SAS-URL links.
+- **Conversation Delete**: Added soft-delete support for conversations via `call_orchestrator_delete_conversation()` in `orchestrator_client.py`, wired through `delete_thread()` in the data layer.
+- **Auth Error Toast Suppression**: Added a `MutationObserver` in `footer-version.js` that detects and removes authentication error toasts (e.g., "invalid authentication token") triggered by stale JWT cookies after container restarts or logout.
 - **Release Footer**: Added a configurable release footer that displays GPT-RAG and GPT-RAG UI version numbers at the bottom of the chat interface. The footer fetches version data from a new `/version-footer` endpoint and is controlled by the `SHOW_RELEASE_FOOTER` App Configuration setting (default `true`). Missing version values display a descriptive fallback message, and non-prefixed values receive an automatic `v` prefix.
 - **Version Footer JavaScript Module**: Introduced `public/footer-version.js`, a self-contained script that creates, positions, and updates the footer element, including layout-aware spacing to prevent overlap with the Chainlit composer input area.
 - **Version Footer CSS Styles**: Added footer styling in `public/custom.css` with fixed positioning, responsive font sizing for mobile, and visually subtle divider between the two version labels.
 
 ### Changed
+- **Login Page Styling**: Centered the login form and refined the login page with a professional "Welcome to GPT-RAG" title (1.1rem, #64748b), rounded button corners, and hover shadow for a polished appearance.
+- **OAuth Metadata Enhancement**: Added `principal_id` to the user metadata in `auth_oauth.py` to support secure thread authorization during conversation resume.
 - **Application Architecture Refactor**: Restructured `main.py` to use a host `FastAPI` app that mounts both the Chainlit app (`/`) and the blob download sub-app (`/api/download`), enabling top-level routes like `/version-footer` that are independent of the Chainlit middleware stack.
 - **VERSION File Reading**: Consolidated duplicated VERSION file reading logic into reusable `_read_local_ui_version()` and `_local_version_file_path()` helpers, eliminating code duplication and improving error handling.
+
+### Fixed
+- **Thread Resume Authorization**: Fixed "Authorization for the thread failed" errors when resuming conversations by sourcing `userIdentifier` from session metadata (`metadata.get("user_name")`) instead of the orchestrator conversation document, ensuring it matches Chainlit's internal auth check.
 
 ## [v2.2.2] – 2026-03-01
 ### Added
