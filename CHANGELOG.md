@@ -5,6 +5,8 @@ This format follows [Keep a Changelog](https://keepachangelog.com/) and adheres 
 
 ## [Unreleased]
 
+## [v2.3.1] – 2026-03-31
+
 ### Fixed
 - **Conversation History Listing**: Fixed threads not appearing in the sidebar by improving `_get_session_metadata()` in `datalayer.py` with a secondary fallback via `cl.user_session`, ensuring user metadata is reliably retrieved across all Chainlit context scenarios.
 - **ThreadDict Missing Fields**: Added missing `tags` and `steps` fields to `ThreadDict` entries returned by `list_threads`, preventing potential rendering issues in Chainlit's thread sidebar.
