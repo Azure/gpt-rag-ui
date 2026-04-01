@@ -89,20 +89,11 @@ div.relative.hidden.bg-muted.lg\:block {
 }
 
 /* Response time statistics — subtle styling */
-.markdown-body hr + p:last-child,
-.message-content hr + p:last-child,
-[class*="message"] hr + p:last-child {
+.markdown-body em:last-child,
+.message-content em:last-child,
+[class*="message"] em:last-child {
   color: #c0c7d0 !important;
   font-size: 0.7rem !important;
-  margin-top: 2px !important;
+  font-style: normal !important;
   font-weight: 400 !important;
-}
-
-.markdown-body hr:has(+ p:last-child),
-.message-content hr:has(+ p:last-child),
-[class*="message"] hr:has(+ p:last-child) {
-  border: none !important;
-  border-top: 1px solid #e8eaed !important;
-  margin: 8px 0 4px 0 !important;
-  opacity: 0.5 !important;
 }

@@ -588,7 +588,7 @@ async def handle_message(message: cl.Message):
         )
         if SHOW_STATISTICS:
             elapsed = time.time() - response_start_time
-            final_text += f"\n\n---\n⏱ {elapsed:.2f}s"
+            final_text += f"\n\n*\u23f1 {elapsed:.2f}s*"
         response_msg.content = final_text
         await response_msg.update()
 
