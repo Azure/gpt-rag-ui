@@ -3,6 +3,16 @@
 All notable changes to this project will be documented in this file.  
 This format follows [Keep a Changelog](https://keepachangelog.com/) and adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- **Conversation History Listing**: Fixed threads not appearing in the sidebar by improving `_get_session_metadata()` in `datalayer.py` with a secondary fallback via `cl.user_session`, ensuring user metadata is reliably retrieved across all Chainlit context scenarios.
+- **ThreadDict Missing Fields**: Added missing `tags` and `steps` fields to `ThreadDict` entries returned by `list_threads`, preventing potential rendering issues in Chainlit's thread sidebar.
+
+### Added
+- **Response Time Statistics**: Added optional response time display after each assistant answer, controlled by the `SHOW_STATISTICS` App Configuration setting (default `false`). When enabled, shows elapsed time in seconds (e.g., `⏱ 3.42s`) as subtle light-gray text.
+- **Conversation History Diagnostic Logging**: Added detailed logging throughout the `list_threads` flow and orchestrator list conversations API for easier troubleshooting of thread listing issues.
+
 ## [v2.3.0] – 2026-03-31
 
 ### Added
