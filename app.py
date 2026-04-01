@@ -4,6 +4,7 @@ import json
 import re
 import uuid
 import logging
+import time
 import urllib.parse
 from typing import Optional, Set, Tuple
 from datetime import datetime, timedelta
@@ -49,6 +50,7 @@ OAUTH_CONFIGURED = _oauth_is_configured()
 # If OAuth isn't configured, default to allowing anonymous even in Azure.
 ALLOW_ANONYMOUS = config.get("ALLOW_ANONYMOUS", (not _is_running_in_azure_host) or (not OAUTH_CONFIGURED), bool)
 STORAGE_ACCOUNT_NAME = config.get("STORAGE_ACCOUNT_NAME", "", str)
+SHOW_STATISTICS = config.get("SHOW_STATISTICS", False, bool)
 
 
 def _normalize_container_name(container: Optional[str]) -> str:
@@ -399,6 +401,7 @@ async def handle_message(message: cl.Message):
 
         await response_msg.stream_token(" ")
 
+        response_start_time = time.time()
         buffer = ""
         full_text = ""
         references = set()
@@ -583,6 +586,9 @@ async def handle_message(message: cl.Message):
         final_text = replace_source_reference_links(
             full_text.replace(TERMINATE_TOKEN, ""), references
         )
+        if SHOW_STATISTICS:
+            elapsed = time.time() - response_start_time
+            final_text += f"\n\n*\u23f1 {elapsed:.2f}s*"
         response_msg.content = final_text
         await response_msg.update()
 
