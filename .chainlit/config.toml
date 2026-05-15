@@ -34,8 +34,11 @@ edit_message = true
 # Spontaneous upload (paperclip). MIME/size match app.py + ingestion; auth is enforced in handle_message.
 # Chainlit still writes uploads to a local cache dir (e.g. .files/) so the server can read paths; that is not optional.
 # Repo: .files/ is gitignored. Types: PDF only (no images).
+# Default: disabled. On startup, main.py sets enabled=true only if ALLOW_ANONYMOUS is explicitly
+# false (env or App Configuration). Otherwise uploads stay off (no change when already false; if the
+# file was true from a prior run, it is set back to false).
 [features.spontaneous_file_upload]
-    enabled = true
+    enabled = false
     accept = [
         "application/pdf",
     ]
