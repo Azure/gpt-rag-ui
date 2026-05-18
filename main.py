@@ -143,12 +143,14 @@ def _format_release_value(value: str | None, missing_message: str) -> str:
 
 
 def _want_chainlit_spontaneous_file_upload(auth_state: AuthState) -> bool:
-    """True only when ALLOW_ANONYMOUS is explicitly false (env or App Config): allow_anonymous is off.
+    """True whenever the effective allow_anonymous is false.
 
-    Otherwise spontaneous upload stays off (matches repo default enabled=false in config.toml).
+    Per-conversation uploads require an authenticated caller (each file is bound to the
+    user's conversation), so we enable the Chainlit paperclip whenever auth is in force,
+    regardless of whether ALLOW_ANONYMOUS came from env, App Config, or the default.
     """
 
-    return auth_state.allow_anonymous_source in ("env", "appconfig") and not auth_state.allow_anonymous
+    return not auth_state.allow_anonymous
 
 
 def _sync_chainlit_spontaneous_file_upload(auth_state: AuthState) -> None:

@@ -177,7 +177,11 @@ async def ingest_files_session(conversation_id: str, question_id: str, auth_info
     else:
         logger.debug("DAPR_API_TOKEN not set; omitting 'dapr-api-token' header for ingestion")
 
-    api_key = _get_config_value("INGESTION_APP_APIKEY", default="")
+    # Prefer the canonical infra-provided key (DATA_INGEST_APP_APIKEY, generated from
+    # canonical_name=DATA_INGEST_APP in main.parameters.json); fall back to legacy aliases.
+    api_key = _get_config_value("DATA_INGEST_APP_APIKEY", default="")
+    if not api_key:
+        api_key = _get_config_value("INGESTION_APP_APIKEY", default="")
     if not api_key:
         api_key = _get_config_value("ORCHESTRATOR_APP_APIKEY", default="")
     if api_key:
