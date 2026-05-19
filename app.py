@@ -16,6 +16,7 @@ from orchestrator_client import call_orchestrator_stream
 from feedback import register_feedback_handlers,create_feedback_actions
 from dependencies import get_config
 from connectors import BlobClient
+from ingestion_client import ingest_files_session
 
 from constants import APPLICATION_INSIGHTS_CONNECTION_STRING, APP_NAME, UUID_REGEX, REFERENCE_REGEX, TERMINATE_TOKEN
 from telemetry import Telemetry
@@ -64,6 +65,9 @@ DOCUMENTS_CONTAINER = _normalize_container_name(
 )
 IMAGES_CONTAINER = _normalize_container_name(
     config.get("DOCUMENTS_IMAGES_STORAGE_CONTAINER", "", str)
+)
+CONVERSATION_DOCUMENTS_CONTAINER = _normalize_container_name(
+    config.get("CONVERSATION_DOCUMENTS_STORAGE_CONTAINER", "", str)
 )
 IMAGE_EXTENSIONS = {"bmp", "jpeg", "jpg", "png", "tiff"}
 
@@ -143,8 +147,22 @@ def resolve_reference_href(raw_href: str) -> Optional[str]:
     elif not container and IMAGES_CONTAINER:
         container = IMAGES_CONTAINER
 
-    # Extract clean blob name
-    if container:
+    blob_name: str
+    # Per-conversation uploads (separate blob container), not used for image extensions.
+    if (
+        CONVERSATION_DOCUMENTS_CONTAINER
+        and not (extension in IMAGE_EXTENSIONS and IMAGES_CONTAINER)
+        and (
+            path.startswith(f"{CONVERSATION_DOCUMENTS_CONTAINER}/")
+            or path.startswith("conversations/")
+        )
+    ):
+        if path.startswith(f"{CONVERSATION_DOCUMENTS_CONTAINER}/"):
+            blob_name = path[len(CONVERSATION_DOCUMENTS_CONTAINER) + 1 :]
+        else:
+            blob_name = path
+        container = CONVERSATION_DOCUMENTS_CONTAINER
+    elif container:
         if path.startswith(f"{container}/"):
             blob_name = path[len(container)+1:]
         elif path:
@@ -385,6 +403,129 @@ async def handle_message(message: cl.Message):
                 auth_info.get('client_principal_id', 'unknown'),
             )
             return
+        
+        
+        await response_msg.send()
+        handler_start = time.time()
+        # ====== FILES PROCESSING ======
+        allowed_mimes = {
+            "application/pdf",
+        }
+        max_files = 5
+        max_file_bytes = 15 * 1024 * 1024
+        max_total_bytes = 25 * 1024 * 1024
+
+        uploaded_files: list[dict] = []
+        rejected: list[str] = []
+        total_declared_bytes = 0
+        file_reply_parts: list[str] = []
+
+        if message.elements:
+            for element in message.elements:
+                if not isinstance(element, cl.File):
+                    continue
+
+                mime = (getattr(element, "mime", "") or "").lower()
+                name = getattr(element, "name", "upload")
+                path = getattr(element, "path", None)
+                size = getattr(element, "size", 0) or 0
+
+                if not path:
+                    rejected.append(f"{name} (missing path)")
+                    continue
+
+                if mime not in allowed_mimes:
+                    rejected.append(f"{name} (unsupported type: {mime or 'unknown'})")
+                    continue
+
+                if isinstance(size, int) and size > max_file_bytes:
+                    rejected.append(f"{name} (too large)")
+                    continue
+
+                total_declared_bytes += int(size) if isinstance(size, int) else 0
+                if total_declared_bytes > max_total_bytes:
+                    rejected.append(f"{name} (total upload too large)")
+                    continue
+
+                uploaded_files.append({"name": name, "path": path, "mime": mime, "size": int(size)})
+                logger.info(
+                    "File queued for ingestion: name=%s mime=%s conversation=%s",
+                    name,
+                    mime,
+                    conversation_id or "new",
+                )
+
+        if len(uploaded_files) > max_files:
+            rejected.extend([f["name"] + " (too many files)" for f in uploaded_files[max_files:]])
+            uploaded_files = uploaded_files[:max_files]
+
+        if rejected:
+            _skip_msg = "Some files were skipped:\n- " + "\n- ".join(rejected) + "\n\n"
+            file_reply_parts.append(_skip_msg)
+            await response_msg.stream_token(_skip_msg)
+
+        if uploaded_files and not (conversation_id or "").strip():
+            conversation_id = str(uuid.uuid4())
+            cl.user_session.set("conversation_id", conversation_id)
+
+        if uploaded_files:
+            try:
+                ingestion_success = await ingest_files_session(
+                    conversation_id=conversation_id,
+                    question_id=message.id,
+                    auth_info=auth_info,
+                    files=uploaded_files,
+                )
+            except Exception:
+                logger.exception(
+                    "File ingestion failed: conversation=%s question_id=%s",
+                    conversation_id or "new",
+                    message.id,
+                )
+                _fail_msg = (
+                    "File ingestion failed. Please contact the application support team and share reference "
+                    f"{message.id}.\n\n"
+                )
+                file_reply_parts.append(_fail_msg)
+                await response_msg.stream_token(_fail_msg)
+                ingestion_success = False
+
+            session_docs = cl.user_session.get("uploaded_docs") or []
+            session_docs.extend([f["name"] for f in uploaded_files])
+            cl.user_session.set("uploaded_docs", session_docs)
+
+            if ingestion_success:
+                _ok_msg = f"{len(uploaded_files)} file(s) processed successfully.\n\n"
+                file_reply_parts.append(_ok_msg)
+                await response_msg.stream_token(_ok_msg)
+
+        user_ask = (message.content or "").strip()
+        if uploaded_files and not user_ask:
+            final_text = "".join(file_reply_parts).strip() or "Files received."
+            if SHOW_STATISTICS:
+                final_text += f"\n\n*\u23f1 {time.time() - handler_start:.2f}s*"
+            cl.user_session.set("conversation_id", conversation_id)
+            span.set_attribute("question_id", message.id)
+            span.set_attribute("conversation_id", conversation_id)
+            span.set_attribute("user_id", auth_info.get("client_principal_id", "anonymous"))
+            logger.info(
+                "Skipping orchestrator (files only, empty ask): conversation=%s question_id=%s",
+                conversation_id or "new",
+                message.id,
+            )
+            response_msg.content = final_text
+            await response_msg.update()
+            logger.info(
+                "Response delivered: conversation=%s question_id=%s chunks=0 characters=%s preview='%s'",
+                conversation_id,
+                message.id,
+                len(final_text),
+                _trim_for_log(final_text),
+            )
+            return
+
+        # ----------------------------------------------
+        
 
         app_user = cl.user_session.get("user")
         
@@ -579,7 +720,7 @@ async def handle_message(message: cl.Message):
                 message.id,
                 sorted(references),
             )
-        if ENABLE_FEEDBACK:
+        if ENABLE_FEEDBACK and (message.content or "").strip():
             response_msg.actions = create_feedback_actions(
                 message.id, conversation_id, message.content
             )

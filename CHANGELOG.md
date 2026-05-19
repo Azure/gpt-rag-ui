@@ -3,7 +3,7 @@
 All notable changes to this project will be documented in this file.  
 This format follows [Keep a Changelog](https://keepachangelog.com/) and adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [v2.3.1] – 2026-03-31
 
 ### Fixed
 - **Conversation History Listing**: Fixed threads not appearing in the sidebar by improving `_get_session_metadata()` in `datalayer.py` with a secondary fallback via `cl.user_session`, ensuring user metadata is reliably retrieved across all Chainlit context scenarios.

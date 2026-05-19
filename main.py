@@ -1,10 +1,11 @@
 import logging
 import os
 import secrets
-from dataclasses import dataclass
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from io import BytesIO
+from pathlib import Path
 
 from fastapi import FastAPI, Response
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -139,6 +140,102 @@ def _format_release_value(value: str | None, missing_message: str) -> str:
     if normalized:
         return normalized
     return missing_message
+
+
+def _want_chainlit_spontaneous_file_upload(auth_state: AuthState) -> bool:
+    """True whenever the effective allow_anonymous is false.
+
+    Per-conversation uploads require an authenticated caller (each file is bound to the
+    user's conversation), so we enable the Chainlit paperclip whenever auth is in force,
+    regardless of whether ALLOW_ANONYMOUS came from env, App Config, or the default.
+    """
+
+    return not auth_state.allow_anonymous
+
+
+def _sync_chainlit_spontaneous_file_upload(auth_state: AuthState) -> None:
+    """Write [features.spontaneous_file_upload].enabled before `import chainlit` (Chainlit reads TOML on import)."""
+
+    want_enabled = _want_chainlit_spontaneous_file_upload(auth_state)
+    path = Path(__file__).resolve().parent / ".chainlit" / "config.toml"
+    if not path.is_file():
+        logger.warning("Chainlit config not found at %s; skipping spontaneous file upload sync", path)
+        return
+
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        logger.exception("Failed to read Chainlit config %s", path)
+        return
+
+    lines = text.splitlines(keepends=True)
+    section = "[features.spontaneous_file_upload]"
+    in_section = False
+    enabled_idx: int | None = None
+    current: bool | None = None
+
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            in_section = stripped.lower() == section.lower()
+            continue
+        if not in_section:
+            continue
+        s = stripped.lower()
+        if s.startswith("enabled") and "=" in s:
+            val = stripped.split("=", 1)[1].strip().lower()
+            if val == "true":
+                current = True
+            elif val == "false":
+                current = False
+            enabled_idx = i
+            break
+
+    if enabled_idx is None or current is None:
+        logger.warning(
+            "Could not find 'enabled' under %s in %s; spontaneous file upload not synced",
+            section,
+            path,
+        )
+        return
+
+    if current is want_enabled:
+        logger.info(
+            "Chainlit spontaneous file upload already %s (ALLOW_ANONYMOUS source=%s allow_anonymous=%s)",
+            "enabled" if want_enabled else "disabled",
+            auth_state.allow_anonymous_source,
+            auth_state.allow_anonymous,
+        )
+        return
+
+    orig = lines[enabled_idx]
+    prefix = orig[: len(orig) - len(orig.lstrip(" \t"))]
+    if orig.endswith("\r\n"):
+        eol = "\r\n"
+    elif orig.endswith("\n"):
+        eol = "\n"
+    else:
+        eol = "\n"
+    lines[enabled_idx] = f"{prefix}enabled = {str(want_enabled).lower()}{eol}"
+
+    try:
+        path.write_text("".join(lines), encoding="utf-8")
+    except OSError:
+        logger.warning(
+            "Could not write Chainlit config %s (read-only filesystem?); "
+            "spontaneous file upload remains %s",
+            path,
+            "enabled" if current else "disabled",
+            exc_info=True,
+        )
+        return
+
+    logger.info(
+        "Set Chainlit spontaneous file upload to %s (ALLOW_ANONYMOUS source=%s allow_anonymous=%s)",
+        "enabled" if want_enabled else "disabled",
+        auth_state.allow_anonymous_source,
+        auth_state.allow_anonymous,
+    )
 
 
 def _configure_chainlit_prereqs(config: AppConfigClient) -> None:
@@ -464,7 +561,10 @@ def _create_chainlit_app(config: AppConfigClient, auth_state: AuthState | None =
     """
 
     _configure_auth_environment(config, auth_state)
+    effective_auth = auth_state or _evaluate_auth_state(config)
+    _sync_chainlit_spontaneous_file_upload(effective_auth)
 
+    # Chainlit reads `.chainlit/config.toml` when this module is imported; sync must run above first.
     from chainlit.server import app as chainlit_app
     from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
     from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
