@@ -11,6 +11,10 @@ local.settings.json
 .azure/
 .vscode/
 
+
+# Chainlit local file cache (uploads)
+.files/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
