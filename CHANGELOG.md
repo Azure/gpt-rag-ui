@@ -3,6 +3,15 @@
 All notable changes to this project will be documented in this file.  
 This format follows [Keep a Changelog](https://keepachangelog.com/) and adheres to [Semantic Versioning](https://semver.org/).
 
+## [v2.3.2] – 2026-05-19
+
+### Added
+- **Per-conversation file upload UI**: Users can now upload files directly from the chat interface using the Chainlit `spontaneous_file_upload` paperclip. Uploaded files are sent to the new `POST /ingest-documents` endpoint in `gpt-rag-ingestion`, which persists the bytes to the `conversation-documents` storage container and indexes them in Azure AI Search tagged with the current `conversationId`, so the orchestrator can answer from them (and cite them) within that conversation. The paperclip is hidden whenever anonymous access is effectively enabled. Implements [Azure/GPT-RAG#401](https://github.com/Azure/GPT-RAG/issues/401). ([#51](https://github.com/Azure/gpt-rag-ui/pull/51))
+
+### Fixed
+- **Ingestion API key naming**: `ingestion_client.py` now sends the `X-API-KEY` header sourcing from `DATA_INGEST_APP_APIKEY` (with fallback to `INGESTION_APP_APIKEY` and `ORCHESTRATOR_APP_APIKEY`) to match the canonical name produced by the core infra for the `DATA_INGEST_APP` Container App.
+- **Upload paperclip gated too narrowly**: `_want_chainlit_spontaneous_file_upload` now enables the paperclip whenever `auth_state.allow_anonymous` is effectively `false`, regardless of whether the value came from env, App Config, or default. The previous version silently hid the upload UI when `ALLOW_ANONYMOUS` was unset even if OAuth was fully configured.
+
 ## [v2.3.1] – 2026-03-31
 
 ### Fixed
