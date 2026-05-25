@@ -3,6 +3,11 @@
 All notable changes to this project will be documented in this file.  
 This format follows [Keep a Changelog](https://keepachangelog.com/) and adheres to [Semantic Versioning](https://semver.org/).
 
+## [v2.3.3] – 2026-05-25
+
+### Fixed
+- **Bash deploy scripts on WSL/Linux**: Added repository line-ending attributes so `*.sh` files are checked out with LF endings, preventing `$'\r': command not found` and `set: pipefail` failures when running `scripts/deploy.sh` or `scripts/preProvision.sh` from WSL. Fixes [Azure/GPT-RAG#451](https://github.com/Azure/GPT-RAG/issues/451).
+
 ## [v2.3.2] – 2026-05-19
 
 ### Added
