@@ -578,6 +578,40 @@ async def call_orchestrator_get_conversation(
         return None
 
 
+async def call_orchestrator_update_conversation(
+    access_token: str,
+    conversation_id: str,
+    name: str,
+) -> bool:
+    """Rename a conversation via PATCH /conversations/{id}."""
+    url, target_context = _build_orchestrator_service_url(f"conversations/{conversation_id}")
+    headers = _build_conversation_headers(access_token)
+    payload = {"name": name}
+
+    logger.info(
+        "Updating conversation: mode=%s url=%s conversation_id=%s",
+        target_context.get("mode"), url, conversation_id,
+    )
+
+    timeout = httpx.Timeout(connect=10.0, read=30.0, write=30.0, pool=10.0)
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.patch(url, json=payload, headers=headers)
+            if response.status_code >= 400:
+                body_text = response.text
+                snippet = (body_text[:2000] + "...") if len(body_text) > 2000 else body_text
+                logger.error(
+                    "Update conversation failed (HTTP %s): url=%s conversation_id=%s details=%s",
+                    response.status_code, url, conversation_id, snippet,
+                )
+                return False
+            logger.info("Conversation updated successfully: conversation_id=%s", conversation_id)
+            return True
+    except Exception:
+        logger.exception("Failed to update conversation: url=%s conversation_id=%s", url, conversation_id)
+        return False
+
+
 async def call_orchestrator_delete_conversation(
     access_token: str,
     conversation_id: str,

@@ -3,6 +3,11 @@
 All notable changes to this project will be documented in this file.  
 This format follows [Keep a Changelog](https://keepachangelog.com/) and adheres to [Semantic Versioning](https://semver.org/).
 
+## [v2.3.7] - 2026-05-26
+
+### Fixed
+- **Conversation rename persistence:** Chainlit thread rename events now call the orchestrator `PATCH /conversations/{id}` API with the authenticated user's access token, so renamed conversations keep their new name after page refresh. Fixes [Azure/GPT-RAG#435](https://github.com/Azure/GPT-RAG/issues/435).
+
 ## [v2.3.6] - 2026-05-26
 
 ### Fixed
