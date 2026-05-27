@@ -3,12 +3,41 @@
 All notable changes to this project will be documented in this file.  
 This format follows [Keep a Changelog](https://keepachangelog.com/) and adheres to [Semantic Versioning](https://semver.org/).
 
+## [v2.3.7] - 2026-05-26
+
+### Fixed
+- **Conversation rename persistence:** Chainlit thread rename events now call the orchestrator `PATCH /conversations/{id}` API with the authenticated user's access token, so renamed conversations keep their new name after page refresh. Fixes [Azure/GPT-RAG#435](https://github.com/Azure/GPT-RAG/issues/435).
+
+## [v2.3.6] - 2026-05-26
+
+### Fixed
+- **Azure CLI warning-safe deploy verification**: Filter Azure CLI warning and progress lines from App Configuration, Container Apps update, and image verification output before consuming TSV values, so Windows deploys do not fail when the Azure CLI or Container Apps extension emits non-data output. Fixes [Azure/GPT-RAG#449](https://github.com/Azure/GPT-RAG/issues/449).
+
+## [v2.3.5] - 2026-05-26
+
+### Fixed
+- **Container Apps image update verification**: Replaced the mandatory latest-revision restart with explicit image verification after `az containerapp update --image`, avoiding transient `Not Found` failures immediately after revision creation while still confirming the new image is configured. Fixes [Azure/GPT-RAG#449](https://github.com/Azure/GPT-RAG/issues/449).
+
+## [v2.3.4] - 2026-05-25
+
+### Fixed
+- **Docker-free component deployment**: Updated Bash and PowerShell deploy scripts to choose the build mode before touching Docker, use `az acr build` when Docker is unavailable or remote build is requested, configure Container App registry identity, and restart the latest revision after image updates. Fixes [Azure/GPT-RAG#449](https://github.com/Azure/GPT-RAG/issues/449).
+
+## [v2.3.3] – 2026-05-25
+
+### Fixed
+- **Bash deploy scripts on WSL/Linux**: Added repository line-ending attributes so `*.sh` files are checked out with LF endings, preventing `$'\r': command not found` and `set: pipefail` failures when running `scripts/deploy.sh` or `scripts/preProvision.sh` from WSL. Fixes [Azure/GPT-RAG#451](https://github.com/Azure/GPT-RAG/issues/451).
+
 ## [v2.3.2] – 2026-05-19
 
 ### Added
 - **Per-conversation file upload UI**: Users can now upload files directly from the chat interface using the Chainlit `spontaneous_file_upload` paperclip. Uploaded files are sent to the new `POST /ingest-documents` endpoint in `gpt-rag-ingestion`, which persists the bytes to the `conversation-documents` storage container and indexes them in Azure AI Search tagged with the current `conversationId`, so the orchestrator can answer from them (and cite them) within that conversation. The paperclip is hidden whenever anonymous access is effectively enabled. Implements [Azure/GPT-RAG#401](https://github.com/Azure/GPT-RAG/issues/401). ([#51](https://github.com/Azure/gpt-rag-ui/pull/51))
 
 ### Fixed
+- **Component deploy with explicit `APP_CONFIG_ENDPOINT`**: `scripts/deploy.ps1` now uses the parsed App Configuration endpoint directly instead of reconstructing it from `RESOURCE_TOKEN`, so direct jumpbox redeploys work even when only `APP_CONFIG_ENDPOINT` is exported.
+- **Managed identity authentication in Container Apps**: Azure App Configuration loading no longer passes `"*"` as the default `AZURE_CLIENT_ID`, allowing system-assigned managed identity authentication to work when no user-assigned client ID is configured.
+- **PowerShell deploy script encoding on Windows jumpbox**: `scripts/deploy.ps1` is now stored with a UTF-8 BOM so Windows PowerShell 5.1 reads Unicode status messages correctly instead of parsing corrupted script text.
+- **ACR remote build log streaming on Windows**: `scripts/deploy.ps1` now forces UTF-8 console/Python output and uses `az acr build --no-logs` so Unicode build output (for example Vite's checkmark) does not break Azure CLI log streaming when running from the jumpbox.
 - **Ingestion API key naming**: `ingestion_client.py` now sends the `X-API-KEY` header sourcing from `DATA_INGEST_APP_APIKEY` (with fallback to `INGESTION_APP_APIKEY` and `ORCHESTRATOR_APP_APIKEY`) to match the canonical name produced by the core infra for the `DATA_INGEST_APP` Container App.
 - **Upload paperclip gated too narrowly**: `_want_chainlit_spontaneous_file_upload` now enables the paperclip whenever `auth_state.allow_anonymous` is effectively `false`, regardless of whether the value came from env, App Config, or default. The previous version silently hid the upload UI when `ALLOW_ANONYMOUS` was unset even if OAuth was fully configured.
 
