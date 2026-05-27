@@ -1,0 +1,13 @@
+.git/
+.azure/
+.venv/
+**/.venv/
+__pycache__/
+**/__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.logs/
+*.pyc
+.DS_Store
+Thumbs.db

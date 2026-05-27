@@ -25,6 +25,7 @@ from chainlit.user import PersistedUser, User
 from orchestrator_client import (
     call_orchestrator_list_conversations,
     call_orchestrator_get_conversation,
+    call_orchestrator_update_conversation,
     call_orchestrator_delete_conversation,
 )
 
@@ -257,8 +258,36 @@ class OrchestratorDataLayer(BaseDataLayer):
     async def update_thread(self, thread_id: str, **kwargs) -> None:
         try:
             cl.user_session.set("conversation_id", thread_id)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("update_thread: could not set conversation_id in session: %s", exc)
+
+        name_value = kwargs.get("name") or kwargs.get("title") or ""
+        name = str(name_value).strip()
+        if not name:
+            return
+
+        metadata = _get_session_metadata()
+        if not metadata:
+            for user in _users.values():
+                if user.metadata and user.metadata.get("access_token"):
+                    metadata = user.metadata
+                    break
+            if not metadata:
+                logger.warning("update_thread: no session metadata; cannot rename thread=%s", thread_id)
+                return
+
+        access_token = metadata.get("access_token")
+        if not access_token:
+            logger.warning("update_thread: no access_token; cannot rename thread=%s", thread_id)
+            return
+
+        updated = await call_orchestrator_update_conversation(
+            access_token=access_token,
+            conversation_id=thread_id,
+            name=name,
+        )
+        if not updated:
+            logger.warning("update_thread: orchestrator rename failed for thread=%s", thread_id)
 
     async def delete_thread(self, thread_id: str) -> bool:
         metadata = _get_session_metadata()
