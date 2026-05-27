@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [v2.3.8] - 2026-05-27
 
 ### Changed
 - **Dependency refresh:** Updated `aiohttp` to 3.13.4 for the Chainlit/FastAPI runtime dependencies.
