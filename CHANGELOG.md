@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Changed
+- **Dependency refresh:** Updated `python-dotenv` to 1.2.2 for runtime configuration loading.
+
 ## [v2.3.8] - 2026-05-27
 
 ### Changed
