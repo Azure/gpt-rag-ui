@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [v2.3.10] - 2026-06-04
 
 ### Fixed
 - **Forward uploader identity for document ACLs (issue #478):** The ingestion payload built by `ingestion_client.py` now includes the authenticated uploader's object id as `securityUserIds` so the ingestion service can stamp document ACLs. This keeps uploaded documents retrievable by their uploader on permission-trimmed search indexes. Anonymous/placeholder ids are not sent.
