@@ -103,7 +103,7 @@ def _ingest_response_failure_detail(body: object) -> Optional[str]:
     return "; ".join(messages[:cap]) + tail
 
 
-async def _build_ingest_documents_payload(conversation_id: str, question_id: str, files: list[dict]) -> dict:
+async def _build_ingest_documents_payload(conversation_id: str, question_id: str, files: list[dict], auth_info: dict | None = None) -> dict:
     cid = (conversation_id or "").strip() or (question_id or "").strip() or str(uuid.uuid4())
 
     to_process = files[:_MAX_INGEST_FILES]
@@ -164,7 +164,17 @@ async def _build_ingest_documents_payload(conversation_id: str, question_id: str
             }
         )
 
-    return {"conversationId": cid, "values": values}
+    payload: dict = {"conversationId": cid, "values": values}
+
+    # Stamp the uploader's object id as the document ACL so that, when the
+    # search index has permission trimming enabled, the uploader can retrieve
+    # their own uploaded chunks (issue #478). Skip anonymous/placeholder ids.
+    _ACL_PLACEHOLDERS = {"", "no-auth", "anonymous", "00000000-0000-0000-0000-000000000000"}
+    uploader_oid = ((auth_info or {}).get("client_principal_id") or "").strip()
+    if uploader_oid and uploader_oid.lower() not in _ACL_PLACEHOLDERS:
+        payload["securityUserIds"] = [uploader_oid]
+
+    return payload
 
 
 async def ingest_files_session(conversation_id: str, question_id: str, auth_info: dict, files: list[dict]) -> bool:
@@ -191,7 +201,7 @@ async def ingest_files_session(conversation_id: str, question_id: str, auth_info
     if access_token:
         headers["Authorization"] = f"Bearer {access_token}"
 
-    payload = await _build_ingest_documents_payload(conversation_id, question_id, files)
+    payload = await _build_ingest_documents_payload(conversation_id, question_id, files, auth_info)
 
     logger.info(
         "Invoking ingestion: question_id=%s conversation_id=%s mode=%s url=%s headers=%s files_count=%d",
