@@ -5,7 +5,7 @@ azure-monitor-opentelemetry==1.6.10
 azure-monitor-opentelemetry-exporter==1.0.0b39
 azure-storage-blob==12.30.0
 chainlit==2.9.4
-fastapi>=0.116.1
+fastapi>=0.137.1
 httpx==0.28.1
 itsdangerous==2.2.0
 msal==1.32.3
