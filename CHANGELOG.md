@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [v2.3.13] - 2026-06-15
+
+### Reverted
+- **`opentelemetry-instrumentation-httpx` bump to 0.63b1 ([#67](https://github.com/Azure/gpt-rag-ui/pull/67))** reverted back to `0.52b1`. The bumped version pins `opentelemetry-instrumentation==0.63b1`, which conflicts with the transitive instrumentation versions required by `azure-monitor-opentelemetry==1.6.10` and breaks `pip install -r requirements.txt` in the runtime image. The bump will be re-evaluated when `azure-monitor-opentelemetry` is upgraded.
+
 ## [v2.3.12] - 2026-06-15
 
 ### Changed
