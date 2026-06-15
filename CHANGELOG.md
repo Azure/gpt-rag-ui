@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [v2.3.12] - 2026-06-15
+
+### Changed
+- **Dependency refresh:** Absorbed Dependabot bumps merged into `develop`:
+  - `fastapi` requirement updated from `>=0.116.1` to `>=0.137.1` ([#66](https://github.com/Azure/gpt-rag-ui/pull/66))
+  - `opentelemetry-instrumentation-httpx` ([#67](https://github.com/Azure/gpt-rag-ui/pull/67))
+  - `azure-storage-blob` 12.25.1 → 12.30.0 ([#68](https://github.com/Azure/gpt-rag-ui/pull/68))
+  - `tenacity` 9.1.2 → 9.1.4 ([#69](https://github.com/Azure/gpt-rag-ui/pull/69))
+  - `aiohttp` 3.13.4 → 3.14.1 ([#70](https://github.com/Azure/gpt-rag-ui/pull/70))
+
 ## [v2.3.11] - 2026-06-14
 
 ### Changed
