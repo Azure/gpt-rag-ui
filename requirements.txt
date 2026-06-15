@@ -3,7 +3,7 @@ azure-identity==1.23.0
 azure-appconfiguration==1.7.1
 azure-monitor-opentelemetry==1.6.10
 azure-monitor-opentelemetry-exporter==1.0.0b39
-azure-storage-blob==12.25.1
+azure-storage-blob==12.30.0
 chainlit==2.9.4
 fastapi>=0.116.1
 httpx==0.28.1
