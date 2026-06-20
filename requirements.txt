@@ -4,7 +4,7 @@ azure-appconfiguration==1.7.1
 azure-monitor-opentelemetry==1.6.10
 azure-monitor-opentelemetry-exporter==1.0.0b39
 azure-storage-blob==12.30.0
-chainlit==2.9.4
+chainlit==2.11.0
 fastapi>=0.137.1
 httpx==0.28.1
 itsdangerous==2.2.0
