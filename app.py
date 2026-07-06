@@ -131,7 +131,43 @@ def resolve_reference_href(raw_href: str) -> Optional[str]:
 
     split_href = urllib.parse.urlsplit(href)
     if split_href.scheme or split_href.netloc:
-        return href
+        # Absolute URL. Some knowledge sources (e.g. the Foundry IQ azureBlob base
+        # corpus) emit citation hrefs as fully-qualified blob URLs. Those point at
+        # our own storage account but carry no SAS token, so returning them as-is
+        # forces the browser to hit the raw blob, which fails whenever public blob
+        # access is disabled. Sign them here just like relative references.
+        # External URLs and already-signed URLs are left untouched.
+        blob_host = (
+            f"{STORAGE_ACCOUNT_NAME}.blob.core.windows.net".lower()
+            if STORAGE_ACCOUNT_NAME
+            else ""
+        )
+        already_signed = "sig=" in (split_href.query or "").lower()
+        if not blob_host or split_href.netloc.lower() != blob_host or already_signed:
+            return href
+        abs_path = urllib.parse.unquote(split_href.path.replace("\\", "/")).lstrip("/")
+        abs_container, _, abs_blob = abs_path.partition("/")
+        if not abs_container or not abs_blob:
+            return href
+        try:
+            abs_sas_url = generate_blob_sas_url(abs_container, abs_blob)
+        except FileNotFoundError:
+            logger.info(
+                "Reference '%s' points to missing blob %s/%s - omitting from output",
+                raw_href,
+                abs_container,
+                abs_blob,
+            )
+            return None
+        except Exception:
+            logger.warning(
+                "Failed to build SAS URL for absolute reference '%s' - omitting from output",
+                raw_href,
+            )
+            return None
+        if abs_sas_url and split_href.fragment:
+            return f"{abs_sas_url}#{split_href.fragment}"
+        return abs_sas_url
 
     if href.startswith("/api/download/") or href.startswith("api/download/"):
         return href
