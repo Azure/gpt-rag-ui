@@ -1,4 +1,5 @@
 import logging
+import uuid
 
 from connectors.appconfig import AppConfigClient
 
@@ -6,11 +7,16 @@ from connectors.appconfig import AppConfigClient
 logger = logging.getLogger("gpt_rag_ui.auth_common")
 
 
+def normalize_guid(value: str, *, claim_name: str) -> str:
+    try:
+        return str(uuid.UUID(str(value or "").strip()))
+    except (AttributeError, ValueError) as exc:
+        raise ValueError(f"{claim_name} must be a GUID.") from exc
+
+
 def canonical_principal_id(tenant_id: str, object_id: str) -> str:
-    tenant = str(tenant_id or "").strip().lower()
-    principal = str(object_id or "").strip().lower()
-    if not tenant or not principal:
-        raise ValueError("Both tid and oid are required for a stable user identity.")
+    tenant = normalize_guid(tenant_id, claim_name="tid")
+    principal = normalize_guid(object_id, claim_name="oid")
     return f"{tenant}:{principal}"
 
 
@@ -39,8 +45,6 @@ def is_user_authorized(
     if ":" in normalized_principal_id:
         _, object_id = normalized_principal_id.split(":", 1)
         if object_id:
-            # Keep the established bare-oid allow-list contract used by the
-            # orchestrator while preferring tid:oid for new UI configuration.
             candidate_ids.add(object_id)
 
     if (
