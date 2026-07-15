@@ -166,8 +166,6 @@ class EntraTokenValidator:
                 f"The Entra access token is missing the required "
                 f"'{self.required_scope}' delegated scope."
             )
-        if not (claims.get("oid") or claims.get("sub")):
-            raise EntraTokenError(
-                "The Entra access token must contain an oid or sub claim."
-            )
+        if not claims.get("oid"):
+            raise EntraTokenError("The Entra access token must contain an oid claim.")
         return claims

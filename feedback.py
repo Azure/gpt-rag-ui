@@ -4,6 +4,7 @@ import inspect
 
 from orchestrator_client import call_orchestrator_for_feedback
 from dependencies import get_config
+from conversation_security import get_owned_conversation
 
 config = get_config()
 
@@ -130,7 +131,7 @@ def register_feedback_handlers(auth_info=None):
         nonlocal feedback_msg
         nonlocal last_feedback_context
         try:
-            logging.info("[feedback] Received submit_feedback action with payload: %s", action.payload)
+            logging.info("[feedback] Received submit_feedback action")
             question_id = action.payload.get("questionId")
             ask = action.payload.get("ask")
             conversation_id = action.payload.get("conversationId")
@@ -160,6 +161,15 @@ def register_feedback_handlers(auth_info=None):
             auth_payload = auth_info() if auth_info else {}
             if inspect.isawaitable(auth_payload):
                 auth_payload = await auth_payload
+            if not await get_owned_conversation(conversation_id, auth_payload):
+                logging.warning(
+                    "[feedback] Conversation ownership denied: conversation=%s",
+                    conversation_id,
+                )
+                return await cl.context.emitter.send_toast(
+                    "You are not authorized to submit feedback for this conversation.",
+                    "error",
+                )
             orc_feedback_response = await call_orchestrator_for_feedback(
                 conversation_id=conversation_id,
                 question_id=question_id,
@@ -186,7 +196,7 @@ def register_feedback_handlers(auth_info=None):
                 feedback_msg = None
             logging.exception("[feedback] Error while handling feedback submission")
             return await cl.context.emitter.send_toast(
-                f"An unexpected error occurred while submitting feedback: {e}", "error"
+                "An unexpected error occurred while submitting feedback.", "error"
             )
 
     @cl.action_callback("close_feedback_popup")

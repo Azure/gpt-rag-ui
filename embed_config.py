@@ -16,15 +16,21 @@ class EmbedConfigError(ValueError):
 class EmbedSettings:
     enabled: bool = False
     allowed_origins: tuple[str, ...] = ()
-    auth_mode: Literal["anonymous", "entra"] = "anonymous"
+    ui_origin: str = ""
     cookie_samesite: Literal["lax", "strict", "none"] = "lax"
     entra_tenant_id: str = ""
     entra_audience: str = ""
     entra_required_scope: str = "user_impersonation"
+    session_ttl_seconds: int = 3600
+    max_sessions: int = 1000
 
     @property
     def uses_entra(self) -> bool:
-        return self.enabled and self.auth_mode == "entra"
+        return self.enabled
+
+    @property
+    def runtime_allowed_origins(self) -> tuple[str, ...]:
+        return tuple(dict.fromkeys((self.ui_origin, *self.allowed_origins)))
 
     @property
     def entra_issuer(self) -> str:
@@ -66,6 +72,27 @@ def _parse_bool(value: str, *, key: str, default: bool) -> bool:
     raise EmbedConfigError(
         f"{key} must be one of true/false, 1/0, yes/no, or on/off."
     )
+
+
+def _parse_bounded_int(
+    value: str,
+    *,
+    key: str,
+    default: int,
+    minimum: int,
+    maximum: int,
+) -> int:
+    if not value:
+        return default
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise EmbedConfigError(f"{key} must be an integer.") from exc
+    if not minimum <= parsed <= maximum:
+        raise EmbedConfigError(
+            f"{key} must be between {minimum} and {maximum}."
+        )
+    return parsed
 
 
 def _normalize_origin(value: str) -> str:
@@ -153,13 +180,9 @@ def load_embed_settings(
         _read_setting(config, environ, "CHAINLIT_ALLOWED_ORIGINS")
     )
 
-    auth_mode = (
-        _read_setting(config, environ, "CHAINLIT_COPILOT_AUTH_MODE") or "anonymous"
-    ).lower()
-    if auth_mode not in {"anonymous", "entra"}:
-        raise EmbedConfigError(
-            "CHAINLIT_COPILOT_AUTH_MODE must be 'anonymous' or 'entra'."
-        )
+    ui_origin = _normalize_origin(
+        _read_setting(config, environ, "CHAINLIT_URL")
+    )
 
     cookie_samesite = (
         _read_setting(config, environ, "CHAINLIT_COOKIE_SAMESITE") or "lax"
@@ -187,30 +210,45 @@ def load_embed_settings(
         )
         or "user_impersonation"
     )
-    if auth_mode == "entra":
-        if not _TENANT_ID_RE.fullmatch(tenant_id):
-            raise EmbedConfigError(
-                "CHAINLIT_COPILOT_ENTRA_TENANT_ID must be a tenant GUID "
-                "when CHAINLIT_COPILOT_AUTH_MODE=entra."
-            )
-        if not audience or any(character.isspace() for character in audience):
-            raise EmbedConfigError(
-                "CHAINLIT_COPILOT_ENTRA_AUDIENCE is required and cannot contain "
-                "whitespace when CHAINLIT_COPILOT_AUTH_MODE=entra."
-            )
-        if any(character.isspace() for character in required_scope):
-            raise EmbedConfigError(
-                "CHAINLIT_COPILOT_ENTRA_REQUIRED_SCOPE must contain one scope name."
-            )
+    if not _TENANT_ID_RE.fullmatch(tenant_id):
+        raise EmbedConfigError(
+            "CHAINLIT_COPILOT_ENTRA_TENANT_ID must be a tenant GUID."
+        )
+    tenant_id = tenant_id.lower()
+    if not audience or any(character.isspace() for character in audience):
+        raise EmbedConfigError(
+            "CHAINLIT_COPILOT_ENTRA_AUDIENCE is required and cannot contain whitespace."
+        )
+    if any(character.isspace() for character in required_scope):
+        raise EmbedConfigError(
+            "CHAINLIT_COPILOT_ENTRA_REQUIRED_SCOPE must contain one scope name."
+        )
+
+    session_ttl_seconds = _parse_bounded_int(
+        _read_setting(config, environ, "CHAINLIT_COPILOT_SESSION_TTL_SECONDS"),
+        key="CHAINLIT_COPILOT_SESSION_TTL_SECONDS",
+        default=3600,
+        minimum=60,
+        maximum=86400,
+    )
+    max_sessions = _parse_bounded_int(
+        _read_setting(config, environ, "CHAINLIT_COPILOT_MAX_SESSIONS"),
+        key="CHAINLIT_COPILOT_MAX_SESSIONS",
+        default=1000,
+        minimum=1,
+        maximum=10000,
+    )
 
     return EmbedSettings(
         enabled=True,
         allowed_origins=allowed_origins,
-        auth_mode=auth_mode,
+        ui_origin=ui_origin,
         cookie_samesite=cookie_samesite,
         entra_tenant_id=tenant_id,
         entra_audience=audience,
         entra_required_scope=required_scope,
+        session_ttl_seconds=session_ttl_seconds,
+        max_sessions=max_sessions,
     )
 
 
@@ -222,4 +260,4 @@ def configure_chainlit_allowed_origins(
 
     if not settings.enabled:
         return
-    chainlit_config.project.allow_origins = list(settings.allowed_origins)
+    chainlit_config.project.allow_origins = list(settings.runtime_allowed_origins)

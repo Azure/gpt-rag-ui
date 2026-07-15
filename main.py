@@ -1,4 +1,6 @@
+import asyncio
 import logging
+import mimetypes
 import os
 import secrets
 from collections.abc import AsyncIterator
@@ -6,8 +8,9 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
+from urllib.parse import quote
 
-from fastapi import FastAPI, Response
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from connectors import AppConfigClient, BlobClient
@@ -56,7 +59,6 @@ def _is_falsey(value: str | None) -> bool:
 @dataclass(frozen=True)
 class AuthState:
     oauth_configured: bool
-    header_auth_configured: bool
     allow_anonymous: bool
     allow_anonymous_source: str
     allow_anonymous_raw: str
@@ -299,8 +301,7 @@ def _evaluate_auth_state(
 
     embed_settings = embed_settings or EmbedSettings()
     oauth_configured = bool(client_id_value and tenant_id_value and client_secret_value)
-    header_auth_configured = embed_settings.uses_entra
-    default_allow_anonymous = (not running_in_azure_host) or (not oauth_configured)
+    default_allow_anonymous = not running_in_azure_host
 
     allow_anonymous_source = "default"
     allow_anonymous_raw = ""
@@ -339,23 +340,14 @@ def _evaluate_auth_state(
         else:
             allow_anonymous = default_allow_anonymous
 
-    if embed_settings.enabled and embed_settings.auth_mode == "anonymous":
-        oauth_configured = False
-        allow_anonymous = True
-        allow_anonymous_source = "copilot-auth-mode"
-    elif header_auth_configured:
-        allow_anonymous = False
-        allow_anonymous_source = "copilot-auth-mode"
-
     os.environ["ALLOW_ANONYMOUS_EFFECTIVE"] = "true" if allow_anonymous else "false"
     os.environ["ALLOW_ANONYMOUS_SOURCE"] = allow_anonymous_source
     os.environ["ALLOW_ANONYMOUS_RAW"] = allow_anonymous_raw or "<unset>"
 
     logger.info(
-        "Auth decision: running_in_azure_host=%s oauth_min_config_present=%s header_auth_configured=%s default_allow_anonymous=%s allow_anonymous=%s allow_anonymous_source=%s",
+        "Auth decision: running_in_azure_host=%s oauth_min_config_present=%s default_allow_anonymous=%s allow_anonymous=%s allow_anonymous_source=%s",
         running_in_azure_host,
         oauth_configured,
-        header_auth_configured,
         default_allow_anonymous,
         allow_anonymous,
         allow_anonymous_source,
@@ -370,7 +362,6 @@ def _evaluate_auth_state(
 
     return AuthState(
         oauth_configured=oauth_configured,
-        header_auth_configured=header_auth_configured,
         allow_anonymous=allow_anonymous,
         allow_anonymous_source=allow_anonymous_source,
         allow_anonymous_raw=(allow_anonymous_raw or "<unset>"),
@@ -454,11 +445,7 @@ def _configure_auth_environment(config: AppConfigClient, auth_state: AuthState |
     else:
         cleared = _clear_oauth_env_vars()
 
-        if auth_state.header_auth_configured:
-            logger.info(
-                "Interactive OAuth is not configured; using Entra header authentication for Copilot."
-            )
-        elif allow_anonymous:
+        if allow_anonymous:
             logger.warning(
                 "OAuth is not configured (missing client_id/tenant_id/client_secret). "
                 "Running in anonymous mode (ALLOW_ANONYMOUS=true). Cleared OAuth env vars=%s",
@@ -584,18 +571,11 @@ def _configure_embed_environment(settings: EmbedSettings) -> None:
     os.environ["CHAINLIT_COPILOT_ENABLED_EFFECTIVE"] = (
         "true" if settings.enabled else "false"
     )
-    os.environ["CHAINLIT_COPILOT_AUTH_MODE_EFFECTIVE"] = settings.auth_mode
     if not settings.enabled:
         return
 
     os.environ["CHAINLIT_COOKIE_SAMESITE"] = settings.cookie_samesite
-    if settings.uses_entra:
-        os.environ["CHAINLIT_COPILOT_ENTRA_TENANT_ID"] = settings.entra_tenant_id
-        os.environ["CHAINLIT_COPILOT_ENTRA_AUDIENCE"] = settings.entra_audience
-        os.environ["CHAINLIT_COPILOT_ENTRA_REQUIRED_SCOPE"] = (
-            settings.entra_required_scope
-        )
-        os.environ["CHAINLIT_CUSTOM_AUTH"] = "1"
+    os.environ["CHAINLIT_PUBLIC_URL"] = settings.ui_origin
 
 
 def _create_chainlit_app(
@@ -614,12 +594,33 @@ def _create_chainlit_app(
     effective_auth = auth_state or _evaluate_auth_state(config, embed_settings)
     _sync_chainlit_spontaneous_file_upload(effective_auth)
 
+    from download_security import configure_download_tokens
+
+    public_url = (
+        embed_settings.ui_origin
+        or (os.environ.get("CHAINLIT_URL") or "").strip().rstrip("/")
+    )
+    if public_url:
+        configure_download_tokens(
+            secret=os.environ["CHAINLIT_AUTH_SECRET"],
+            public_url=public_url,
+        )
+
+    copilot_sessions = None
+    if embed_settings.enabled:
+        from embed_auth import configure_session_store
+
+        copilot_sessions = configure_session_store(
+            max_sessions=embed_settings.max_sessions,
+            ttl_seconds=embed_settings.session_ttl_seconds,
+        )
+
     # Importing chainlit.config does not create the server app, so enabled
     # origins can be applied in memory without modifying the deployment files.
     from chainlit.config import config as chainlit_config
 
     configure_chainlit_allowed_origins(embed_settings, chainlit_config)
-    from chainlit.server import app as chainlit_app
+    from chainlit.server import app as chainlit_app, sio
     from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
     from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
     from starlette.middleware.cors import CORSMiddleware
@@ -627,6 +628,18 @@ def _create_chainlit_app(
     account_name = _get_str_config(config, "STORAGE_ACCOUNT_NAME")
     documents_container = _get_str_config(config, "DOCUMENTS_STORAGE_CONTAINER")
     images_container = _get_str_config(config, "DOCUMENTS_IMAGES_STORAGE_CONTAINER")
+    conversation_documents_container = _get_str_config(
+        config,
+        "CONVERSATION_DOCUMENTS_STORAGE_CONTAINER",
+    )
+    shared_download_containers = {
+        container.strip().strip("/")
+        for container in _get_str_config(
+            config,
+            "CITATION_SHARED_DOWNLOAD_CONTAINERS",
+        ).split(",")
+        if container.strip().strip("/")
+    }
 
     def download_from_blob(file_name: str) -> bytes:
         logger.info("Preparing blob download for '%s'", file_name)
@@ -641,32 +654,6 @@ def _create_chainlit_app(
         except Exception:
             logger.exception("Error downloading blob '%s'", file_name)
             raise
-
-    def handle_file_download(file_path: str):
-        try:
-            file_bytes = download_from_blob(file_path)
-            if not file_bytes:
-                return Response("File not found or empty.", status_code=404, media_type="text/plain")
-        except Exception as e:
-            error_message = str(e)
-            status_code = 404 if "BlobNotFound" in error_message else 500
-            logger.exception("Download error for '%s'", file_path)
-            return Response(
-                f"{'Blob not found' if status_code == 404 else 'Internal server error'}: {error_message}.",
-                status_code=status_code,
-                media_type="text/plain",
-            )
-
-        actual_file_name = os.path.basename(file_path)
-        return StreamingResponse(
-            BytesIO(file_bytes),
-            media_type="application/octet-stream",
-            headers={"Content-Disposition": f'attachment; filename="{actual_file_name}"'},
-        )
-
-    # Create a separate FastAPI sub-application that will be mounted.
-    blob_download_app = FastAPI()
-    logger.info("Created FastAPI sub-application for blob downloads")
 
     # One-time runtime auth-mode log (useful when operators attach to logs after startup).
     _auth_mode_logged = False
@@ -688,24 +675,6 @@ def _create_chainlit_app(
                 (os.environ.get("ALLOW_ANONYMOUS_SOURCE") or "<unset>"),
             )
         return await call_next(request)
-
-    @blob_download_app.get("/{container_name}/{file_path:path}")
-    async def download_blob_file(container_name: str, file_path: str):
-        logger.info("Download request received: container=%s file=%s", container_name, file_path)
-        normalized = container_name.strip().strip("/")
-        target_container = None
-        if normalized == documents_container:
-            target_container = documents_container
-        elif normalized == images_container:
-            target_container = images_container
-
-        if not target_container:
-            logger.warning("Rejected download for unknown container '%s'", container_name)
-            return Response("Container not found", status_code=404, media_type="text/plain")
-
-        return handle_file_download(f"{target_container}/{file_path}")
-
-    logger.debug("Registered download_blob_file route on blob_download_app")
 
     # Import Chainlit event handlers.
     import app as chainlit_handlers  # noqa: F401
@@ -745,78 +714,220 @@ def _create_chainlit_app(
     host_app = FastAPI(title="GPT-RAG UI host")
     if embed_settings.enabled:
         from embed_security import (
-            CopilotOriginMiddleware,
-            CopilotSecurityMiddleware,
+            configure_copilot_bridge_guards,
+            CopilotRequestMiddleware,
         )
 
         host_app.add_middleware(
             CORSMiddleware,
             allow_origins=list(embed_settings.allowed_origins),
             allow_credentials=True,
-            allow_methods=["*"],
-            allow_headers=["*"],
+            allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+            allow_headers=["Authorization", "Content-Type"],
         )
         host_app.add_middleware(
-            CopilotOriginMiddleware,
-            allowed_origins=embed_settings.allowed_origins,
-        )
-        host_app.add_middleware(
-            CopilotSecurityMiddleware,
+            CopilotRequestMiddleware,
             settings=embed_settings,
+            sessions=copilot_sessions,
         )
+        configure_copilot_bridge_guards(sio)
         logger.info(
-            "Chainlit Copilot enabled: auth_mode=%s origins=%s cookie_samesite=%s",
-            embed_settings.auth_mode,
+            "Chainlit Copilot enabled: origins=%s cookie_samesite=%s max_sessions=%s session_ttl_seconds=%s",
             list(embed_settings.allowed_origins),
             embed_settings.cookie_samesite,
+            embed_settings.max_sessions,
+            embed_settings.session_ttl_seconds,
         )
 
-    if embed_settings.uses_entra:
-        from chainlit.auth import set_auth_cookie
-        from chainlit.data import get_data_layer
-        from fastapi import HTTPException, Request, status
+    if embed_settings.enabled:
+        import httpx
 
-        from auth_header import header_auth_callback
-        from embed_auth import create_embed_session_jwt
+        from auth_common import canonical_principal_id, is_user_authorized
+        from embed_auth import (
+            clear_copilot_session_cookie,
+            session_id_from_request,
+            set_copilot_session_cookie,
+        )
+        from entra_token import EntraTokenError, EntraTokenValidator
 
-        async def _authenticate_copilot(request: Request):
-            user = await header_auth_callback(request.headers)
-            if not user:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="credentialssignin",
-                )
-            if not user.metadata.get("authorized", False):
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="accessdenied",
-                )
+        validator = EntraTokenValidator(
+            tenant_id=embed_settings.entra_tenant_id,
+            audience=embed_settings.entra_audience,
+            required_scope=embed_settings.entra_required_scope,
+        )
 
-            if data_layer := get_data_layer():
-                try:
-                    await data_layer.create_user(user)
-                except Exception:
-                    logger.exception(
-                        "Unable to persist an Entra-authenticated Copilot user"
-                    )
-
-            expires_at = int(user.metadata["access_token_expires_at"])
-            session_token = create_embed_session_jwt(user, expires_at)
-            response = JSONResponse({"success": True})
-            set_auth_cookie(request, response, session_token)
+        def _copilot_auth_error(status_code: int, detail: str) -> JSONResponse:
+            response = JSONResponse(
+                {"detail": detail},
+                status_code=status_code,
+                headers={"Cache-Control": "no-store"},
+            )
+            clear_copilot_session_cookie(
+                response,
+                same_site=embed_settings.cookie_samesite,
+            )
             return response
 
-        # Chainlit 2.9.4 Copilot posts widget accessToken to /auth/jwt.
-        # The standard /auth/header path is also capped to the Entra token expiry.
-        host_app.add_api_route(
-            "/auth/jwt",
-            _authenticate_copilot,
-            methods=["POST"],
-        )
-        host_app.add_api_route(
-            "/auth/header",
-            _authenticate_copilot,
-            methods=["POST"],
+        @host_app.post("/copilot/auth/bootstrap")
+        async def bootstrap_copilot(request: Request):
+            previous_session_id = session_id_from_request(request)
+            await copilot_sessions.delete(previous_session_id)
+            authorization = request.headers.get("Authorization", "")
+            scheme, separator, access_token = authorization.partition(" ")
+            if not separator or scheme.lower() != "bearer" or not access_token.strip():
+                return _copilot_auth_error(
+                    status.HTTP_401_UNAUTHORIZED,
+                    "Authentication required",
+                )
+            try:
+                claims = await validator.validate(access_token.strip())
+            except EntraTokenError:
+                logger.warning("Copilot bootstrap rejected an invalid Entra token")
+                return _copilot_auth_error(
+                    status.HTTP_401_UNAUTHORIZED,
+                    "Authentication failed",
+                )
+            except httpx.HTTPError:
+                logger.exception("Copilot bootstrap could not reach Entra JWKS")
+                return _copilot_auth_error(
+                    status.HTTP_503_SERVICE_UNAVAILABLE,
+                    "Authentication service unavailable",
+                )
+
+            tenant_id = str(claims["tid"])
+            object_id = str(claims["oid"])
+            principal_id = canonical_principal_id(tenant_id, object_id)
+            principal_name = str(
+                claims.get("preferred_username")
+                or claims.get("email")
+                or claims.get("upn")
+                or ""
+            )
+            if not is_user_authorized(config, principal_name, principal_id):
+                logger.warning("Copilot bootstrap denied principal=%s", principal_id)
+                return _copilot_auth_error(
+                    status.HTTP_403_FORBIDDEN,
+                    "Access denied",
+                )
+
+            try:
+                session = await copilot_sessions.replace(
+                    previous_session_id=None,
+                    access_token=access_token.strip(),
+                    claims=claims,
+                    display_name=str(
+                        claims.get("name") or principal_name or principal_id
+                    ),
+                    principal_name=principal_name,
+                )
+            except (KeyError, TypeError, ValueError):
+                logger.warning("Copilot bootstrap rejected invalid token claims")
+                return _copilot_auth_error(
+                    status.HTTP_401_UNAUTHORIZED,
+                    "Authentication failed",
+                )
+            response = JSONResponse(
+                {"success": True, "expiresAt": session.expires_at},
+                headers={"Cache-Control": "no-store"},
+            )
+            set_copilot_session_cookie(
+                response,
+                session,
+                same_site=embed_settings.cookie_samesite,
+            )
+            return response
+
+        @host_app.post("/copilot/auth/logout")
+        async def logout_copilot(request: Request):
+            await copilot_sessions.delete(session_id_from_request(request))
+            response = JSONResponse(
+                {"success": True},
+                headers={"Cache-Control": "no-store"},
+            )
+            clear_copilot_session_cookie(
+                response,
+                same_site=embed_settings.cookie_samesite,
+            )
+            return response
+
+    from chainlit.auth import get_current_user
+    from chainlit.user import User
+    from conversation_security import get_owned_conversation
+    from download_security import get_download_tokens, is_download_target_allowed
+
+    @host_app.get("/api/download/{grant_token}")
+    async def download_blob_file(
+        grant_token: str,
+        current_user: User | None = Depends(get_current_user),
+    ):
+        if not current_user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication required",
+            )
+        grant = get_download_tokens().verify(grant_token)
+        metadata = current_user.metadata or {}
+        if not grant or grant.principal_id != current_user.identifier:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+        if not await get_owned_conversation(grant.conversation_id, metadata):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+
+        allowed_containers = {
+            container
+            for container in (
+                documents_container,
+                images_container,
+                conversation_documents_container,
+            )
+            if container
+        }
+        if grant.container not in allowed_containers:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+        if not is_download_target_allowed(
+            conversation_id=grant.conversation_id,
+            container=grant.container,
+            blob_name=grant.blob_name,
+            conversation_container=conversation_documents_container,
+            shared_containers=shared_download_containers,
+        ):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+
+        try:
+            file_bytes = await asyncio.to_thread(
+                download_from_blob,
+                f"{grant.container}/{grant.blob_name}",
+            )
+        except Exception as exc:
+            logger.warning(
+                "Authorized download failed: conversation=%s container=%s",
+                grant.conversation_id,
+                grant.container,
+                exc_info=True,
+            )
+            if "BlobNotFound" in str(exc):
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Not found",
+                ) from exc
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Download failed",
+            ) from exc
+        if not file_bytes:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+
+        file_name = os.path.basename(grant.blob_name)
+        content_type = mimetypes.guess_type(file_name)[0] or "application/octet-stream"
+        return StreamingResponse(
+            BytesIO(file_bytes),
+            media_type=content_type,
+            headers={
+                "Content-Disposition": (
+                    "attachment; filename*=UTF-8''"
+                    f"{quote(file_name, safe='')}"
+                ),
+                "Cache-Control": "private, no-store",
+            },
         )
 
     @host_app.get("/version-footer")
@@ -838,10 +949,8 @@ def _create_chainlit_app(
         }
         return JSONResponse(payload)
 
-    host_app.mount("/api/download", blob_download_app)
     host_app.mount("/", chainlit_app)
 
-    logger.info("Mounted blob download app at /api/download on host app")
     logger.info("Mounted Chainlit app at / on host app")
 
     FastAPIInstrumentor.instrument_app(host_app)
@@ -865,10 +974,17 @@ def build_app() -> FastAPI:
             logger.exception("Invalid Chainlit Copilot configuration")
             raise
         auth_state = _evaluate_auth_state(config, embed_settings)
+        if embed_settings.enabled and (
+            not auth_state.oauth_configured or auth_state.allow_anonymous
+        ):
+            raise EmbedConfigError(
+                "Chainlit Copilot requires standalone OAuth and "
+                "ALLOW_ANONYMOUS=false; embedding never bypasses or downgrades "
+                "the standalone authentication policy."
+            )
 
         if (
             auth_state.oauth_configured
-            or auth_state.header_auth_configured
             or auth_state.allow_anonymous
         ):
             return _create_chainlit_app(config, auth_state, embed_settings)

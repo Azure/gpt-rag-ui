@@ -3,7 +3,7 @@
 ## [Unreleased]
 
 ### Added
-- **Opt-in Chainlit Copilot embedding ([Azure/GPT-RAG#556](https://github.com/Azure/GPT-RAG/issues/556))**: Added explicit portal-origin CORS and `frame-ancestors` controls, same-site cookie configuration, anonymous or Entra-validated embedded authentication, and an operator guide. Standalone deployments retain their existing behavior while embedding is disabled.
+- **Secure opt-in Chainlit Copilot embedding ([Azure/GPT-RAG#556](https://github.com/Azure/GPT-RAG/issues/556))**: Added a dedicated Entra bootstrap endpoint, bounded server-side token state behind an opaque `HttpOnly` session cookie, exact portal-origin enforcement for HTTP and Socket.IO/WebSocket traffic, authenticated principal/conversation/blob-bound citation grants with default-denied shared containers, `tid:oid` thread ownership, default-denied browser bridges, and an operator guide that documents Chainlit 2.9.4 Shadow DOM/CSP and single-replica limitations. Standalone OAuth remains a separate fail-closed policy.
 
 ## [v2.3.13] - 2026-06-15
 

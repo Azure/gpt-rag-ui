@@ -88,13 +88,14 @@ class EntraTokenValidatorTests(unittest.IsolatedAsyncioTestCase):
                 self.create_token(exp=int(time.time()) - 10)
             )
 
-    async def test_rejects_token_without_stable_subject(self):
+    async def test_rejects_token_without_object_id_even_when_sub_exists(self):
         now = int(time.time())
         token = jwt.encode(
             {
                 "iss": ISSUER,
                 "aud": AUDIENCE,
                 "tid": TENANT_ID,
+                "sub": "subject-only-is-not-accepted",
                 "scp": "user_impersonation",
                 "iat": now,
                 "nbf": now - 1,
@@ -104,7 +105,7 @@ class EntraTokenValidatorTests(unittest.IsolatedAsyncioTestCase):
             algorithm="RS256",
             headers={"kid": "test-key"},
         )
-        with self.assertRaisesRegex(EntraTokenError, "oid or sub"):
+        with self.assertRaisesRegex(EntraTokenError, "oid"):
             await self.validator.validate(token)
 
     async def test_rejects_token_without_required_delegated_scope(self):

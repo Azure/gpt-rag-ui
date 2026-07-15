@@ -10,7 +10,7 @@ from typing import Dict, List, Optional
 import chainlit as cl
 import msal
 
-from auth_common import is_user_authorized
+from auth_common import canonical_principal_id, is_user_authorized
 from dependencies import get_config
 
 logger = logging.getLogger("gpt_rag_ui.auth_oauth")
@@ -284,7 +284,7 @@ def get_env_var(name: str, fallback: str | None = None, *, warn_on_missing: bool
 @cl.oauth_callback
 async def oauth_callback(
     provider_id: str, code: str, raw_user_data: Dict[str, str], default_user: cl.User
-) -> cl.User:
+) -> Optional[cl.User]:
     """Chainlit OAuth callback.
 
     Uses MSAL to exchange the Chainlit refresh token for an Entra ID access token.
@@ -386,45 +386,58 @@ async def oauth_callback(
         raise RuntimeError(f"Token acquisition failed: {error_desc}")
 
     access_token = result.get("access_token")
-    refresh_token = result.get("refresh_token")
+    refresh_token = result.get("refresh_token") or refresh_token
     id_token = result.get("id_token_claims", {})
+    if not access_token:
+        raise RuntimeError("Token acquisition failed: missing access token.")
 
-    if access_token and logger.isEnabledFor(logging.DEBUG):
+    if logger.isEnabledFor(logging.DEBUG):
         logger.debug(
             "Access token claims (unverified): %s",
             _access_token_debug_summary(access_token),
         )
 
-    user_id = id_token.get("oid", "00000000-0000-0000-0000-000000000000")
-    user_name = id_token.get("name", "anonymous")
-    principal_name = id_token.get("preferred_username", "")
+    tenant_id_claim = str(id_token.get("tid") or "").strip()
+    object_id = str(id_token.get("oid") or "").strip()
+    if not tenant_id_claim or not object_id:
+        raise RuntimeError(
+            "OAuth identity is missing the required tid or oid claim."
+        )
+    principal_id = canonical_principal_id(tenant_id_claim, object_id)
+    user_name = str(id_token.get("name") or "").strip() or principal_id
+    principal_name = str(id_token.get("preferred_username") or "").strip()
 
     # "Single token" mode: do not call Microsoft Graph from the client.
     # If you need group-based auth, it will require a second token (Graph audience).
     groups: List[str] = []
 
-    authorized = is_user_authorized(config, principal_name, user_id)
+    authorized = is_user_authorized(config, principal_name, principal_id)
 
     logger.info(
         "User authenticated: name='%s' principal='%s' authorized=%s",
         user_name,
-        principal_name or user_id,
+        principal_name or principal_id,
         authorized,
     )
+    if not authorized:
+        return None
 
     return cl.User(
-        identifier=user_name,
+        identifier=principal_id,
+        display_name=user_name,
         metadata={
             "access_token": access_token,
             "refresh_token": refresh_token,
             "access_token_acquired_at": int(time.time()),
-            "access_token_expires_at": _jwt_exp_unverified(access_token) if access_token else None,
+            "access_token_expires_at": _jwt_exp_unverified(access_token),
             "authorized": authorized,
             "auth_source": "oauth",
-            "user_name": user_name,
-            "client_principal_id": user_id,
+            "user_name": principal_id,
+            "tenant_id": tenant_id_claim.lower(),
+            "object_id": object_id.lower(),
+            "client_principal_id": object_id.lower(),
             "client_principal_name": principal_name,
             "client_group_names": groups,
-            "principal_id": user_id,
+            "principal_id": principal_id,
         },
     )

@@ -15,8 +15,9 @@ import httpx
 from orchestrator_client import call_orchestrator_stream
 from feedback import register_feedback_handlers,create_feedback_actions
 from dependencies import get_config
-from connectors import BlobClient
 from ingestion_client import ingest_files_session
+from download_security import get_download_tokens, is_download_target_allowed
+from embed_auth import resolve_access_token
 
 from constants import APPLICATION_INSIGHTS_CONNECTION_STRING, APP_NAME, UUID_REGEX, REFERENCE_REGEX, TERMINATE_TOKEN
 from telemetry import Telemetry
@@ -49,13 +50,7 @@ def _oauth_is_configured() -> bool:
 COPILOT_ENABLED = (
     os.environ.get("CHAINLIT_COPILOT_ENABLED_EFFECTIVE", "").lower() == "true"
 )
-COPILOT_AUTH_MODE = os.environ.get(
-    "CHAINLIT_COPILOT_AUTH_MODE_EFFECTIVE", "anonymous"
-).lower()
-HEADER_AUTH_CONFIGURED = COPILOT_ENABLED and COPILOT_AUTH_MODE == "entra"
-OAUTH_CONFIGURED = _oauth_is_configured() and not (
-    COPILOT_ENABLED and COPILOT_AUTH_MODE == "anonymous"
-)
+OAUTH_CONFIGURED = _oauth_is_configured()
 
 # If OAuth isn't configured, default to allowing anonymous even in Azure.
 _allow_anonymous_effective = os.environ.get("ALLOW_ANONYMOUS_EFFECTIVE")
@@ -64,8 +59,7 @@ if _allow_anonymous_effective is not None:
 else:
     ALLOW_ANONYMOUS = config.get(
         "ALLOW_ANONYMOUS",
-        (not _is_running_in_azure_host)
-        or not (OAUTH_CONFIGURED or HEADER_AUTH_CONFIGURED),
+        not _is_running_in_azure_host,
         bool,
     )
 STORAGE_ACCOUNT_NAME = config.get("STORAGE_ACCOUNT_NAME", "", str)
@@ -87,6 +81,13 @@ IMAGES_CONTAINER = _normalize_container_name(
 CONVERSATION_DOCUMENTS_CONTAINER = _normalize_container_name(
     config.get("CONVERSATION_DOCUMENTS_STORAGE_CONTAINER", "", str)
 )
+SHARED_DOWNLOAD_CONTAINERS = {
+    _normalize_container_name(container)
+    for container in str(
+        config.get("CITATION_SHARED_DOWNLOAD_CONTAINERS", "", str) or ""
+    ).split(",")
+    if _normalize_container_name(container)
+}
 IMAGE_EXTENSIONS = {"bmp", "jpeg", "jpg", "png", "tiff"}
 
 def extract_conversation_id_from_chunk(chunk: str) -> Tuple[Optional[str], str]:
@@ -97,66 +98,25 @@ def extract_conversation_id_from_chunk(chunk: str) -> Tuple[Optional[str], str]:
         return conv_id, chunk[match.end():]
     return None, chunk
 
-def generate_blob_sas_url(container: str, blob_name: str, expiry_hours: int = 1) -> str:
-    """
-    Generate a time-limited SAS URL for direct blob download.
-    This bypasses Container Apps routing completely.
-    Raises FileNotFoundError if the blob does not exist.
-    """
-    try:
-        blob_url = f"https://{STORAGE_ACCOUNT_NAME}.blob.core.windows.net/{container}/{blob_name}"
-        blob_client = BlobClient(blob_url=blob_url)
-        if not blob_client.exists():
-            logger.info("Blob not found: %s/%s - reference will be omitted", container, blob_name)
-            raise FileNotFoundError(f"Blob '{container}/{blob_name}' not found")
-        
-        # Generate SAS token with read permission
-        from datetime import datetime, timedelta, timezone
-        expiry = datetime.now(timezone.utc) + timedelta(hours=expiry_hours)
-        
-        # Try to generate SAS URL (requires azure-storage-blob with SAS support)
-        try:
-            sas_url = blob_client.generate_sas_url(expiry=expiry, permissions="r")
-            logger.debug(
-                "Generated SAS URL for %s/%s (expires in %sh)",
-                container,
-                blob_name,
-                expiry_hours,
-            )
-            return sas_url
-        except AttributeError:
-            # Fallback: return direct blob URL (relies on public access or managed identity at client side)
-            logger.warning(
-                "SAS generation not supported, using direct blob URL for %s/%s",
-                container,
-                blob_name,
-            )
-            return blob_url
-    except FileNotFoundError:
-        # Re-raise FileNotFoundError so the caller can handle it
-        raise
-    except Exception as e:
-        logger.exception("Failed to generate blob URL for %s/%s", container, blob_name)
-        raise
-
-def resolve_reference_href(raw_href: str) -> Optional[str]:
-    """
-    Resolve a reference href to a SAS URL. Returns None if the blob doesn't exist.
-    """
+def resolve_reference_href(
+    raw_href: str,
+    *,
+    conversation_id: str,
+    principal_id: str,
+) -> Optional[str]:
+    """Create an authenticated, principal-bound absolute citation URL."""
     href = (raw_href or "").strip()
-    if not href:
+    if not href or not conversation_id or not principal_id:
         return None
 
     split_href = urllib.parse.urlsplit(href)
     if split_href.scheme or split_href.netloc:
-        return href
-
-    if href.startswith("/api/download/") or href.startswith("api/download/"):
-        return href
+        return None
 
     path = urllib.parse.unquote(split_href.path.replace("\\", "/")).lstrip("/")
-    query = f"?{split_href.query}" if split_href.query else ""
     fragment = f"#{split_href.fragment}" if split_href.fragment else ""
+    if not path or any(part in {"", ".", ".."} for part in path.split("/")):
+        return None
 
     extension = path.rsplit(".", 1)[-1].lower() if "." in path else ""
     container = DOCUMENTS_CONTAINER
@@ -192,26 +152,42 @@ def resolve_reference_href(raw_href: str) -> Optional[str]:
 
     if not blob_name:
         return None
+    if not is_download_target_allowed(
+        conversation_id=conversation_id,
+        container=container,
+        blob_name=blob_name,
+        conversation_container=CONVERSATION_DOCUMENTS_CONTAINER,
+        shared_containers=SHARED_DOWNLOAD_CONTAINERS,
+    ):
+        logger.warning(
+            "Citation download omitted by container authorization policy: container=%s",
+            container,
+        )
+        return None
 
-    # Generate direct SAS URL to Azure Blob Storage (bypasses Container Apps completely)
     try:
-        sas_url = generate_blob_sas_url(container, blob_name)
-    except FileNotFoundError:
-        logger.info("Reference '%s' points to missing blob %s/%s - omitting from output", raw_href, container, blob_name)
+        download_url = get_download_tokens().issue(
+            principal_id=principal_id,
+            conversation_id=conversation_id,
+            container=container,
+            blob_name=blob_name,
+        )
+    except (RuntimeError, ValueError):
+        logger.warning(
+            "Unable to issue an authenticated citation URL for '%s'",
+            raw_href,
+        )
         return None
-    except Exception:
-        logger.warning("Failed to build SAS URL for reference '%s' - omitting from output", raw_href)
-        return None
-    
-    # Add original query and fragment if present
-    if sas_url and (query or fragment):
-        separator = "&" if "?" in sas_url else "?"
-        return f"{sas_url}{separator}{query.lstrip('?')}{fragment}"
-
-    return sas_url
+    return f"{download_url}{fragment}"
 
 
-def replace_source_reference_links(text: str, references: Optional[Set[str]] = None) -> str:
+def replace_source_reference_links(
+    text: str,
+    references: Optional[Set[str]] = None,
+    *,
+    conversation_id: str,
+    principal_id: str,
+) -> str:
     """
     Replace source reference links in text. Links that point to non-existent blobs are completely removed.
     """
@@ -219,15 +195,18 @@ def replace_source_reference_links(text: str, references: Optional[Set[str]] = N
         display_text = match.group(1)
         raw_href = match.group(2)
         # Resolve the original link into a signed blob URL when possible, otherwise drop it.
-        resolved_href = resolve_reference_href(raw_href)
+        resolved_href = resolve_reference_href(
+            raw_href,
+            conversation_id=conversation_id,
+            principal_id=principal_id,
+        )
         if resolved_href:
             if references is not None:
                 references.add(resolved_href)
             logger.debug("Resolved reference '%s' -> '%s'", raw_href, resolved_href)
             return f"[{display_text}]({resolved_href})"
-        # Returning an empty string removes the reference completely when the blob is missing
-        logger.debug("Omitting reference '[%s](%s)' - target not found", display_text, raw_href)
-        return ""
+        logger.debug("Rendering citation '%s' without an unauthorized link", display_text)
+        return display_text
 
     return REFERENCE_REGEX.sub(replacer, text)
 
@@ -240,7 +219,14 @@ def check_authorization() -> dict:
             'client_principal_id': metadata.get('client_principal_id', 'no-auth'),
             'client_principal_name': metadata.get('client_principal_name', 'anonymous'),
             'client_group_names': metadata.get('client_group_names', []),
-            'access_token': metadata.get('access_token')
+            'access_token': (
+                metadata.get('access_token')
+                if metadata.get("auth_source") != "copilot_session"
+                else None
+            ),
+            'principal_id': metadata.get('principal_id', ''),
+            'tenant_id': metadata.get('tenant_id', ''),
+            'object_id': metadata.get('object_id', ''),
         }
 
     # If OAuth is configured but we don't have a user in session,
@@ -249,7 +235,7 @@ def check_authorization() -> dict:
     return {
         'authorized': (
             ALLOW_ANONYMOUS
-            if not (OAUTH_CONFIGURED or HEADER_AUTH_CONFIGURED)
+            if not OAUTH_CONFIGURED
             else False
         ),
         'client_principal_id': 'no-auth',
@@ -269,11 +255,11 @@ async def get_auth_info() -> dict:
     app_user = cl.user_session.get("user")
     if app_user:
         metadata = app_user.metadata or {}
-        if metadata.get("auth_source") == "entra_header":
-            expires_at = int(metadata.get("access_token_expires_at") or 0)
-            if expires_at <= int(time.time()):
+        if metadata.get("auth_source") == "copilot_session":
+            access_token = await resolve_access_token(metadata)
+            if not access_token:
                 logger.warning(
-                    "Embedded Entra session expired for user=%s",
+                    "Embedded Copilot session expired for user=%s",
                     metadata.get("client_principal_name")
                     or metadata.get("client_principal_id")
                     or app_user.identifier,
@@ -287,6 +273,8 @@ async def get_auth_info() -> dict:
                     'access_token': None,
                     'auth_error': 'session_expired',
                 }
+        else:
+            access_token = metadata.get("access_token")
 
         # Opportunistic token refresh (OAuth mode only).
         if metadata.get("auth_source") == "oauth":
@@ -313,13 +301,16 @@ async def get_auth_info() -> dict:
             'client_principal_id': metadata.get('client_principal_id', 'no-auth'),
             'client_principal_name': metadata.get('client_principal_name', 'anonymous'),
             'client_group_names': metadata.get('client_group_names', []),
-            'access_token': metadata.get('access_token'),
+            'access_token': access_token,
+            'principal_id': metadata.get('principal_id', ''),
+            'tenant_id': metadata.get('tenant_id', ''),
+            'object_id': metadata.get('object_id', ''),
         }
 
     return {
         'authorized': (
             ALLOW_ANONYMOUS
-            if not (OAUTH_CONFIGURED or HEADER_AUTH_CONFIGURED)
+            if not OAUTH_CONFIGURED
             else False
         ),
         'client_principal_id': 'no-auth',
@@ -373,14 +364,10 @@ def _access_token_debug_summary(access_token: str) -> dict:
 
 # Importing `auth_oauth` registers @cl.oauth_callback as a side effect.
 # Only register OAuth when the minimum configuration is present.
-if OAUTH_CONFIGURED or HEADER_AUTH_CONFIGURED:
+if OAUTH_CONFIGURED:
     ENABLE_AUTHENTICATION = True
-    if OAUTH_CONFIGURED:
-        import auth_oauth  # noqa: F401
-        logger.info("Authentication enabled: Chainlit OAuth (Azure AD)")
-    if HEADER_AUTH_CONFIGURED:
-        import auth_header  # noqa: F401
-        logger.info("Authentication enabled: Entra header auth for Chainlit Copilot")
+    import auth_oauth  # noqa: F401
+    logger.info("Authentication enabled: Chainlit OAuth (Azure AD)")
     import datalayer  # noqa: F401  — registers @cl.data_layer for conversation history
 else:
     ENABLE_AUTHENTICATION = False
@@ -410,6 +397,10 @@ async def on_chat_start():
 
 @cl.on_chat_resume
 async def on_chat_resume(thread: ThreadDict):
+    app_user = cl.user_session.get("user")
+    if not app_user or thread.get("userIdentifier") != app_user.identifier:
+        logger.warning("Blocked unauthorized chat resume: thread=%s", thread["id"])
+        raise PermissionError("Thread access denied.")
     cl.user_session.set("conversation_id", thread["id"])
     logger.info("Chat resumed: thread=%s", thread["id"])
 
@@ -669,7 +660,12 @@ async def handle_message(message: cl.Message):
 
                 # Track and rewrite references as blob download links
                 chunk_refs: Set[str] = set()
-                cleaned_chunk = replace_source_reference_links(cleaned_chunk, chunk_refs)
+                cleaned_chunk = replace_source_reference_links(
+                    cleaned_chunk,
+                    chunk_refs,
+                    conversation_id=conversation_id,
+                    principal_id=str(auth_info.get("principal_id") or ""),
+                )
                 if chunk_refs:
                     references.update(chunk_refs)
                     logger.info(
@@ -774,7 +770,10 @@ async def handle_message(message: cl.Message):
                 message.id, conversation_id, message.content
             )
         final_text = replace_source_reference_links(
-            full_text.replace(TERMINATE_TOKEN, ""), references
+            full_text.replace(TERMINATE_TOKEN, ""),
+            references,
+            conversation_id=conversation_id,
+            principal_id=str(auth_info.get("principal_id") or ""),
         )
         if SHOW_STATISTICS:
             elapsed = time.time() - response_start_time
