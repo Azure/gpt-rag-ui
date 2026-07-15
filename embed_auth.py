@@ -63,6 +63,11 @@ class CopilotSessionStore:
         object_id = str(claims["oid"]).lower()
         principal_id = canonical_principal_id(tenant_id, object_id)
         session_id = secrets.token_urlsafe(32)
+        group_ids = [
+            str(group)
+            for group in claims.get("groups", [])
+            if isinstance(group, str)
+        ]
         user = User(
             identifier=principal_id,
             display_name=display_name,
@@ -78,11 +83,7 @@ class CopilotSessionStore:
                 "client_principal_id": object_id,
                 "client_principal_name": principal_name,
                 "user_name": principal_id,
-                "client_group_names": [
-                    str(group)
-                    for group in claims.get("groups", [])
-                    if isinstance(group, str)
-                ],
+                "client_group_names": list(group_ids),
             },
         )
         chainlit_token = create_embed_session_jwt(user, expires_at)

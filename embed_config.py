@@ -121,6 +121,10 @@ def _normalize_origin(value: str) -> str:
         raise EmbedConfigError(
             f"Invalid origin '{origin}': paths, query strings, and fragments are not allowed."
         )
+    if port is not None and port <= 0:
+        raise EmbedConfigError(
+            f"Invalid origin '{origin}': the port must be between 1 and 65535."
+        )
 
     hostname = parsed.hostname.lower()
     if "*" in hostname:
@@ -238,7 +242,6 @@ def load_embed_settings(
         minimum=1,
         maximum=10000,
     )
-
     return EmbedSettings(
         enabled=True,
         allowed_origins=allowed_origins,

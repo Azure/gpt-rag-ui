@@ -8,6 +8,8 @@ import httpx
 import jwt
 from jwt.algorithms import RSAAlgorithm
 
+from auth_common import normalize_guid
+
 
 class EntraTokenError(ValueError):
     """Raised when an embedded-session Entra token cannot be trusted."""
@@ -28,10 +30,10 @@ class EntraTokenValidator:
         clock_skew_seconds: int = 60,
         jwks_loader: JwksLoader | None = None,
     ):
-        self.tenant_id = tenant_id
+        self.tenant_id = normalize_guid(tenant_id, claim_name="tenant_id")
         self.audience = audience
         self.required_scope = required_scope
-        self.issuer = f"https://login.microsoftonline.com/{tenant_id}/v2.0"
+        self.issuer = f"https://login.microsoftonline.com/{self.tenant_id}/v2.0"
         self.jwks_url = (
             f"https://login.microsoftonline.com/{tenant_id}/discovery/v2.0/keys"
         )
@@ -154,7 +156,14 @@ class EntraTokenValidator:
         except jwt.PyJWTError as exc:
             raise EntraTokenError("The Entra access token is invalid.") from exc
 
-        if claims.get("tid") != self.tenant_id:
+        try:
+            token_tenant_id = normalize_guid(claims.get("tid"), claim_name="tid")
+            object_id = normalize_guid(claims.get("oid"), claim_name="oid")
+        except ValueError as exc:
+            raise EntraTokenError(
+                "The Entra access token must contain GUID tid and oid claims."
+            ) from exc
+        if token_tenant_id != self.tenant_id:
             raise EntraTokenError("The Entra access token tenant is not allowed.")
         scopes = {
             scope
@@ -166,6 +175,6 @@ class EntraTokenValidator:
                 f"The Entra access token is missing the required "
                 f"'{self.required_scope}' delegated scope."
             )
-        if not claims.get("oid"):
-            raise EntraTokenError("The Entra access token must contain an oid claim.")
+        claims["tid"] = token_tenant_id
+        claims["oid"] = object_id
         return claims
