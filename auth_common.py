@@ -45,8 +45,8 @@ def is_user_authorized(
     if ":" in normalized_principal_id:
         _, object_id = normalized_principal_id.split(":", 1)
         if object_id:
-            # The orchestrator still evaluates ALLOWED_USER_PRINCIPALS as oid.
-            # Accept both forms while the UI uses tid:oid for stable identity.
+            # Existing deployments commonly allow-list a bare oid. Keep
+            # accepting it while storing the tenant-qualified identity.
             candidate_ids.add(object_id)
 
     if (

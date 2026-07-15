@@ -187,6 +187,11 @@ def load_embed_settings(
     ui_origin = _normalize_origin(
         _read_setting(config, environ, "CHAINLIT_URL")
     )
+    if ui_origin in allowed_origins:
+        raise EmbedConfigError(
+            "CHAINLIT_URL must not also appear in CHAINLIT_ALLOWED_ORIGINS; "
+            "standalone and Copilot origins use separate authentication policies."
+        )
 
     cookie_samesite = (
         _read_setting(config, environ, "CHAINLIT_COOKIE_SAMESITE") or "lax"

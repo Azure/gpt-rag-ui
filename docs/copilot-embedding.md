@@ -190,9 +190,11 @@ call `stopAssistant` and remain signed out. On account change:
 4. Bootstrap again.
 5. Mount a fresh widget.
 
-Bootstrap invalidates any existing Copilot server session before accepting the
-new token, so a different account cannot inherit the previous principal's
-state. Failed bootstrap attempts also expire the browser cookie.
+A successful bootstrap atomically replaces and disconnects any existing
+Copilot server session, so a different account cannot inherit the previous
+principal's state. A malformed token or temporary JWKS failure does not destroy
+an otherwise valid current session. An explicit logout or an authorization
+denial clears it.
 
 Skipping the stop-and-clear sequence is not cosmetic: it can leave the old
 account's locally rendered thread visible. Treat a widget that shows the wrong

@@ -17,6 +17,7 @@ from embed_security import (
 
 PORTAL = "https://portal.example.com"
 CHAT = "https://chat.example.com"
+SESSION_ID = "s" * 43
 
 
 class FakeSessions:
@@ -24,7 +25,7 @@ class FakeSessions:
         self.session = session
 
     async def get(self, session_id):
-        return self.session if session_id == "opaque-session" else None
+        return self.session if session_id == SESSION_ID else None
 
 
 def create_app(session=None):
@@ -110,7 +111,7 @@ class EmbedSecurityTests(unittest.TestCase):
                 headers={
                     "Origin": PORTAL,
                     "Cookie": (
-                        f"{COPILOT_SESSION_COOKIE}=opaque-session; "
+                        f"{COPILOT_SESSION_COOKIE}={SESSION_ID}; "
                         "access_token=attacker-controlled"
                     ),
                 },
@@ -123,7 +124,7 @@ class EmbedSecurityTests(unittest.TestCase):
         with TestClient(create_app(session), base_url=CHAT) as client:
             response = client.get(
                 "/protected",
-                headers={"Cookie": f"{COPILOT_SESSION_COOKIE}=opaque-session"},
+                headers={"Cookie": f"{COPILOT_SESSION_COOKIE}={SESSION_ID}"},
             )
         self.assertEqual(200, response.status_code)
         self.assertIsNone(response.json()["cookie"])
@@ -135,7 +136,7 @@ class EmbedSecurityTests(unittest.TestCase):
                 "/protected",
                 headers={
                     "Referer": f"{PORTAL}/page",
-                    "Cookie": f"{COPILOT_SESSION_COOKIE}=opaque-session",
+                    "Cookie": f"{COPILOT_SESSION_COOKIE}={SESSION_ID}",
                 },
             )
         self.assertEqual(200, response.status_code)
@@ -147,7 +148,7 @@ class EmbedSecurityTests(unittest.TestCase):
                 "/protected",
                 headers={
                     "Referer": "https://attacker@portal.example.com/page",
-                    "Cookie": f"{COPILOT_SESSION_COOKIE}=opaque-session",
+                    "Cookie": f"{COPILOT_SESSION_COOKIE}={SESSION_ID}",
                 },
             )
         self.assertEqual(403, response.status_code)
@@ -185,7 +186,7 @@ class EmbedSecurityTests(unittest.TestCase):
                 with client.websocket_connect(
                     "/ws/socket.io",
                     headers={
-                        "Cookie": f"{COPILOT_SESSION_COOKIE}=opaque-session",
+                        "Cookie": f"{COPILOT_SESSION_COOKIE}={SESSION_ID}",
                     },
                 ):
                     pass
@@ -198,7 +199,7 @@ class EmbedSecurityTests(unittest.TestCase):
                 "/ws/socket.io",
                 headers={
                     "Origin": PORTAL,
-                    "Cookie": f"{COPILOT_SESSION_COOKIE}=opaque-session",
+                    "Cookie": f"{COPILOT_SESSION_COOKIE}={SESSION_ID}",
                 },
             ) as websocket:
                 self.assertEqual("connected", websocket.receive_text())

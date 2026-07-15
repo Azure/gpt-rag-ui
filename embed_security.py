@@ -1,23 +1,33 @@
+import asyncio
 import logging
-from http.cookies import SimpleCookie
+from http.cookies import CookieError, SimpleCookie
 from urllib.parse import urlsplit
 
 from starlette.responses import PlainTextResponse
 
-from embed_auth import COPILOT_SESSION_COOKIE, CopilotSessionStore
+from embed_auth import (
+    bind_request_copilot_session,
+    COPILOT_SESSION_COOKIE,
+    CopilotSessionStore,
+    is_valid_session_id,
+    reset_request_copilot_session,
+)
 from embed_config import EmbedSettings
 
 
 logger = logging.getLogger("gpt_rag_ui.embed_security")
-_PUBLIC_COPILOT_PATHS = (
-    "/copilot/",
+_COPILOT_AUTH_PATHS = {
     "/copilot/auth/bootstrap",
     "/copilot/auth/logout",
-)
+}
 _DISABLED_CHAINLIT_AUTH_PATHS = {"/auth/jwt", "/auth/header"}
+_BLOCKED_BRIDGE_EVENTS = {"call_fn", "window_message"}
+_copilot_sio = None
 
 
 def canonical_origin(value: str) -> str:
+    if not value or value != value.strip() or any(ord(char) < 32 for char in value):
+        return ""
     try:
         parsed = urlsplit(value)
         port = parsed.port
@@ -31,6 +41,7 @@ def canonical_origin(value: str) -> str:
         or parsed.path not in {"", "/"}
         or parsed.query
         or parsed.fragment
+        or (port is not None and port <= 0)
     ):
         return ""
     default_port = 80 if parsed.scheme == "http" else 443
@@ -44,6 +55,8 @@ def canonical_origin(value: str) -> str:
 
 
 def origin_from_referer(value: str) -> str:
+    if not value or value != value.strip() or any(ord(char) < 32 for char in value):
+        return ""
     try:
         parsed = urlsplit(value)
         port = parsed.port
@@ -54,6 +67,7 @@ def origin_from_referer(value: str) -> str:
         or not parsed.hostname
         or parsed.username
         or parsed.password
+        or (port is not None and port <= 0)
     ):
         return ""
     default_port = 80 if parsed.scheme == "http" else 443
@@ -66,41 +80,64 @@ def origin_from_referer(value: str) -> str:
     return f"{parsed.scheme}://{host}{suffix}"
 
 
-def _header_value(scope, name: bytes) -> str:
-    for key, value in scope.get("headers", []):
-        if key.lower() == name:
-            return value.decode("latin-1")
-    return ""
+def _header_values(scope, name: bytes) -> list[str]:
+    return [
+        value.decode("latin-1")
+        for key, value in scope.get("headers", [])
+        if key.lower() == name
+    ]
+
+
+def _parsed_cookies(scope) -> dict[str, str] | None:
+    parsed: dict[str, str] = {}
+    for raw_cookie in _header_values(scope, b"cookie"):
+        segments = [segment.strip() for segment in raw_cookie.split(";")]
+        if any(not segment or "=" not in segment for segment in segments):
+            return None
+        names = [segment.partition("=")[0].strip() for segment in segments]
+        if any(not name or name in parsed for name in names):
+            return None
+        if len(names) != len(set(names)):
+            return None
+
+        cookie = SimpleCookie()
+        try:
+            cookie.load(raw_cookie)
+        except (CookieError, TypeError, ValueError):
+            return None
+        if raw_cookie.strip() and not cookie:
+            return None
+        for name, morsel in cookie.items():
+            if name in parsed:
+                return None
+            parsed[name] = morsel.value
+    return parsed
 
 
 def _cookie_value(scope, name: str) -> str | None:
-    raw_cookie = _header_value(scope, b"cookie")
-    if not raw_cookie:
+    cookies = _parsed_cookies(scope)
+    if cookies is None:
         return None
-    cookie = SimpleCookie()
-    try:
-        cookie.load(raw_cookie)
-    except Exception:
-        return None
-    morsel = cookie.get(name)
-    return morsel.value if morsel else None
+    return cookies.get(name)
 
 
 def _inject_chainlit_cookie(scope, token: str) -> dict:
-    headers = []
-    existing: list[str] = []
-    for key, value in scope.get("headers", []):
-        if key.lower() != b"cookie":
-            headers.append((key, value))
-            continue
-        cookie = SimpleCookie()
-        cookie.load(value.decode("latin-1"))
-        existing.extend(
-            f"{name}={morsel.value}"
-            for name, morsel in cookie.items()
-            if name != "access_token" and not name.startswith("access_token_")
-        )
+    cookies = _parsed_cookies(scope)
+    existing = []
+    if cookies:
+        for name, value in cookies.items():
+            if name == "access_token" or name.startswith("access_token_"):
+                continue
+            cookie = SimpleCookie()
+            cookie[name] = value
+            existing.append(f"{name}={cookie[name].coded_value}")
     existing.append(f"access_token={token}")
+
+    headers = [
+        (key, value)
+        for key, value in scope.get("headers", [])
+        if key.lower() != b"cookie"
+    ]
     headers.append((b"cookie", "; ".join(existing).encode("latin-1")))
     updated = dict(scope)
     updated["headers"] = headers
@@ -121,11 +158,8 @@ class CopilotRequestMiddleware:
         self.portal_origins = set(settings.allowed_origins)
 
     @staticmethod
-    def _is_public(path: str) -> bool:
-        return any(
-            path == prefix or path.startswith(prefix)
-            for prefix in _PUBLIC_COPILOT_PATHS
-        )
+    def _is_public_copilot_path(path: str) -> bool:
+        return path == "/copilot" or path.startswith("/copilot/")
 
     async def _reject(self, scope, receive, send, status_code: int) -> None:
         if scope["type"] == "websocket":
@@ -139,6 +173,7 @@ class CopilotRequestMiddleware:
         response = PlainTextResponse(
             "Unauthorized" if status_code == 401 else "Origin not allowed",
             status_code=status_code,
+            headers={"Cache-Control": "no-store"},
         )
         await response(scope, receive, send)
 
@@ -148,34 +183,48 @@ class CopilotRequestMiddleware:
             return
 
         path = scope.get("path", "")
-        raw_origin = _header_value(scope, b"origin")
+        raw_origins = _header_values(scope, b"origin")
+        raw_origin = raw_origins[0] if len(raw_origins) == 1 else ""
         origin = canonical_origin(raw_origin) if raw_origin else ""
-        session_id = _cookie_value(scope, COPILOT_SESSION_COOKIE)
-        raw_referer = _header_value(scope, b"referer")
+        raw_session_id = _cookie_value(scope, COPILOT_SESSION_COOKIE)
+        session_id = (
+            raw_session_id if is_valid_session_id(raw_session_id) else None
+        )
+        referer_values = _header_values(scope, b"referer")
+        used_referer = False
         if (
             not origin
             and session_id
             and scope["type"] == "http"
             and scope.get("method", "").upper() == "GET"
+            and referer_values
         ):
-            origin = origin_from_referer(raw_referer)
-            if raw_referer and not origin:
-                await self._reject(scope, receive, send, 403)
-                return
+            used_referer = True
+            if len(referer_values) == 1:
+                origin = origin_from_referer(referer_values[0])
         is_portal = origin in self.portal_origins
         is_standalone = origin == self.settings.ui_origin
 
-        if raw_origin and not (is_portal or is_standalone):
+        if len(raw_origins) > 1 or (
+            raw_origin and not (is_portal or is_standalone)
+        ):
             await self._reject(scope, receive, send, 403)
             return
-        if session_id and scope["type"] == "websocket" and not raw_origin:
+        if used_referer and not (is_portal or is_standalone):
             await self._reject(scope, receive, send, 403)
             return
-        if path == "/copilot/auth/bootstrap" and not is_portal:
+        if scope["type"] == "websocket" and not raw_origin:
+            await self._reject(scope, receive, send, 403)
+            return
+        if path in _COPILOT_AUTH_PATHS and not is_portal:
             await self._reject(scope, receive, send, 403)
             return
         if is_portal and path in _DISABLED_CHAINLIT_AUTH_PATHS:
-            response = PlainTextResponse("Not found", status_code=404)
+            response = PlainTextResponse(
+                "Not found",
+                status_code=404,
+                headers={"Cache-Control": "no-store"},
+            )
             await response(scope, receive, send)
             return
 
@@ -183,14 +232,30 @@ class CopilotRequestMiddleware:
             scope["type"] == "http"
             and scope.get("method", "").upper() == "OPTIONS"
         )
-        if is_portal and not self._is_public(path) and not is_preflight:
-            session = await self.sessions.get(session_id)
-            if not session:
+        request_session = None
+        if (
+            is_portal
+            and not self._is_public_copilot_path(path)
+            and not is_preflight
+        ):
+            request_session = await self.sessions.get(session_id)
+            if not request_session:
                 await self._reject(scope, receive, send, 401)
                 return
-            scope = _inject_chainlit_cookie(scope, session.chainlit_token)
+            scope = _inject_chainlit_cookie(
+                scope,
+                request_session.chainlit_token,
+            )
 
-        await self.app(scope, receive, send)
+        if not request_session:
+            await self.app(scope, receive, send)
+            return
+
+        context_token = bind_request_copilot_session(request_session)
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            reset_request_copilot_session(context_token)
 
 
 def _is_copilot_socket(socket_id: str) -> bool:
@@ -223,6 +288,25 @@ def _socket_target(args, kwargs) -> str | None:
     return target if isinstance(target, str) and target else None
 
 
+def _target_has_copilot_sockets(sio, target: str | None) -> bool:
+    if not target:
+        return _has_copilot_sockets()
+    if _is_copilot_socket(target):
+        return True
+
+    try:
+        participants = sio.manager.get_participants("/", target)
+        for participant in participants:
+            socket_id = participant[0] if isinstance(participant, tuple) else participant
+            if isinstance(socket_id, str) and _is_copilot_socket(socket_id):
+                return True
+        return False
+    except Exception:
+        logger.exception("Could not resolve Socket.IO bridge recipients")
+        # Default deny only when a Copilot socket could receive the event.
+        return _has_copilot_sockets()
+
+
 def _existing_socket_session(session_id: str | None):
     if not session_id:
         return None
@@ -244,7 +328,38 @@ def _copilot_session_marker(user) -> str:
     )
 
 
+async def disconnect_copilot_session(session_id: str) -> int:
+    """Disconnect every live Chainlit socket bound to an opaque session."""
+
+    if not _copilot_sio or not is_valid_session_id(session_id):
+        return 0
+
+    from chainlit.session import ws_sessions_sid
+
+    matches = [
+        session
+        for session in list(ws_sessions_sid.values())
+        if _copilot_session_marker(session.user) == session_id
+    ]
+    disconnected = 0
+    current_task = asyncio.current_task()
+    for session in matches:
+        session.to_clear = True
+        task = getattr(session, "current_task", None)
+        if task and task is not current_task and not task.done():
+            task.cancel()
+        try:
+            await _copilot_sio.disconnect(session.socket_id)
+            disconnected += 1
+        except Exception:
+            logger.exception("Failed to disconnect a Copilot socket")
+    return disconnected
+
+
 def configure_copilot_bridge_guards(sio) -> None:
+    global _copilot_sio
+    _copilot_sio = sio
+
     if getattr(sio, "_gpt_rag_copilot_guards", False):
         return
 
@@ -255,26 +370,28 @@ def configure_copilot_bridge_guards(sio) -> None:
 
     async def guarded_emit(event, *args, **kwargs):
         target = _socket_target(args, kwargs)
-        copilot_recipient = (
-            _is_copilot_socket(target)
-            if target
-            else _has_copilot_sockets()
-        )
-        if event == "window_message" and copilot_recipient:
-            logger.warning("Blocked window_message for a Copilot session")
+        if event in _BLOCKED_BRIDGE_EVENTS and _target_has_copilot_sockets(
+            sio, target
+        ):
+            logger.warning("Blocked outbound %s for a Copilot session", event)
             return None
         return await original_emit(event, *args, **kwargs)
 
     async def guarded_call(event, *args, **kwargs):
         target = _socket_target(args, kwargs)
-        if event == "call_fn" and target and _is_copilot_socket(target):
-            raise PermissionError("Browser function calls are disabled for Copilot sessions.")
+        if event in _BLOCKED_BRIDGE_EVENTS and _target_has_copilot_sockets(
+            sio, target
+        ):
+            raise PermissionError(
+                "Browser bridge calls are disabled for Copilot sessions."
+            )
         return await original_call(event, *args, **kwargs)
 
     sio.emit = guarded_emit
     sio.call = guarded_call
 
     if original_connect:
+
         async def guarded_connect(socket_id, environ, auth):
             existing = _existing_socket_session((auth or {}).get("sessionId"))
             if existing and existing.user:
@@ -296,14 +413,26 @@ def configure_copilot_bridge_guards(sio) -> None:
 
         sio.on("connect", handler=guarded_connect)
 
-    original_window_handler = handlers.get("window_message")
-    if original_window_handler:
-        async def guarded_window_message(socket_id, *args, **kwargs):
-            if _is_copilot_socket(socket_id):
-                logger.warning("Blocked inbound window_message for a Copilot session")
-                return None
-            return await original_window_handler(socket_id, *args, **kwargs)
+    for event in ("call_fn", "window_message"):
+        original_handler = handlers.get(event)
+        if not original_handler:
+            continue
 
-        sio.on("window_message", handler=guarded_window_message)
+        async def guarded_handler(
+            socket_id,
+            *args,
+            _event=event,
+            _handler=original_handler,
+            **kwargs,
+        ):
+            if _is_copilot_socket(socket_id):
+                logger.warning(
+                    "Blocked inbound %s for a Copilot session",
+                    _event,
+                )
+                return None
+            return await _handler(socket_id, *args, **kwargs)
+
+        sio.on(event, handler=guarded_handler)
 
     sio._gpt_rag_copilot_guards = True

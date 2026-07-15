@@ -1,6 +1,6 @@
-from orchestrator_client import call_orchestrator_get_conversation
 from auth_common import canonical_principal_id
 from embed_auth import resolve_access_token
+from orchestrator_client import call_orchestrator_get_conversation
 
 
 def principal_id_from_metadata(metadata: dict | None) -> str:
@@ -23,13 +23,15 @@ def principal_id_from_metadata(metadata: dict | None) -> str:
     return canonical_id
 
 
-def conversation_belongs_to(conversation: dict, metadata: dict | None) -> bool:
-    """Check the identity returned by the token-scoped orchestrator endpoint.
+def thread_owner_id_from_metadata(metadata: dict | None) -> str:
+    return principal_id_from_metadata(metadata)
 
-    Chainlit uses tid:oid as its stable identity. The token-scoped orchestrator
-    currently returns a bare oid, which is accepted only after the request has
-    been authenticated with the same validated user token.
-    """
+
+def conversation_belongs_to(
+    conversation: dict,
+    metadata: dict | None,
+) -> bool:
+    """Validate the owner returned by the token-scoped orchestrator endpoint."""
 
     metadata = metadata or {}
     canonical_id = principal_id_from_metadata(metadata)
@@ -57,6 +59,8 @@ def conversation_belongs_to(conversation: dict, metadata: dict | None) -> bool:
         return not conversation_tenant or conversation_tenant == tenant_id
     if conversation_principal != object_id:
         return False
+    # A bare oid is accepted only after the token-scoped endpoint authorized
+    # this request. If the response carries a tenant, it must also match.
     return not conversation_tenant or conversation_tenant == tenant_id
 
 

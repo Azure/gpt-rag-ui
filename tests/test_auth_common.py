@@ -40,12 +40,19 @@ class AuthCommonTests(unittest.TestCase):
     def test_allowlist_name_is_case_insensitive_and_denies_mismatch(self):
         config = FakeConfig({"ALLOWED_USER_NAMES": "User@Example.com"})
         self.assertTrue(
-            is_user_authorized(config, "user@example.COM", PRINCIPAL_ID)
+            is_user_authorized(
+                config,
+                "user@example.COM",
+                PRINCIPAL_ID,
+            )
         )
         self.assertFalse(
-            is_user_authorized(config, "other@example.com", PRINCIPAL_ID)
+            is_user_authorized(
+                config,
+                "other@example.com",
+                PRINCIPAL_ID,
+            )
         )
-
 
 if __name__ == "__main__":
     unittest.main()

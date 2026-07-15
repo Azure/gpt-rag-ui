@@ -15,9 +15,11 @@ import httpx
 from orchestrator_client import call_orchestrator_stream
 from feedback import register_feedback_handlers,create_feedback_actions
 from dependencies import get_config
+from connectors import BlobClient
+from conversation_security import get_owned_conversation
 from ingestion_client import ingest_files_session
 from download_security import get_download_tokens, is_download_target_allowed
-from embed_auth import resolve_access_token
+from embed_auth import is_copilot_session_active, resolve_access_token
 
 from constants import APPLICATION_INSIGHTS_CONNECTION_STRING, APP_NAME, UUID_REGEX, REFERENCE_REGEX, TERMINATE_TOKEN
 from telemetry import Telemetry
@@ -98,7 +100,112 @@ def extract_conversation_id_from_chunk(chunk: str) -> Tuple[Optional[str], str]:
         return conv_id, chunk[match.end():]
     return None, chunk
 
-def resolve_reference_href(
+
+def generate_blob_sas_url(
+    container: str,
+    blob_name: str,
+    expiry_hours: int = 1,
+) -> str:
+    """Preserve the standalone direct-SAS citation behavior."""
+
+    blob_url = (
+        f"https://{STORAGE_ACCOUNT_NAME}.blob.core.windows.net/"
+        f"{container}/{blob_name}"
+    )
+    blob_client = BlobClient(blob_url=blob_url)
+    if not blob_client.exists():
+        logger.info(
+            "Blob not found: %s/%s - reference will be omitted",
+            container,
+            blob_name,
+        )
+        raise FileNotFoundError(f"Blob '{container}/{blob_name}' not found")
+
+    from datetime import timezone
+
+    expiry = datetime.now(timezone.utc) + timedelta(hours=expiry_hours)
+    try:
+        return blob_client.generate_sas_url(
+            expiry=expiry,
+            permissions="r",
+        )
+    except AttributeError:
+        logger.warning(
+            "SAS generation not supported, using direct blob URL for %s/%s",
+            container,
+            blob_name,
+        )
+        return blob_url
+
+
+def _resolve_legacy_reference_href(raw_href: str) -> Optional[str]:
+    href = (raw_href or "").strip()
+    if not href:
+        return None
+
+    split_href = urllib.parse.urlsplit(href)
+    if split_href.scheme or split_href.netloc:
+        return href
+    if href.startswith("/api/download/") or href.startswith("api/download/"):
+        return href
+
+    path = urllib.parse.unquote(
+        split_href.path.replace("\\", "/")
+    ).lstrip("/")
+    query = f"?{split_href.query}" if split_href.query else ""
+    fragment = f"#{split_href.fragment}" if split_href.fragment else ""
+    extension = path.rsplit(".", 1)[-1].lower() if "." in path else ""
+    container = DOCUMENTS_CONTAINER
+    if extension in IMAGE_EXTENSIONS and IMAGES_CONTAINER:
+        container = IMAGES_CONTAINER
+    elif not container and IMAGES_CONTAINER:
+        container = IMAGES_CONTAINER
+
+    if (
+        CONVERSATION_DOCUMENTS_CONTAINER
+        and not (extension in IMAGE_EXTENSIONS and IMAGES_CONTAINER)
+        and (
+            path.startswith(f"{CONVERSATION_DOCUMENTS_CONTAINER}/")
+            or path.startswith("conversations/")
+        )
+    ):
+        if path.startswith(f"{CONVERSATION_DOCUMENTS_CONTAINER}/"):
+            blob_name = path[len(CONVERSATION_DOCUMENTS_CONTAINER) + 1 :]
+        else:
+            blob_name = path
+        container = CONVERSATION_DOCUMENTS_CONTAINER
+    elif container and path.startswith(f"{container}/"):
+        blob_name = path[len(container) + 1 :]
+    else:
+        blob_name = path
+
+    if not blob_name:
+        return None
+    try:
+        sas_url = generate_blob_sas_url(container, blob_name)
+    except FileNotFoundError:
+        logger.info(
+            "Reference '%s' points to missing blob %s/%s",
+            raw_href,
+            container,
+            blob_name,
+        )
+        return None
+    except Exception:
+        logger.warning(
+            "Failed to build SAS URL for reference '%s'",
+            raw_href,
+            exc_info=True,
+        )
+        return None
+
+    if sas_url and (query or fragment):
+        separator = "&" if "?" in sas_url else "?"
+        return f"{sas_url}{separator}{query.lstrip('?')}{fragment}"
+    return sas_url
+
+
+def _resolve_secure_reference_href(
     raw_href: str,
     *,
     conversation_id: str,
@@ -111,6 +218,15 @@ def resolve_reference_href(
 
     split_href = urllib.parse.urlsplit(href)
     if split_href.scheme or split_href.netloc:
+        try:
+            download_prefix = (
+                f"{get_download_tokens().public_url}/api/download/"
+            )
+        except RuntimeError:
+            return None
+        return href if href.startswith(download_prefix) else None
+
+    if href.startswith("/api/download/") or href.startswith("api/download/"):
         return None
 
     path = urllib.parse.unquote(split_href.path.replace("\\", "/")).lstrip("/")
@@ -181,12 +297,27 @@ def resolve_reference_href(
     return f"{download_url}{fragment}"
 
 
+def resolve_reference_href(
+    raw_href: str,
+    *,
+    conversation_id: str = "",
+    principal_id: str = "",
+) -> Optional[str]:
+    if not COPILOT_ENABLED:
+        return _resolve_legacy_reference_href(raw_href)
+    return _resolve_secure_reference_href(
+        raw_href,
+        conversation_id=conversation_id,
+        principal_id=principal_id,
+    )
+
+
 def replace_source_reference_links(
     text: str,
     references: Optional[Set[str]] = None,
     *,
-    conversation_id: str,
-    principal_id: str,
+    conversation_id: str = "",
+    principal_id: str = "",
 ) -> str:
     """
     Replace source reference links in text. Links that point to non-existent blobs are completely removed.
@@ -205,8 +336,18 @@ def replace_source_reference_links(
                 references.add(resolved_href)
             logger.debug("Resolved reference '%s' -> '%s'", raw_href, resolved_href)
             return f"[{display_text}]({resolved_href})"
-        logger.debug("Rendering citation '%s' without an unauthorized link", display_text)
-        return display_text
+        if COPILOT_ENABLED:
+            logger.debug(
+                "Rendering citation '%s' without an unauthorized link",
+                display_text,
+            )
+            return display_text
+        logger.debug(
+            "Omitting reference '[%s](%s)' - target not found",
+            display_text,
+            raw_href,
+        )
+        return ""
 
     return REFERENCE_REGEX.sub(replacer, text)
 
@@ -398,7 +539,11 @@ async def on_chat_start():
 @cl.on_chat_resume
 async def on_chat_resume(thread: ThreadDict):
     app_user = cl.user_session.get("user")
-    if not app_user or thread.get("userIdentifier") != app_user.identifier:
+    if (
+        not app_user
+        or not await is_copilot_session_active(app_user.metadata)
+        or thread.get("userIdentifier") != app_user.identifier
+    ):
         logger.warning("Blocked unauthorized chat resume: thread=%s", thread["id"])
         raise PermissionError("Thread access denied.")
     cl.user_session.set("conversation_id", thread["id"])
@@ -411,6 +556,7 @@ async def handle_message(message: cl.Message):
 
         message.id = message.id or str(uuid.uuid4())
         conversation_id = cl.user_session.get("conversation_id") or ""
+        existing_conversation_id = str(conversation_id).strip()
         response_msg = cl.Message(content="")
 
         def _trim_for_log(value: str, limit: int = 400) -> str:
@@ -498,6 +644,22 @@ async def handle_message(message: cl.Message):
         if len(uploaded_files) > max_files:
             rejected.extend([f["name"] + " (too many files)" for f in uploaded_files[max_files:]])
             uploaded_files = uploaded_files[:max_files]
+
+        if uploaded_files and existing_conversation_id:
+            owned_conversation = await get_owned_conversation(
+                existing_conversation_id,
+                auth_info,
+            )
+            if not owned_conversation:
+                logger.warning(
+                    "Blocked upload to missing or unauthorized conversation=%s",
+                    existing_conversation_id,
+                )
+                rejected.extend(
+                    f"{file['name']} (conversation access denied)"
+                    for file in uploaded_files
+                )
+                uploaded_files = []
 
         if rejected:
             _skip_msg = "Some files were skipped:\n- " + "\n- ".join(rejected) + "\n\n"

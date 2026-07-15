@@ -35,7 +35,8 @@ class EntraTokenValidator:
         self.required_scope = required_scope
         self.issuer = f"https://login.microsoftonline.com/{self.tenant_id}/v2.0"
         self.jwks_url = (
-            f"https://login.microsoftonline.com/{tenant_id}/discovery/v2.0/keys"
+            f"https://login.microsoftonline.com/{self.tenant_id}"
+            "/discovery/v2.0/keys"
         )
         self.cache_ttl_seconds = cache_ttl_seconds
         self.unknown_key_refresh_interval_seconds = (

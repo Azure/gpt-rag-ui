@@ -10,7 +10,10 @@ from typing import Dict, List, Optional
 import chainlit as cl
 import msal
 
-from auth_common import canonical_principal_id, is_user_authorized
+from auth_common import (
+    canonical_principal_id,
+    is_user_authorized,
+)
 from dependencies import get_config
 
 logger = logging.getLogger("gpt_rag_ui.auth_oauth")
@@ -399,19 +402,28 @@ async def oauth_callback(
 
     tenant_id_claim = str(id_token.get("tid") or "").strip()
     object_id = str(id_token.get("oid") or "").strip()
-    if not tenant_id_claim or not object_id:
-        raise RuntimeError(
-            "OAuth identity is missing the required tid or oid claim."
-        )
-    principal_id = canonical_principal_id(tenant_id_claim, object_id)
-    user_name = str(id_token.get("name") or "").strip() or principal_id
     principal_name = str(id_token.get("preferred_username") or "").strip()
+    try:
+        principal_id = canonical_principal_id(
+            tenant_id_claim,
+            object_id,
+        )
+    except ValueError as exc:
+        raise RuntimeError(
+            "OAuth identity is missing valid tid or oid claims."
+        ) from exc
+    tenant_id_claim, object_id = principal_id.split(":", 1)
+    user_name = str(id_token.get("name") or "").strip() or principal_id
 
     # "Single token" mode: do not call Microsoft Graph from the client.
     # If you need group-based auth, it will require a second token (Graph audience).
     groups: List[str] = []
 
-    authorized = is_user_authorized(config, principal_name, principal_id)
+    authorized = is_user_authorized(
+        config,
+        principal_name,
+        principal_id,
+    )
 
     logger.info(
         "User authenticated: name='%s' principal='%s' authorized=%s",
@@ -422,22 +434,24 @@ async def oauth_callback(
     if not authorized:
         return None
 
+    metadata = {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "access_token_acquired_at": int(time.time()),
+        "access_token_expires_at": _jwt_exp_unverified(access_token),
+        "authorized": authorized,
+        "auth_source": "oauth",
+        "user_name": principal_id,
+        "client_principal_id": object_id,
+        "client_principal_name": principal_name,
+        "client_group_names": groups,
+        "principal_id": principal_id,
+        "tenant_id": tenant_id_claim,
+        "object_id": object_id,
+    }
+
     return cl.User(
         identifier=principal_id,
         display_name=user_name,
-        metadata={
-            "access_token": access_token,
-            "refresh_token": refresh_token,
-            "access_token_acquired_at": int(time.time()),
-            "access_token_expires_at": _jwt_exp_unverified(access_token),
-            "authorized": authorized,
-            "auth_source": "oauth",
-            "user_name": principal_id,
-            "tenant_id": tenant_id_claim.lower(),
-            "object_id": object_id.lower(),
-            "client_principal_id": object_id.lower(),
-            "client_principal_name": principal_name,
-            "client_group_names": groups,
-            "principal_id": principal_id,
-        },
+        metadata=metadata,
     )

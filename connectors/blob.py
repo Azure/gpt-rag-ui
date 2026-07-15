@@ -82,6 +82,11 @@ class BlobClient:
             data = blob_client.download_blob().readall()
             logging.info(f"[blob][{self.blob_name}] Blob downloaded successfully.")
             return data
+        except ResourceNotFoundError:
+            logging.info(
+                f"[blob][{self.blob_name}] Blob was not found during download."
+            )
+            raise
         except Exception as e:
             logging.error(f"[blob][{self.blob_name}] Failed to download blob: {e}")
             raise Exception(f"Blob client error when reading from blob storage: {e}")
