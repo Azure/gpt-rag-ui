@@ -46,10 +46,28 @@ def _oauth_is_configured() -> bool:
     return bool(client_id and client_secret and tenant_id)
 
 
-OAUTH_CONFIGURED = _oauth_is_configured()
+COPILOT_ENABLED = (
+    os.environ.get("CHAINLIT_COPILOT_ENABLED_EFFECTIVE", "").lower() == "true"
+)
+COPILOT_AUTH_MODE = os.environ.get(
+    "CHAINLIT_COPILOT_AUTH_MODE_EFFECTIVE", "anonymous"
+).lower()
+HEADER_AUTH_CONFIGURED = COPILOT_ENABLED and COPILOT_AUTH_MODE == "entra"
+OAUTH_CONFIGURED = _oauth_is_configured() and not (
+    COPILOT_ENABLED and COPILOT_AUTH_MODE == "anonymous"
+)
 
 # If OAuth isn't configured, default to allowing anonymous even in Azure.
-ALLOW_ANONYMOUS = config.get("ALLOW_ANONYMOUS", (not _is_running_in_azure_host) or (not OAUTH_CONFIGURED), bool)
+_allow_anonymous_effective = os.environ.get("ALLOW_ANONYMOUS_EFFECTIVE")
+if _allow_anonymous_effective is not None:
+    ALLOW_ANONYMOUS = _allow_anonymous_effective.lower() == "true"
+else:
+    ALLOW_ANONYMOUS = config.get(
+        "ALLOW_ANONYMOUS",
+        (not _is_running_in_azure_host)
+        or not (OAUTH_CONFIGURED or HEADER_AUTH_CONFIGURED),
+        bool,
+    )
 STORAGE_ACCOUNT_NAME = config.get("STORAGE_ACCOUNT_NAME", "", str)
 SHOW_STATISTICS = config.get("SHOW_STATISTICS", False, bool)
 
@@ -229,7 +247,11 @@ def check_authorization() -> dict:
     # treat as unauthorized (forces the UI to require auth).
     # Otherwise, allow anonymous.
     return {
-        'authorized': (ALLOW_ANONYMOUS if not OAUTH_CONFIGURED else False),
+        'authorized': (
+            ALLOW_ANONYMOUS
+            if not (OAUTH_CONFIGURED or HEADER_AUTH_CONFIGURED)
+            else False
+        ),
         'client_principal_id': 'no-auth',
         'client_principal_name': 'anonymous',
         'client_group_names': [],
@@ -246,8 +268,28 @@ async def get_auth_info() -> dict:
 
     app_user = cl.user_session.get("user")
     if app_user:
+        metadata = app_user.metadata or {}
+        if metadata.get("auth_source") == "entra_header":
+            expires_at = int(metadata.get("access_token_expires_at") or 0)
+            if expires_at <= int(time.time()):
+                logger.warning(
+                    "Embedded Entra session expired for user=%s",
+                    metadata.get("client_principal_name")
+                    or metadata.get("client_principal_id")
+                    or app_user.identifier,
+                )
+                cl.user_session.set("user", None)
+                return {
+                    'authorized': False,
+                    'client_principal_id': 'no-auth',
+                    'client_principal_name': 'anonymous',
+                    'client_group_names': [],
+                    'access_token': None,
+                    'auth_error': 'session_expired',
+                }
+
         # Opportunistic token refresh (OAuth mode only).
-        if OAUTH_CONFIGURED:
+        if metadata.get("auth_source") == "oauth":
             try:
                 # Import is safe because we import auth_oauth only when OAUTH_CONFIGURED.
                 refreshed = await auth_oauth.ensure_fresh_user_access_token(app_user, min_ttl_seconds=120)
@@ -266,7 +308,6 @@ async def get_auth_info() -> dict:
                     'auth_error': 'session_expired',
                 }
 
-        metadata = app_user.metadata or {}
         return {
             'authorized': metadata.get('authorized', True),
             'client_principal_id': metadata.get('client_principal_id', 'no-auth'),
@@ -276,7 +317,11 @@ async def get_auth_info() -> dict:
         }
 
     return {
-        'authorized': (ALLOW_ANONYMOUS if not OAUTH_CONFIGURED else False),
+        'authorized': (
+            ALLOW_ANONYMOUS
+            if not (OAUTH_CONFIGURED or HEADER_AUTH_CONFIGURED)
+            else False
+        ),
         'client_principal_id': 'no-auth',
         'client_principal_name': 'anonymous',
         'client_group_names': [],
@@ -328,10 +373,14 @@ def _access_token_debug_summary(access_token: str) -> dict:
 
 # Importing `auth_oauth` registers @cl.oauth_callback as a side effect.
 # Only register OAuth when the minimum configuration is present.
-if OAUTH_CONFIGURED:
+if OAUTH_CONFIGURED or HEADER_AUTH_CONFIGURED:
     ENABLE_AUTHENTICATION = True
-    import auth_oauth  # noqa: F401
-    logger.info("Authentication enabled: Chainlit OAuth (Azure AD)")
+    if OAUTH_CONFIGURED:
+        import auth_oauth  # noqa: F401
+        logger.info("Authentication enabled: Chainlit OAuth (Azure AD)")
+    if HEADER_AUTH_CONFIGURED:
+        import auth_header  # noqa: F401
+        logger.info("Authentication enabled: Entra header auth for Chainlit Copilot")
     import datalayer  # noqa: F401  — registers @cl.data_layer for conversation history
 else:
     ENABLE_AUTHENTICATION = False

@@ -10,6 +10,7 @@ from typing import Dict, List, Optional
 import chainlit as cl
 import msal
 
+from auth_common import is_user_authorized
 from dependencies import get_config
 
 logger = logging.getLogger("gpt_rag_ui.auth_oauth")
@@ -250,11 +251,6 @@ def _is_reserved_oidc_scope(scope: str) -> bool:
     return (scope or "").strip().lower() in {"openid", "profile", "offline_access"}
 
 
-def read_env_list(var_name: str) -> List[str]:
-    value = config.get(var_name, "")
-    return [item.strip() for item in value.split(",") if item.strip()]
-
-
 def read_scopes_list(var_name: str = "OAUTH_AZURE_AD_SCOPES") -> tuple[str, List[str]]:
     """Read scopes from config and split by comma OR whitespace.
 
@@ -283,24 +279,6 @@ def get_env_var(name: str, fallback: str | None = None, *, warn_on_missing: bool
         if warn_on_missing:
             logger.warning("Configuration key '%s' is not set", name)
     return value
-
-
-def is_user_authorized(name: str, principal_id: str) -> bool:
-    allowed_names = read_env_list("ALLOWED_USER_NAMES")
-    allowed_ids = read_env_list("ALLOWED_USER_PRINCIPALS")
-
-    if not (allowed_names or allowed_ids):
-        return True
-
-    if name in allowed_names or principal_id in allowed_ids:
-        return True
-
-    logger.warning(
-        "Access denied for principal '%s' (%s). No matching allow list entry.",
-        name,
-        principal_id,
-    )
-    return False
 
 
 @cl.oauth_callback
@@ -425,7 +403,7 @@ async def oauth_callback(
     # If you need group-based auth, it will require a second token (Graph audience).
     groups: List[str] = []
 
-    authorized = is_user_authorized(principal_name, user_id)
+    authorized = is_user_authorized(config, principal_name, user_id)
 
     logger.info(
         "User authenticated: name='%s' principal='%s' authorized=%s",

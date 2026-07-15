@@ -15,9 +15,9 @@ user_session_timeout = 1296000  # 15 days
 # Enable third parties caching (e.g LangChain cache)
 cache = false
 
-# Authorized origins
+# Authorized origins. main.py leaves this unchanged for standalone mode and
+# overrides it in memory only when CHAINLIT_COPILOT_ENABLED=true.
 allow_origins = ["*"]
-
 [features]
 # Process and display HTML in messages. This can be a security risk (see https://stackoverflow.com/questions/19603097/why-is-it-dangerous-to-render-user-generated-html-or-javascript)
 unsafe_allow_html = false

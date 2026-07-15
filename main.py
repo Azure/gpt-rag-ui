@@ -12,6 +12,12 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from connectors import AppConfigClient, BlobClient
 from dependencies import get_config
+from embed_config import (
+    configure_chainlit_allowed_origins,
+    EmbedConfigError,
+    EmbedSettings,
+    load_embed_settings,
+)
 
 
 def _configure_logging() -> None:
@@ -50,6 +56,7 @@ def _is_falsey(value: str | None) -> bool:
 @dataclass(frozen=True)
 class AuthState:
     oauth_configured: bool
+    header_auth_configured: bool
     allow_anonymous: bool
     allow_anonymous_source: str
     allow_anonymous_raw: str
@@ -266,7 +273,10 @@ def _configure_chainlit_prereqs(config: AppConfigClient) -> None:
             logger.info("Configured CHAINLIT_URL from App Configuration")
 
 
-def _evaluate_auth_state(config: AppConfigClient) -> AuthState:
+def _evaluate_auth_state(
+    config: AppConfigClient,
+    embed_settings: EmbedSettings | None = None,
+) -> AuthState:
     """Compute auth state without importing Chainlit.
 
     Important: this is used to decide whether to start Chainlit or a "configuration required" app.
@@ -287,7 +297,9 @@ def _evaluate_auth_state(config: AppConfigClient) -> AuthState:
         or _get_str_config(config, "OAUTH_AZURE_AD_CLIENT_SECRET", "authClientSecret")
     )
 
+    embed_settings = embed_settings or EmbedSettings()
     oauth_configured = bool(client_id_value and tenant_id_value and client_secret_value)
+    header_auth_configured = embed_settings.uses_entra
     default_allow_anonymous = (not running_in_azure_host) or (not oauth_configured)
 
     allow_anonymous_source = "default"
@@ -327,14 +339,23 @@ def _evaluate_auth_state(config: AppConfigClient) -> AuthState:
         else:
             allow_anonymous = default_allow_anonymous
 
+    if embed_settings.enabled and embed_settings.auth_mode == "anonymous":
+        oauth_configured = False
+        allow_anonymous = True
+        allow_anonymous_source = "copilot-auth-mode"
+    elif header_auth_configured:
+        allow_anonymous = False
+        allow_anonymous_source = "copilot-auth-mode"
+
     os.environ["ALLOW_ANONYMOUS_EFFECTIVE"] = "true" if allow_anonymous else "false"
     os.environ["ALLOW_ANONYMOUS_SOURCE"] = allow_anonymous_source
     os.environ["ALLOW_ANONYMOUS_RAW"] = allow_anonymous_raw or "<unset>"
 
     logger.info(
-        "Auth decision: running_in_azure_host=%s oauth_min_config_present=%s default_allow_anonymous=%s allow_anonymous=%s allow_anonymous_source=%s",
+        "Auth decision: running_in_azure_host=%s oauth_min_config_present=%s header_auth_configured=%s default_allow_anonymous=%s allow_anonymous=%s allow_anonymous_source=%s",
         running_in_azure_host,
         oauth_configured,
+        header_auth_configured,
         default_allow_anonymous,
         allow_anonymous,
         allow_anonymous_source,
@@ -349,6 +370,7 @@ def _evaluate_auth_state(config: AppConfigClient) -> AuthState:
 
     return AuthState(
         oauth_configured=oauth_configured,
+        header_auth_configured=header_auth_configured,
         allow_anonymous=allow_anonymous,
         allow_anonymous_source=allow_anonymous_source,
         allow_anonymous_raw=(allow_anonymous_raw or "<unset>"),
@@ -432,7 +454,11 @@ def _configure_auth_environment(config: AppConfigClient, auth_state: AuthState |
     else:
         cleared = _clear_oauth_env_vars()
 
-        if allow_anonymous:
+        if auth_state.header_auth_configured:
+            logger.info(
+                "Interactive OAuth is not configured; using Entra header authentication for Copilot."
+            )
+        elif allow_anonymous:
             logger.warning(
                 "OAuth is not configured (missing client_id/tenant_id/client_secret). "
                 "Running in anonymous mode (ALLOW_ANONYMOUS=true). Cleared OAuth env vars=%s",
@@ -554,20 +580,49 @@ def _create_auth_required_app(auth_state: AuthState) -> FastAPI:
     return app
 
 
-def _create_chainlit_app(config: AppConfigClient, auth_state: AuthState | None = None) -> FastAPI:
+def _configure_embed_environment(settings: EmbedSettings) -> None:
+    os.environ["CHAINLIT_COPILOT_ENABLED_EFFECTIVE"] = (
+        "true" if settings.enabled else "false"
+    )
+    os.environ["CHAINLIT_COPILOT_AUTH_MODE_EFFECTIVE"] = settings.auth_mode
+    if not settings.enabled:
+        return
+
+    os.environ["CHAINLIT_COOKIE_SAMESITE"] = settings.cookie_samesite
+    if settings.uses_entra:
+        os.environ["CHAINLIT_COPILOT_ENTRA_TENANT_ID"] = settings.entra_tenant_id
+        os.environ["CHAINLIT_COPILOT_ENTRA_AUDIENCE"] = settings.entra_audience
+        os.environ["CHAINLIT_COPILOT_ENTRA_REQUIRED_SCOPE"] = (
+            settings.entra_required_scope
+        )
+        os.environ["CHAINLIT_CUSTOM_AUTH"] = "1"
+
+
+def _create_chainlit_app(
+    config: AppConfigClient,
+    auth_state: AuthState | None = None,
+    embed_settings: EmbedSettings | None = None,
+) -> FastAPI:
     """Create the main Chainlit ASGI app.
 
     Important: this must configure env vars before importing Chainlit.
     """
 
+    embed_settings = embed_settings or EmbedSettings()
+    _configure_embed_environment(embed_settings)
     _configure_auth_environment(config, auth_state)
-    effective_auth = auth_state or _evaluate_auth_state(config)
+    effective_auth = auth_state or _evaluate_auth_state(config, embed_settings)
     _sync_chainlit_spontaneous_file_upload(effective_auth)
 
-    # Chainlit reads `.chainlit/config.toml` when this module is imported; sync must run above first.
+    # Importing chainlit.config does not create the server app, so enabled
+    # origins can be applied in memory without modifying the deployment files.
+    from chainlit.config import config as chainlit_config
+
+    configure_chainlit_allowed_origins(embed_settings, chainlit_config)
     from chainlit.server import app as chainlit_app
     from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
     from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+    from starlette.middleware.cors import CORSMiddleware
 
     account_name = _get_str_config(config, "STORAGE_ACCOUNT_NAME")
     documents_container = _get_str_config(config, "DOCUMENTS_STORAGE_CONTAINER")
@@ -688,6 +743,81 @@ def _create_chainlit_app(config: AppConfigClient, auth_state: AuthState | None =
     chainlit_app.openapi = _safe_openapi
 
     host_app = FastAPI(title="GPT-RAG UI host")
+    if embed_settings.enabled:
+        from embed_security import (
+            CopilotOriginMiddleware,
+            CopilotSecurityMiddleware,
+        )
+
+        host_app.add_middleware(
+            CORSMiddleware,
+            allow_origins=list(embed_settings.allowed_origins),
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+        host_app.add_middleware(
+            CopilotOriginMiddleware,
+            allowed_origins=embed_settings.allowed_origins,
+        )
+        host_app.add_middleware(
+            CopilotSecurityMiddleware,
+            settings=embed_settings,
+        )
+        logger.info(
+            "Chainlit Copilot enabled: auth_mode=%s origins=%s cookie_samesite=%s",
+            embed_settings.auth_mode,
+            list(embed_settings.allowed_origins),
+            embed_settings.cookie_samesite,
+        )
+
+    if embed_settings.uses_entra:
+        from chainlit.auth import set_auth_cookie
+        from chainlit.data import get_data_layer
+        from fastapi import HTTPException, Request, status
+
+        from auth_header import header_auth_callback
+        from embed_auth import create_embed_session_jwt
+
+        async def _authenticate_copilot(request: Request):
+            user = await header_auth_callback(request.headers)
+            if not user:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="credentialssignin",
+                )
+            if not user.metadata.get("authorized", False):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="accessdenied",
+                )
+
+            if data_layer := get_data_layer():
+                try:
+                    await data_layer.create_user(user)
+                except Exception:
+                    logger.exception(
+                        "Unable to persist an Entra-authenticated Copilot user"
+                    )
+
+            expires_at = int(user.metadata["access_token_expires_at"])
+            session_token = create_embed_session_jwt(user, expires_at)
+            response = JSONResponse({"success": True})
+            set_auth_cookie(request, response, session_token)
+            return response
+
+        # Chainlit 2.9.4 Copilot posts widget accessToken to /auth/jwt.
+        # The standard /auth/header path is also capped to the Entra token expiry.
+        host_app.add_api_route(
+            "/auth/jwt",
+            _authenticate_copilot,
+            methods=["POST"],
+        )
+        host_app.add_api_route(
+            "/auth/header",
+            _authenticate_copilot,
+            methods=["POST"],
+        )
 
     @host_app.get("/version-footer")
     async def get_version_footer_data():
@@ -729,10 +859,19 @@ def build_app() -> FastAPI:
 
         # Configure Chainlit prerequisites (session secret, URL) even when OAuth is missing.
         _configure_chainlit_prereqs(config)
-        auth_state = _evaluate_auth_state(config)
+        try:
+            embed_settings = load_embed_settings(config)
+        except EmbedConfigError:
+            logger.exception("Invalid Chainlit Copilot configuration")
+            raise
+        auth_state = _evaluate_auth_state(config, embed_settings)
 
-        if auth_state.oauth_configured or auth_state.allow_anonymous:
-            return _create_chainlit_app(config, auth_state)
+        if (
+            auth_state.oauth_configured
+            or auth_state.header_auth_configured
+            or auth_state.allow_anonymous
+        ):
+            return _create_chainlit_app(config, auth_state, embed_settings)
 
         logger.error(
             "OAuth is required but not configured and anonymous mode is disabled; starting in auth-required mode (HTTP 503)."
