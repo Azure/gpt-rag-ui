@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import logging
 import mimetypes
 import os
@@ -73,6 +74,7 @@ class DownloadTokenManager:
         self.serializer = URLSafeTimedSerializer(
             secret,
             salt="gpt-rag-download-v1",
+            signer_kwargs={"digest_method": hashlib.sha256},
         )
         self.public_url = public_url.rstrip("/")
         self.max_age_seconds = max_age_seconds

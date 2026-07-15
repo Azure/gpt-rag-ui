@@ -49,6 +49,7 @@ label. Container environment variables with the same names take precedence.
 | Key | Required | Description |
 | --- | --- | --- |
 | `CHAINLIT_COPILOT_ENABLED` | Yes | Set to `true` to enable embedding. Default: `false`. |
+| `CHAINLIT_AUTH_SECRET` | Yes | Persistent secret shared by the UI replicas for Chainlit sessions and signed download grants. Store it through a Key Vault-backed App Configuration reference. Copilot startup fails rather than generating a temporary value. |
 | `CHAINLIT_URL` | Yes | Exact public HTTPS origin of the GPT-RAG UI, for example `https://chat.contoso.com`. Paths are not accepted. |
 | `CHAINLIT_ALLOWED_ORIGINS` | Yes | Comma-separated portal origins. Wildcards, paths, credentials, `null`, and non-local HTTP origins are rejected. |
 | `CHAINLIT_COOKIE_SAMESITE` | No | `lax` by default. Use `none` only when the portal and UI are cross-site. The Copilot cookie is always `Secure`. |
@@ -63,6 +64,8 @@ The standalone deployment must have OAuth configured and
 `ALLOW_ANONYMOUS=false`. Copilot configuration never disables OAuth, enables
 anonymous access, or converts an authentication failure into anonymous chat.
 Invalid or incomplete enabled configuration fails startup.
+Standalone development can still generate a temporary `CHAINLIT_AUTH_SECRET`
+when embedding is disabled.
 
 Restart the UI after changing startup settings.
 

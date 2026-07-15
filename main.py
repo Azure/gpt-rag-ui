@@ -244,7 +244,11 @@ def _sync_chainlit_spontaneous_file_upload(auth_state: AuthState) -> None:
     )
 
 
-def _configure_chainlit_prereqs(config: AppConfigClient) -> None:
+def _configure_chainlit_prereqs(
+    config: AppConfigClient,
+    *,
+    require_persistent_auth_secret: bool = False,
+) -> None:
     """Configure values needed by Chainlit regardless of auth mode."""
 
     # Chainlit requires env var CHAINLIT_AUTH_SECRET to sign its session JWT.
@@ -255,6 +259,12 @@ def _configure_chainlit_prereqs(config: AppConfigClient) -> None:
         if chainlit_secret:
             os.environ["CHAINLIT_AUTH_SECRET"] = chainlit_secret
             logger.info("Configured CHAINLIT_AUTH_SECRET from App Configuration key 'CHAINLIT_AUTH_SECRET'")
+        elif require_persistent_auth_secret:
+            raise EmbedConfigError(
+                "Chainlit Copilot requires a persistent CHAINLIT_AUTH_SECRET. "
+                "Configure one through an environment variable or a Key "
+                "Vault-backed Azure App Configuration entry."
+            )
         else:
             os.environ["CHAINLIT_AUTH_SECRET"] = secrets.token_urlsafe(48)
             logger.warning(
@@ -806,6 +816,12 @@ def _create_chainlit_app(
             embed_settings.max_sessions,
             embed_settings.session_ttl_seconds,
         )
+        logger.warning(
+            "Chainlit Copilot stores session and Entra token state in this "
+            "process. Run exactly one UI replica, or configure and verify "
+            "end-to-end affinity for bootstrap, HTTP, Socket.IO polling and "
+            "upgrades, and WebSocket traffic. Affinity is not high availability."
+        )
 
     if embed_settings.enabled:
         from download_security import register_secure_download_route
@@ -881,13 +897,18 @@ def build_app() -> FastAPI:
     if connected:
         logger.info("Configuration loaded from Azure App Configuration")
 
-        # Configure Chainlit prerequisites (session secret, URL) even when OAuth is missing.
-        _configure_chainlit_prereqs(config)
         try:
             embed_settings = load_embed_settings(config)
         except EmbedConfigError:
             logger.exception("Invalid Chainlit Copilot configuration")
             raise
+        # Configure Chainlit prerequisites even when OAuth is missing. Copilot
+        # requires an operator-managed secret rather than the standalone
+        # development fallback.
+        _configure_chainlit_prereqs(
+            config,
+            require_persistent_auth_secret=embed_settings.enabled,
+        )
         auth_state = _evaluate_auth_state(config, embed_settings)
         if embed_settings.enabled and (
             not auth_state.oauth_configured or auth_state.allow_anonymous

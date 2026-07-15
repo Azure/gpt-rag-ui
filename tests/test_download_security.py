@@ -1,3 +1,4 @@
+import hashlib
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
@@ -7,6 +8,7 @@ import httpx
 from azure.core.exceptions import ResourceNotFoundError
 from chainlit.user import User
 from fastapi import FastAPI
+from itsdangerous import URLSafeTimedSerializer
 
 from conversation_security import conversation_belongs_to, get_owned_conversation
 from download_security import (
@@ -49,6 +51,27 @@ class DownloadSecurityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(PRINCIPAL, grant.principal_id)
         self.assertEqual("folder/file.pdf", grant.blob_name)
         self.assertIsNone(manager.verify("tampered"))
+
+    def test_grant_rejects_legacy_sha1_signature(self):
+        manager = DownloadTokenManager(
+            secret="secret",
+            public_url="https://chat.example.com",
+        )
+        legacy_token = URLSafeTimedSerializer(
+            "secret",
+            salt="gpt-rag-download-v1",
+            signer_kwargs={"digest_method": hashlib.sha1},
+        ).dumps(
+            {
+                "v": 1,
+                "p": PRINCIPAL,
+                "c": "conversation",
+                "n": "documents",
+                "b": "folder/file.pdf",
+            }
+        )
+
+        self.assertIsNone(manager.verify(legacy_token))
 
     def test_rejects_path_traversal(self):
         manager = DownloadTokenManager(secret="secret", public_url="https://chat")
