@@ -342,8 +342,10 @@ it did on the initial load.
   them. A Copilot cookie is honored by the Chainlit request pipeline only with
   an exact portal `Origin`; otherwise it is ignored so it cannot override
   standalone OAuth handling. The dedicated top-level download route is the sole
-  no-`Origin` exception and resolves only the opaque cookie before repeating
-  all download authorization checks. `Referer` is ignored.
+  no-`Origin` exception. It accepts either the opaque Copilot session cookie or
+  the existing standalone Chainlit authentication cookie, then repeats all
+  download authorization checks. If both cookies are present, the identity
+  matching the signed download grant is selected. `Referer` is ignored.
 - `/auth/jwt` and `/auth/header` are unavailable to portal origins. The portal
   uses only the dedicated bootstrap endpoint.
 - Citation URLs are absolute URLs on `CHAINLIT_URL`. They contain a short-lived,
