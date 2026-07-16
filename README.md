@@ -29,6 +29,45 @@ repository-specific security contract and portal integration steps for the
 opt-in Chainlit Copilot widget are documented in
 [Embed GPT-RAG with Chainlit Copilot](docs/copilot-embedding.md).
 
+Chainlit 2.9.4 floating Copilot mode uses a dedicated Entra bootstrap flow.
+It does not use an iframe or expose Chainlit's `/auth/jwt` route to the host.
+Configure the UI with:
+
+- `CHAINLIT_COPILOT_ENABLED`
+- `CHAINLIT_AUTH_SECRET`
+- `CHAINLIT_URL`
+- `CHAINLIT_ALLOWED_ORIGINS`
+- `CHAINLIT_COOKIE_SAMESITE`
+- `CHAINLIT_COPILOT_ENTRA_TENANT_ID`
+- `CHAINLIT_COPILOT_ENTRA_AUDIENCE`
+- `CHAINLIT_COPILOT_ENTRA_REQUIRED_SCOPE`
+- `CHAINLIT_COPILOT_SESSION_TTL_SECONDS`
+- `CHAINLIT_COPILOT_MAX_SESSIONS`
+- `CHAINLIT_COPILOT_BOOTSTRAP_RATE_LIMIT_PER_MINUTE`
+- `CITATION_SHARED_DOWNLOAD_CONTAINERS`
+
+When Copilot mode is enabled, `CHAINLIT_AUTH_SECRET` must be a persistent,
+operator-managed secret shared by every replica. The public integration
+endpoints are `POST /copilot/auth/bootstrap`,
+`POST /copilot/auth/logout`, and `GET /api/download/{grant_token}`.
+
+The browser receives only a Secure, HttpOnly opaque identity cookie. Entra and
+internal Chainlit tokens remain in bounded process memory, and the session
+expires at the earlier of the Entra token expiry and the configured TTL.
+Replacement, logout, expiry, and eviction invalidate associated sockets and
+active work. Exact configured portal origins are enforced; `Referer` is never
+used for authentication or authorization. Citation and download URLs are
+absolute, signed, principal-bound, conversation-authorized, and container/path
+checked before streaming.
+
+Process-local session state requires a single replica or verified end-to-end
+affinity across bootstrap, HTTP, Socket.IO polling/upgrades, and WebSockets.
+Restarts and affinity loss sign users out. Bootstrap throttling is local defense
+in depth; configure authoritative limits at the trusted ingress. Browsers that
+block the required third-party cookie cannot use the floating integration, and
+there is no token-in-browser fallback. Standalone Chainlit behavior is unchanged
+while `CHAINLIT_COPILOT_ENABLED=false`.
+
 ## Prerequisites
 
 Provision the infrastructure first by following the GPT-RAG repository instructions [GPT-RAG](https://github.com/azure/gpt-rag). This ensures all required Azure resources (e.g., Container App, Storage, AI Search) are in place before deploying the web application.
@@ -133,5 +172,4 @@ We appreciate contributions! See [CONTRIBUTING](https://github.com/Azure/gpt-rag
 
 
 This project may contain trademarks or logos. Authorized use of Microsoft trademarks or logos must follow [Microsoft’s Trademark & Brand Guidelines](https://www.microsoft.com/en-us/legal/intellectualproperty/trademarks/usage/general). Modified versions must not imply sponsorship or cause confusion. Third-party trademarks are subject to their own policies.
-
 

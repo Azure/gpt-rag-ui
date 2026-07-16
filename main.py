@@ -810,11 +810,13 @@ def _create_chainlit_app(
         configure_copilot_bridge_guards(sio)
         logger.info(
             "Chainlit Copilot enabled: origins=%s cookie_samesite=%s "
-            "max_sessions=%s session_ttl_seconds=%s",
+            "max_sessions=%s session_ttl_seconds=%s "
+            "bootstrap_rate_limit_per_minute=%s",
             list(embed_settings.allowed_origins),
             embed_settings.cookie_samesite,
             embed_settings.max_sessions,
             embed_settings.session_ttl_seconds,
+            embed_settings.bootstrap_rate_limit_per_minute,
         )
         logger.warning(
             "Chainlit Copilot stores session and Entra token state in this "
@@ -855,6 +857,7 @@ def _create_chainlit_app(
             },
             conversation_container=conversation_documents_container,
             shared_containers=shared_download_containers,
+            sessions=copilot_sessions,
         )
 
     @host_app.get("/version-footer")

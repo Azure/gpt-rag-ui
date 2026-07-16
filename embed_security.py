@@ -54,32 +54,6 @@ def canonical_origin(value: str) -> str:
     return f"{parsed.scheme}://{host}{suffix}"
 
 
-def origin_from_referer(value: str) -> str:
-    if not value or value != value.strip() or any(ord(char) < 32 for char in value):
-        return ""
-    try:
-        parsed = urlsplit(value)
-        port = parsed.port
-    except ValueError:
-        return ""
-    if (
-        parsed.scheme not in {"http", "https"}
-        or not parsed.hostname
-        or parsed.username
-        or parsed.password
-        or (port is not None and port <= 0)
-    ):
-        return ""
-    default_port = 80 if parsed.scheme == "http" else 443
-    host = (
-        f"[{parsed.hostname.lower()}]"
-        if ":" in parsed.hostname
-        else parsed.hostname.lower()
-    )
-    suffix = f":{port}" if port and port != default_port else ""
-    return f"{parsed.scheme}://{host}{suffix}"
-
-
 def _header_values(scope, name: bytes) -> list[str]:
     return [
         value.decode("latin-1")
@@ -190,27 +164,12 @@ class CopilotRequestMiddleware:
         session_id = (
             raw_session_id if is_valid_session_id(raw_session_id) else None
         )
-        referer_values = _header_values(scope, b"referer")
-        used_referer = False
-        if (
-            not origin
-            and session_id
-            and scope["type"] == "http"
-            and scope.get("method", "").upper() == "GET"
-            and referer_values
-        ):
-            used_referer = True
-            if len(referer_values) == 1:
-                origin = origin_from_referer(referer_values[0])
         is_portal = origin in self.portal_origins
         is_standalone = origin == self.settings.ui_origin
 
         if len(raw_origins) > 1 or (
             raw_origin and not (is_portal or is_standalone)
         ):
-            await self._reject(scope, receive, send, 403)
-            return
-        if used_referer and not (is_portal or is_standalone):
             await self._reject(scope, receive, send, 403)
             return
         if scope["type"] == "websocket" and not raw_origin:

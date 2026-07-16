@@ -1,5 +1,7 @@
 import asyncio
+import hashlib
 import logging
+import math
 import os
 import re
 import secrets
@@ -231,6 +233,59 @@ class CopilotSessionStore:
         return count
 
 
+class BootstrapRateLimiter:
+    """Bound bootstrap attempts without retaining client identifiers."""
+
+    def __init__(
+        self,
+        *,
+        max_attempts: int,
+        window_seconds: int = 60,
+        max_keys: int = 4096,
+    ):
+        if max_attempts < 1 or window_seconds < 1 or max_keys < 1:
+            raise ValueError("Bootstrap rate-limit bounds must be positive.")
+        self.max_attempts = max_attempts
+        self.window_seconds = window_seconds
+        self.max_keys = max_keys
+        self._windows: OrderedDict[str, tuple[float, int]] = OrderedDict()
+        self._lock = asyncio.Lock()
+
+    async def retry_after(self, key: str) -> int | None:
+        now = time.monotonic()
+        async with self._lock:
+            while self._windows:
+                oldest_key, (started_at, _) = next(iter(self._windows.items()))
+                if now - started_at < self.window_seconds:
+                    break
+                self._windows.pop(oldest_key, None)
+
+            window = self._windows.get(key)
+            if window is None:
+                self._windows[key] = (now, 1)
+                while len(self._windows) > self.max_keys:
+                    self._windows.popitem(last=False)
+                return None
+
+            started_at, attempts = window
+            if attempts >= self.max_attempts:
+                return max(
+                    1,
+                    math.ceil(self.window_seconds - (now - started_at)),
+                )
+
+            self._windows[key] = (started_at, attempts + 1)
+            return None
+
+
+def bootstrap_rate_limit_key(request: Request) -> str:
+    peer = request.client.host if request.client else "unknown"
+    origins = request.headers.getlist("Origin")
+    origin = origins[0].lower().rstrip("/") if len(origins) == 1 else "<invalid>"
+    material = f"{peer}\n{origin}".encode("utf-8", errors="replace")
+    return hashlib.sha256(material).hexdigest()
+
+
 _session_store: CopilotSessionStore | None = None
 _request_copilot_session: ContextVar[CopilotSession | None] = ContextVar(
     "request_copilot_session",
@@ -357,12 +412,13 @@ def _auth_error_response(
     detail: str,
     settings: EmbedSettings,
     clear_cookie: bool = True,
+    extra_headers: dict[str, str] | None = None,
 ) -> JSONResponse:
     headers = {
         "Cache-Control": "no-store",
         "Pragma": "no-cache",
-        "Vary": "Origin",
     }
+    headers.update(extra_headers or {})
     response = JSONResponse(
         {"detail": detail},
         status_code=status_code,
@@ -383,9 +439,28 @@ def register_copilot_auth_routes(
     sessions: CopilotSessionStore,
     validator: TokenValidator,
     config: AppConfigClient,
+    rate_limiter: BootstrapRateLimiter | None = None,
 ) -> None:
+    limiter = rate_limiter or BootstrapRateLimiter(
+        max_attempts=settings.bootstrap_rate_limit_per_minute,
+        max_keys=max(256, min(settings.max_sessions * 2, 20000)),
+    )
+
     @app.post("/copilot/auth/bootstrap")
     async def bootstrap_copilot(request: Request):
+        retry_after = await limiter.retry_after(
+            bootstrap_rate_limit_key(request)
+        )
+        if retry_after is not None:
+            logger.warning("Copilot bootstrap rate limit exceeded")
+            return _auth_error_response(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Too many authentication attempts",
+                settings=settings,
+                clear_cookie=False,
+                extra_headers={"Retry-After": str(retry_after)},
+            )
+
         previous_session_id = session_id_from_request(request)
         previous_session = await sessions.get(previous_session_id)
 
@@ -490,7 +565,6 @@ def register_copilot_auth_routes(
             headers={
                 "Cache-Control": "no-store",
                 "Pragma": "no-cache",
-                "Vary": "Origin",
             },
         )
         set_copilot_session_cookie(
@@ -508,7 +582,6 @@ def register_copilot_auth_routes(
             headers={
                 "Cache-Control": "no-store",
                 "Pragma": "no-cache",
-                "Vary": "Origin",
             },
         )
         clear_copilot_session_cookie(

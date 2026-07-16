@@ -23,6 +23,7 @@ class EmbedSettings:
     entra_required_scope: str = "user_impersonation"
     session_ttl_seconds: int = 3600
     max_sessions: int = 1000
+    bootstrap_rate_limit_per_minute: int = 60
 
     @property
     def uses_entra(self) -> bool:
@@ -247,6 +248,17 @@ def load_embed_settings(
         minimum=1,
         maximum=10000,
     )
+    bootstrap_rate_limit_per_minute = _parse_bounded_int(
+        _read_setting(
+            config,
+            environ,
+            "CHAINLIT_COPILOT_BOOTSTRAP_RATE_LIMIT_PER_MINUTE",
+        ),
+        key="CHAINLIT_COPILOT_BOOTSTRAP_RATE_LIMIT_PER_MINUTE",
+        default=60,
+        minimum=1,
+        maximum=600,
+    )
     return EmbedSettings(
         enabled=True,
         allowed_origins=allowed_origins,
@@ -257,6 +269,7 @@ def load_embed_settings(
         entra_required_scope=required_scope,
         session_ttl_seconds=session_ttl_seconds,
         max_sessions=max_sessions,
+        bootstrap_rate_limit_per_minute=bootstrap_rate_limit_per_minute,
     )
 
 

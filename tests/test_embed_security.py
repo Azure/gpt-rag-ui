@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -12,6 +13,7 @@ from embed_security import (
     _is_copilot_socket,
     configure_copilot_bridge_guards,
     CopilotRequestMiddleware,
+    disconnect_copilot_session,
 )
 
 
@@ -98,6 +100,14 @@ class EmbedSecurityTests(unittest.TestCase):
                     )
                     self.assertEqual(403, response.status_code)
 
+    def test_bootstrap_rejects_duplicate_origin_headers(self):
+        with TestClient(create_app(), base_url=CHAT) as client:
+            response = client.post(
+                "/copilot/auth/bootstrap",
+                headers=[("Origin", PORTAL), ("Origin", PORTAL)],
+            )
+        self.assertEqual(403, response.status_code)
+
     def test_portal_protected_request_requires_session(self):
         with TestClient(create_app(), base_url=CHAT) as client:
             response = client.get("/protected", headers={"Origin": PORTAL})
@@ -129,29 +139,25 @@ class EmbedSecurityTests(unittest.TestCase):
         self.assertEqual(200, response.status_code)
         self.assertIsNone(response.json()["cookie"])
 
-    def test_safe_get_navigation_accepts_exact_portal_referer(self):
+    def test_referer_never_enables_copilot_auth(self):
         session = SimpleNamespace(chainlit_token="internal-chainlit-jwt")
         with TestClient(create_app(session), base_url=CHAT) as client:
-            response = client.get(
-                "/protected",
-                headers={
-                    "Referer": f"{PORTAL}/page",
-                    "Cookie": f"{COPILOT_SESSION_COOKIE}={SESSION_ID}",
-                },
-            )
-        self.assertEqual(200, response.status_code)
-
-    def test_safe_get_navigation_rejects_credentialed_referer(self):
-        session = SimpleNamespace(chainlit_token="internal-chainlit-jwt")
-        with TestClient(create_app(session), base_url=CHAT) as client:
-            response = client.get(
-                "/protected",
-                headers={
-                    "Referer": "https://attacker@portal.example.com/page",
-                    "Cookie": f"{COPILOT_SESSION_COOKIE}={SESSION_ID}",
-                },
-            )
-        self.assertEqual(403, response.status_code)
+            for referer in (
+                f"{PORTAL}/page",
+                "https://attacker@portal.example.com/page",
+            ):
+                with self.subTest(referer=referer):
+                    response = client.get(
+                        "/protected",
+                        headers={
+                            "Referer": referer,
+                            "Cookie": (
+                                f"{COPILOT_SESSION_COOKIE}={SESSION_ID}"
+                            ),
+                        },
+                    )
+                    self.assertEqual(200, response.status_code)
+                    self.assertIsNone(response.json()["cookie"])
 
     def test_standalone_exact_origin_is_unchanged(self):
         with TestClient(create_app(), base_url=CHAT) as client:
@@ -273,6 +279,67 @@ class BridgeGuardTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(
                 await sio.emit("window_message", {"secret": True})
             )
+
+    async def test_bridge_event_to_room_with_copilot_member_is_denied(self):
+        class FakeSio:
+            def __init__(self):
+                self.emit = AsyncMock()
+                self.call = AsyncMock()
+                self.handlers = {"/": {}}
+                self.manager = SimpleNamespace(
+                    get_participants=lambda namespace, room: [
+                        ("copilot-socket", "engine-socket")
+                    ]
+                )
+
+            def on(self, event, handler):
+                self.handlers["/"][event] = handler
+
+        sio = FakeSio()
+        original_emit = sio.emit
+        configure_copilot_bridge_guards(sio)
+
+        with patch(
+            "embed_security._is_copilot_socket",
+            side_effect=lambda socket_id: socket_id == "copilot-socket",
+        ):
+            self.assertIsNone(
+                await sio.emit(
+                    "window_message",
+                    {"secret": True},
+                    room="mixed-room",
+                )
+            )
+
+        original_emit.assert_not_awaited()
+
+    async def test_session_invalidation_cancels_active_work_and_disconnects(self):
+        session_id = "i" * 43
+        active_task = asyncio.create_task(asyncio.sleep(60))
+        socket_session = SimpleNamespace(
+            user=SimpleNamespace(
+                metadata={"copilot_session_id": session_id}
+            ),
+            to_clear=False,
+            current_task=active_task,
+            socket_id="copilot-socket",
+        )
+        sio = SimpleNamespace(disconnect=AsyncMock())
+
+        with (
+            patch("embed_security._copilot_sio", sio),
+            patch(
+                "chainlit.session.ws_sessions_sid",
+                {"copilot-socket": socket_session},
+            ),
+        ):
+            disconnected = await disconnect_copilot_session(session_id)
+            await asyncio.sleep(0)
+
+        self.assertEqual(1, disconnected)
+        self.assertTrue(socket_session.to_clear)
+        self.assertTrue(active_task.cancelled())
+        sio.disconnect.assert_awaited_once_with("copilot-socket")
 
     def test_copilot_client_type_is_guarded_without_metadata_marker(self):
         session = SimpleNamespace(client_type="copilot", user=None)

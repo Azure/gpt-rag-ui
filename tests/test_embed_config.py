@@ -118,10 +118,30 @@ class EmbedConfigTests(unittest.TestCase):
             ("CHAINLIT_COPILOT_SESSION_TTL_SECONDS", "59"),
             ("CHAINLIT_COPILOT_MAX_SESSIONS", "10001"),
             ("CHAINLIT_COPILOT_MAX_SESSIONS", "many"),
+            ("CHAINLIT_COPILOT_BOOTSTRAP_RATE_LIMIT_PER_MINUTE", "0"),
+            ("CHAINLIT_COPILOT_BOOTSTRAP_RATE_LIMIT_PER_MINUTE", "601"),
         ):
             with self.subTest(key=key):
                 with self.assertRaises(EmbedConfigError):
                     load_embed_settings(FakeConfig(), enabled_env(**{key: value}))
+
+    def test_rejects_overlapping_standalone_and_portal_origins(self):
+        with self.assertRaisesRegex(EmbedConfigError, "separate"):
+            load_embed_settings(
+                FakeConfig(),
+                enabled_env(
+                    CHAINLIT_ALLOWED_ORIGINS="https://chat.example.com",
+                ),
+            )
+
+    def test_reads_bootstrap_rate_limit(self):
+        settings = load_embed_settings(
+            FakeConfig(),
+            enabled_env(
+                CHAINLIT_COPILOT_BOOTSTRAP_RATE_LIMIT_PER_MINUTE="25",
+            ),
+        )
+        self.assertEqual(25, settings.bootstrap_rate_limit_per_minute)
 
     def test_configure_leaves_standalone_origins_unchanged(self):
         chainlit_config = SimpleNamespace(

@@ -19,7 +19,11 @@ from conversation_security import (
     get_owned_conversation,
     principal_id_from_metadata,
 )
-from embed_auth import get_request_copilot_session
+from embed_auth import (
+    CopilotSessionStore,
+    get_request_copilot_session,
+    session_id_from_request,
+)
 
 
 _CONTAINER_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])?$")
@@ -177,8 +181,11 @@ def is_download_target_allowed(
 
 async def resolve_download_principal(
     request: Request,
+    sessions: CopilotSessionStore,
 ) -> DownloadPrincipal | None:
     opaque_session = get_request_copilot_session()
+    if not opaque_session and not request.headers.getlist("Origin"):
+        opaque_session = await sessions.get(session_id_from_request(request))
     if opaque_session:
         return DownloadPrincipal(
             principal_id=opaque_session.principal_id,
@@ -217,11 +224,12 @@ def register_secure_download_route(
     allowed_containers: set[str],
     conversation_container: str,
     shared_containers: set[str],
+    sessions: CopilotSessionStore,
     conversation_resolver: ConversationResolver = get_owned_conversation,
 ) -> None:
     @app.get("/api/download/{grant_token}")
     async def download_blob_file(grant_token: str, request: Request):
-        principal = await resolve_download_principal(request)
+        principal = await resolve_download_principal(request, sessions)
         if not principal:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,

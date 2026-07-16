@@ -19,9 +19,11 @@ Its lifetime is the lesser of the configured Copilot TTL and the Entra `exp`.
 
 The Chainlit widget is mounted without `accessToken`. Subsequent HTTP,
 Socket.IO polling, Socket.IO upgrade, and WebSocket requests must carry the
-opaque cookie and an exact configured portal origin. Safe GET navigations such
-as citation downloads, for which browsers omit `Origin`, must carry an exact
-portal `Referer`.
+opaque cookie and an exact configured portal origin. Top-level citation
+navigation normally omits `Origin`; the dedicated download endpoint resolves
+the opaque cookie directly and repeats principal, conversation, container, and
+path authorization. `Referer` is never an authentication or authorization
+input.
 
 ```mermaid
 sequenceDiagram
@@ -58,6 +60,7 @@ label. Container environment variables with the same names take precedence.
 | `CHAINLIT_COPILOT_ENTRA_REQUIRED_SCOPE` | No | Delegated scope required in `scp`. Default: `user_impersonation`. App-only tokens are rejected. |
 | `CHAINLIT_COPILOT_SESSION_TTL_SECONDS` | No | Server-side session TTL from 60 to 86400 seconds. Default: 3600. Entra expiry can shorten it. |
 | `CHAINLIT_COPILOT_MAX_SESSIONS` | No | Maximum in-memory Copilot sessions from 1 to 10000. Default: 1000. Oldest sessions are evicted at capacity. |
+| `CHAINLIT_COPILOT_BOOTSTRAP_RATE_LIMIT_PER_MINUTE` | No | Process-local bootstrap attempt limit per direct peer and exact origin, from 1 to 600. Default: 60. Returns `429` with `Retry-After`. This is defense in depth, not a replacement for trusted-ingress throttling. |
 | `CITATION_SHARED_DOWNLOAD_CONTAINERS` | No | Comma-separated storage containers whose contents have uniform access for every authorized UI user. Default: empty. Never add permission-trimmed containers. |
 
 The standalone deployment must have OAuth configured and
@@ -68,6 +71,10 @@ Standalone development can still generate a temporary `CHAINLIT_AUTH_SECRET`
 when embedding is disabled.
 
 Restart the UI after changing startup settings.
+
+If both `ALLOWED_USER_PRINCIPALS` and `ALLOWED_USER_NAMES` are empty, every
+valid delegated user in the configured tenant is authorized. Treat that as an
+explicit deployment decision and record security-owner sign-off.
 
 ## Portal bootstrap
 
@@ -144,8 +151,16 @@ server session, and only then load and mount the widget.
 
 An origin rejection is an operator configuration error. Do not retry it as a
 sign-in failure, and never mount an anonymous widget after bootstrap fails.
-The sample handles `429` because an approved gateway may rate-limit bootstrap;
-the UI endpoint itself does not currently emit that status.
+The UI emits `429` with `Retry-After` when its process-local bootstrap limit is
+reached. Honor that delay. Configure authoritative distributed throttling at
+Front Door WAF, API Management, or another trusted gateway because clients can
+change source paths and requests can be spread across replicas.
+
+If the second `401` remains after the one forced token refresh, the refreshed
+credential still did not establish an acceptable delegated session. Stop the
+loop and require an explicit sign-in. If bootstrap succeeds but the widget's
+first authenticated request fails, investigate cookie delivery separately;
+cross-site cookie blocking is not fixed by refreshing the Entra token.
 
 ### Mid-session expiry
 
@@ -230,9 +245,11 @@ it did on the initial load.
 - The standalone UI origin comes from exact `CHAINLIT_URL` and retains its
   existing OAuth policy.
 - Requests with an unlisted `Origin` are rejected before Chainlit handles
-  them. A Copilot cookie is honored only with an exact portal `Origin` or
-  safe-GET `Referer`; otherwise it is ignored so it cannot override standalone
-  OAuth handling.
+  them. A Copilot cookie is honored by the Chainlit request pipeline only with
+  an exact portal `Origin`; otherwise it is ignored so it cannot override
+  standalone OAuth handling. The dedicated top-level download route is the sole
+  no-`Origin` exception and resolves only the opaque cookie before repeating
+  all download authorization checks. `Referer` is ignored.
 - `/auth/jwt` and `/auth/header` are unavailable to portal origins. The portal
   uses only the dedicated bootstrap endpoint.
 - Citation URLs are absolute URLs on `CHAINLIT_URL`. They contain a short-lived,
@@ -298,25 +315,27 @@ absolute citation URLs.
 Prefer publishing the portal and UI through the approved Zero Trust gateway or
 front door. Do not expose the Container App directly.
 
+The bootstrap limiter is also process-local and keys a fixed 60-second window
+by a SHA-256 digest of the direct peer plus exact `Origin`. It retains only a
+bounded number of digests. Peer identity is meaningful only when the UI is
+reached through a trusted ingress; do not trust client-supplied forwarding
+headers in the application. Enforce authoritative rate limits at that ingress.
+
 ## Troubleshooting
 
 | Symptom | Check |
 | --- | --- |
 | Bootstrap 403 | The browser `Origin` exactly matches `CHAINLIT_ALLOWED_ORIGINS`, including scheme and port. |
 | Bootstrap 401 | Token issuer, audience, tenant, `oid`, delegated scope, signature, and expiry. Reacquire once. |
+| Bootstrap 429 | Honor `Retry-After`, stop automatic retries, and inspect trusted-ingress limits if the condition persists. |
 | Bootstrap 503 | Entra JWKS could not be reached. Show the unavailable state; do not start a sign-in loop. |
 | Widget reports authentication failure | Bootstrap completed before mounting and the request used `credentials: "include"`. |
-| Cookie absent | HTTPS is used; for cross-site portals use `SameSite=None`; check browser third-party-cookie policy. |
+| Cookie absent after successful bootstrap | HTTPS is used; for cross-site portals use `SameSite=None`; check browser third-party-cookie policy. This is distinct from token verification failure. |
 | CSP blocks the widget | Portal `script-src`, `connect-src`, `style-src`, and font rules include the required sources. |
 | Socket.IO 403 or WebSocket 1008/4401 | Exact origin, cookie delivery, session affinity, and server session expiry. |
 | Citation returns 404 | Session is current, the conversation belongs to the user, the signed grant is unmodified, and the blob exists. |
 | Account switch shows an old thread | Call Copilot logout, unmount, remove `#chainlit-copilot`, and remove `chainlit-copilot-thread-id` before bootstrap. |
 | Widget shows the wrong account | Stop the widget immediately, clear it as above, and bootstrap again. Do not allow another send while stale account content is visible. |
-
-For direct citation navigation, do not configure the portal with
-`Referrer-Policy: no-referrer`; browsers normally omit `Origin` on that GET, so
-the UI requires an exact allowed portal `Referer`. A portal can instead perform
-an authenticated fetch that supplies its browser-managed `Origin`.
 
 ## Residual Chainlit 2.9.4 limitations
 

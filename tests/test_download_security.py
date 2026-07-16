@@ -190,7 +190,7 @@ class DownloadSecurityTests(unittest.IsolatedAsyncioTestCase):
                 await get_owned_conversation("conversation", METADATA)
             )
 
-    async def test_secure_download_route_authorizes_exact_portal_origin(self):
+    async def test_secure_download_route_authorizes_top_level_navigation(self):
         manager = DownloadTokenManager(
             secret="secret",
             public_url="https://chat.example.com",
@@ -226,6 +226,7 @@ class DownloadSecurityTests(unittest.IsolatedAsyncioTestCase):
             allowed_containers={"conversation-documents"},
             conversation_container="conversation-documents",
             shared_containers=set(),
+            sessions=Sessions(),
             conversation_resolver=resolver,
         )
         app.add_middleware(
@@ -245,10 +246,19 @@ class DownloadSecurityTests(unittest.IsolatedAsyncioTestCase):
         ) as client:
             response = await client.get(
                 f"/api/download/{grant_token}",
-                headers={"Origin": "https://portal.example.com"},
+            )
+            wrong_origin = await client.get(
+                f"/api/download/{grant_token}",
+                headers={"Origin": "https://attacker.example.com"},
+            )
+            standalone_origin = await client.get(
+                f"/api/download/{grant_token}",
+                headers={"Origin": "https://chat.example.com"},
             )
 
         self.assertEqual(200, response.status_code)
+        self.assertEqual(403, wrong_origin.status_code)
+        self.assertEqual(401, standalone_origin.status_code)
         self.assertEqual(b"pdf-data", response.content)
         self.assertEqual("private, no-store", response.headers["cache-control"])
         self.assertIn("file.pdf", response.headers["content-disposition"])
@@ -289,6 +299,7 @@ class DownloadSecurityTests(unittest.IsolatedAsyncioTestCase):
             download_result=b"data",
             authenticated=True,
             shared_containers=None,
+            cookie_header=None,
         ):
             app = FastAPI()
             resolver = AsyncMock(return_value=resolver_result)
@@ -308,6 +319,7 @@ class DownloadSecurityTests(unittest.IsolatedAsyncioTestCase):
                     if shared_containers is None
                     else shared_containers
                 ),
+                sessions=Sessions(),
                 conversation_resolver=resolver,
             )
             app.add_middleware(
@@ -321,7 +333,7 @@ class DownloadSecurityTests(unittest.IsolatedAsyncioTestCase):
             )
             cookies = (
                 {COPILOT_SESSION_COOKIE: SESSION_ID}
-                if authenticated
+                if authenticated and cookie_header is None
                 else {}
             )
             transport = httpx.ASGITransport(
@@ -335,13 +347,31 @@ class DownloadSecurityTests(unittest.IsolatedAsyncioTestCase):
             ) as client:
                 response = await client.get(
                     f"/api/download/{grant_token}",
-                    headers={"Origin": "https://portal.example.com"},
+                    headers={
+                        "Origin": "https://portal.example.com",
+                        **(
+                            {"Cookie": cookie_header}
+                            if cookie_header is not None
+                            else {}
+                        ),
+                    },
                 )
             return response
 
         self.assertEqual(
             401,
             (await request(authenticated=False)).status_code,
+        )
+        self.assertEqual(
+            401,
+            (
+                await request(
+                    cookie_header=(
+                        f"{COPILOT_SESSION_COOKIE}={'a' * 43}; "
+                        f"{COPILOT_SESSION_COOKIE}={'b' * 43}"
+                    )
+                )
+            ).status_code,
         )
         self.assertEqual(
             404,
@@ -402,6 +432,9 @@ class DownloadSecurityTests(unittest.IsolatedAsyncioTestCase):
             allowed_containers={"documents"},
             conversation_container="conversation-documents",
             shared_containers={"documents"},
+            sessions=SimpleNamespace(
+                get=AsyncMock(return_value=None),
+            ),
             conversation_resolver=AsyncMock(return_value={"id": "conversation"}),
         )
         oauth_user = User(

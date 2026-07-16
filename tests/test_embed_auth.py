@@ -9,6 +9,8 @@ import httpx
 import jwt
 from chainlit.user import User
 from fastapi import FastAPI
+from starlette.middleware.cors import CORSMiddleware
+from starlette.requests import Request
 from starlette.responses import Response
 
 from embed_config import EmbedSettings
@@ -18,8 +20,10 @@ from embed_auth import (
     clear_copilot_session_cookie,
     create_embed_session_jwt,
     register_copilot_auth_routes,
+    session_id_from_request,
     set_copilot_session_cookie,
 )
+from embed_security import CopilotRequestMiddleware
 from entra_token import EntraTokenError
 
 
@@ -497,6 +501,173 @@ class EmbedAuthTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
         self.assertEqual(401, duplicate.status_code)
+
+    def test_duplicate_or_malformed_session_cookie_is_rejected(self):
+        for headers in (
+            [
+                (
+                    b"cookie",
+                    (
+                        f"{COPILOT_SESSION_COOKIE}={'a' * 43}; "
+                        f"{COPILOT_SESSION_COOKIE}={'b' * 43}"
+                    ).encode(),
+                )
+            ],
+            [(b"cookie", COPILOT_SESSION_COOKIE.encode())],
+            [
+                (
+                    b"cookie",
+                    f"{COPILOT_SESSION_COOKIE}={'a' * 43}".encode(),
+                ),
+                (
+                    b"cookie",
+                    f"{COPILOT_SESSION_COOKIE}={'b' * 43}".encode(),
+                ),
+            ],
+        ):
+            with self.subTest(headers=headers):
+                request = Request(
+                    {
+                        "type": "http",
+                        "method": "GET",
+                        "path": "/",
+                        "headers": headers,
+                    }
+                )
+                self.assertIsNone(session_id_from_request(request))
+
+    async def test_auth_errors_and_rate_limit_are_cors_visible(self):
+        portal = "https://portal.example.com"
+        settings = EmbedSettings(
+            enabled=True,
+            ui_origin="https://chat.example.com",
+            allowed_origins=(portal,),
+            max_sessions=10,
+            session_ttl_seconds=120,
+            bootstrap_rate_limit_per_minute=2,
+        )
+        sessions = CopilotSessionStore(max_sessions=10, ttl_seconds=120)
+        claims = {
+            "tid": TENANT_ID,
+            "oid": OBJECT_ID,
+            "exp": int(time.time()) + 600,
+            "preferred_username": "denied@example.com",
+        }
+        app = FastAPI()
+        register_copilot_auth_routes(
+            app,
+            settings=settings,
+            sessions=sessions,
+            validator=SimpleNamespace(
+                validate=AsyncMock(return_value=claims)
+            ),
+            config=FakeConfig(
+                {"ALLOWED_USER_NAMES": "allowed@example.com"}
+            ),
+        )
+        app.add_middleware(
+            CopilotRequestMiddleware,
+            settings=settings,
+            sessions=sessions,
+        )
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=[portal],
+            allow_credentials=True,
+            allow_methods=["POST"],
+            allow_headers=["Authorization", "Content-Type"],
+        )
+        transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="https://chat.example.com",
+        ) as client:
+            unauthorized = await client.post(
+                "/copilot/auth/bootstrap",
+                headers={"Origin": portal},
+            )
+            forbidden = await client.post(
+                "/copilot/auth/bootstrap",
+                headers={
+                    "Origin": portal,
+                    "Authorization": "Bearer denied",
+                },
+            )
+            limited = await client.post(
+                "/copilot/auth/bootstrap",
+                headers={
+                    "Origin": portal,
+                    "Authorization": "Bearer denied",
+                },
+            )
+
+        self.assertEqual(401, unauthorized.status_code)
+        self.assertEqual(403, forbidden.status_code)
+        self.assertEqual(429, limited.status_code)
+        for response in (unauthorized, forbidden, limited):
+            self.assertEqual(
+                portal,
+                response.headers["access-control-allow-origin"],
+            )
+            self.assertEqual("Origin", response.headers["vary"])
+        self.assertGreaterEqual(int(limited.headers["retry-after"]), 1)
+
+    async def test_rate_limit_preserves_current_session(self):
+        portal = "https://portal.example.com"
+        settings = EmbedSettings(
+            enabled=True,
+            ui_origin="https://chat.example.com",
+            allowed_origins=(portal,),
+            max_sessions=10,
+            session_ttl_seconds=120,
+            bootstrap_rate_limit_per_minute=1,
+        )
+        sessions = CopilotSessionStore(max_sessions=10, ttl_seconds=120)
+        claims = {
+            "tid": TENANT_ID,
+            "oid": OBJECT_ID,
+            "exp": int(time.time()) + 600,
+            "preferred_username": "user@example.com",
+        }
+        validator = AsyncMock(return_value=claims)
+        app = FastAPI()
+        register_copilot_auth_routes(
+            app,
+            settings=settings,
+            sessions=sessions,
+            validator=SimpleNamespace(validate=validator),
+            config=FakeConfig(),
+        )
+        app.add_middleware(
+            CopilotRequestMiddleware,
+            settings=settings,
+            sessions=sessions,
+        )
+        transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="https://chat.example.com",
+        ) as client:
+            first = await client.post(
+                "/copilot/auth/bootstrap",
+                headers={
+                    "Origin": portal,
+                    "Authorization": "Bearer valid",
+                },
+            )
+            session_id = client.cookies.get(COPILOT_SESSION_COOKIE)
+            limited = await client.post(
+                "/copilot/auth/bootstrap",
+                headers={
+                    "Origin": portal,
+                    "Authorization": "Bearer another",
+                },
+            )
+
+        self.assertEqual(200, first.status_code)
+        self.assertEqual(429, limited.status_code)
+        self.assertIsNotNone(await sessions.get(session_id))
+        validator.assert_awaited_once_with("valid")
 
 
 if __name__ == "__main__":
