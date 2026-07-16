@@ -285,7 +285,7 @@ async def _terminate_chainlit_session(
     *,
     socket_id: str | None = None,
     chainlit_session_id: str | None = None,
-) -> None:
+) -> str | None:
     from chainlit.session import WebsocketSession
 
     session = (
@@ -294,7 +294,7 @@ async def _terminate_chainlit_session(
         else WebsocketSession.get(socket_id)
     )
     if not session:
-        return
+        return None
 
     session.to_clear = True
     task = session.current_task
@@ -306,16 +306,20 @@ async def _terminate_chainlit_session(
         task.cancel()
 
     active_socket_id = session.socket_id
+    await _disconnect_socket(sio, active_socket_id)
+    if WebsocketSession.get_by_id(session.id) is session:
+        await session.delete()
+    return active_socket_id
+
+
+async def _disconnect_socket(sio, socket_id: str) -> None:
     try:
-        await sio.disconnect(active_socket_id, namespace="/")
+        await sio.disconnect(socket_id, namespace="/")
     except Exception:
         logger.warning(
             "Failed to disconnect invalidated Copilot socket",
             exc_info=True,
         )
-    finally:
-        if WebsocketSession.get_by_id(session.id) is session:
-            await session.delete()
 
 
 async def _invalidate_chainlit_sessions(
@@ -324,16 +328,27 @@ async def _invalidate_chainlit_sessions(
 ) -> None:
     from chainlit.session import WebsocketSession
 
+    if not invalidation.terminate_chainlit_sessions:
+        for socket_id in invalidation.socket_ids:
+            await sio.disconnect(socket_id, namespace="/")
+        return
+
     chainlit_session_ids = set(invalidation.chainlit_session_ids)
     for socket_id in invalidation.socket_ids:
         if session := WebsocketSession.get(socket_id):
             chainlit_session_ids.add(session.id)
 
+    disconnected_socket_ids = set()
     for chainlit_session_id in chainlit_session_ids:
-        await _terminate_chainlit_session(
+        if socket_id := await _terminate_chainlit_session(
             sio,
             chainlit_session_id=chainlit_session_id,
-        )
+        ):
+            disconnected_socket_ids.add(socket_id)
+
+    for socket_id in invalidation.socket_ids:
+        if socket_id not in disconnected_socket_ids:
+            await _disconnect_socket(sio, socket_id)
 
 
 def configure_copilot_bridge_guards(
@@ -348,6 +363,7 @@ def configure_copilot_bridge_guards(
     handlers = sio.handlers.get("/", {})
     original_connect = handlers.get("connect")
     original_disconnect = handlers.get("disconnect")
+    connect_lock = asyncio.Lock()
 
     async def invalidate_session(
         invalidation: CopilotSessionInvalidation,
@@ -379,72 +395,101 @@ def configure_copilot_bridge_guards(
 
     if original_connect:
         async def guarded_connect(socket_id, environ, auth):
-            existing = _existing_socket_session((auth or {}).get("sessionId"))
-            copilot_session_id = _copilot_session_id_from_environ(environ)
-            existing_owner = (
-                await sessions.chainlit_session_owner(existing.id)
-                if existing
-                else None
-            )
-            existing_is_copilot = bool(
-                existing and getattr(existing, "client_type", None) == "copilot"
-            )
-
-            if copilot_session_id:
-                active_session = await sessions.get(copilot_session_id)
-                if (
-                    not active_session
-                    or (auth or {}).get("clientType") != "copilot"
-                ):
+            async with connect_lock:
+                socket_auth = auth if isinstance(auth, dict) else {}
+                chainlit_session_id = socket_auth.get("sessionId")
+                if not isinstance(chainlit_session_id, str) or not chainlit_session_id:
                     raise ConnectionRefusedError("authentication failed")
-                current_user = await _authenticated_socket_user(environ)
-                same_principal = bool(
-                    current_user
-                    and active_session
-                    and current_user.identifier == active_session.principal_id
+
+                existing = _existing_socket_session(chainlit_session_id)
+                copilot_session_id = _copilot_session_id_from_environ(environ)
+                existing_owner = (
+                    await sessions.chainlit_session_owner(existing.id)
+                    if existing
+                    else None
                 )
-                if not same_principal:
-                    raise ConnectionRefusedError("authentication failed")
+                existing_is_copilot = bool(
+                    existing
+                    and getattr(existing, "client_type", None) == "copilot"
+                )
 
-                if existing and existing.user:
+                if copilot_session_id:
+                    active_session = await sessions.get(copilot_session_id)
+                    if (
+                        not active_session
+                        or socket_auth.get("clientType") != "copilot"
+                    ):
+                        raise ConnectionRefusedError("authentication failed")
+                    current_user = await _authenticated_socket_user(environ)
                     same_principal = bool(
                         current_user
-                        and current_user.identifier == existing.user.identifier
+                        and active_session
+                        and current_user.identifier
+                        == active_session.principal_id
                     )
-                    same_copilot_session = (
-                        existing_owner == copilot_session_id
-                    )
-                    if not same_principal or not same_copilot_session:
-                        logger.warning(
-                            "Blocked Socket.IO session restore across authenticated sessions"
-                        )
+                    if not same_principal:
                         raise ConnectionRefusedError("authentication failed")
-            elif existing_owner or existing_is_copilot:
-                logger.warning(
-                    "Blocked standalone restore of a Copilot Socket.IO session"
-                )
-                raise ConnectionRefusedError("authentication failed")
 
-            result = await original_connect(socket_id, environ, auth)
-            if copilot_session_id:
-                from chainlit.session import WebsocketSession
-
-                websocket_session = WebsocketSession.get(socket_id)
-                admitted = bool(
-                    websocket_session
-                    and await sessions.bind_connection(
-                        session_id=copilot_session_id,
-                        socket_id=socket_id,
-                        chainlit_session_id=websocket_session.id,
-                    )
-                )
-                if not admitted:
-                    await _terminate_chainlit_session(
-                        sio,
-                        socket_id=socket_id,
+                    if existing and existing.user:
+                        same_principal = bool(
+                            current_user
+                            and current_user.identifier
+                            == existing.user.identifier
+                        )
+                        same_copilot_session = (
+                            existing_owner == copilot_session_id
+                        )
+                        if not same_principal or not same_copilot_session:
+                            logger.warning(
+                                "Blocked Socket.IO session restore across authenticated sessions"
+                            )
+                            raise ConnectionRefusedError(
+                                "authentication failed"
+                            )
+                elif existing_owner or existing_is_copilot:
+                    logger.warning(
+                        "Blocked standalone restore of a Copilot Socket.IO session"
                     )
                     raise ConnectionRefusedError("authentication failed")
-            return result
+
+                reserved = False
+                connected = False
+                if copilot_session_id:
+                    reserved = await sessions.bind_connection(
+                        session_id=copilot_session_id,
+                        socket_id=socket_id,
+                        chainlit_session_id=chainlit_session_id,
+                    )
+                    if not reserved:
+                        raise ConnectionRefusedError("authentication failed")
+
+                try:
+                    result = await original_connect(socket_id, environ, auth)
+                    if copilot_session_id:
+                        from chainlit.session import WebsocketSession
+
+                        websocket_session = WebsocketSession.get(socket_id)
+                        if (
+                            not websocket_session
+                            or websocket_session.id != chainlit_session_id
+                            or not await sessions.socket_is_active(socket_id)
+                        ):
+                            await _terminate_chainlit_session(
+                                sio,
+                                socket_id=socket_id,
+                            )
+                            raise ConnectionRefusedError(
+                                "authentication failed"
+                            )
+                    connected = True
+                    return result
+                finally:
+                    if reserved and not connected:
+                        await sessions.unbind_socket(socket_id)
+                        if not existing:
+                            await sessions.release_chainlit_session(
+                                chainlit_session_id
+                            )
 
         sio.on("connect", handler=guarded_connect)
 

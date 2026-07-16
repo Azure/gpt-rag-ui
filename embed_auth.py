@@ -70,6 +70,7 @@ class CopilotSessionInvalidation:
     reason: str
     socket_ids: tuple[str, ...] = ()
     chainlit_session_ids: tuple[str, ...] = ()
+    terminate_chainlit_sessions: bool = True
 
 
 InvalidationHandler = Callable[[CopilotSessionInvalidation], Awaitable[None]]
@@ -114,6 +115,8 @@ class CopilotSessionStore:
         self._expiry_handles: dict[str, asyncio.TimerHandle] = {}
         self._on_invalidate: InvalidationHandler | None = None
         self._lock = asyncio.Lock()
+        self._connection_lock = asyncio.Lock()
+        self._invalidating_sockets: set[str] = set()
 
     def set_invalidation_handler(
         self,
@@ -147,13 +150,20 @@ class CopilotSessionStore:
         if self._principal_sessions.get(session.principal_id) == session_id:
             self._principal_sessions.pop(session.principal_id, None)
 
-        socket_ids = tuple(self._session_sockets.pop(session_id, set()))
-        chainlit_ids = tuple(
+        socket_ids = tuple(
+            sorted(self._session_sockets.pop(session_id, set()))
+        )
+        self._invalidating_sockets.update(socket_ids)
+        chainlit_ids = list(
             self._session_chainlit_sessions.pop(
                 session_id,
                 OrderedDict(),
-            ).keys()
+            )
         )
+        for socket_id in socket_ids:
+            chainlit_id = self._socket_chainlit_sessions.get(socket_id)
+            if chainlit_id and chainlit_id not in chainlit_ids:
+                chainlit_ids.append(chainlit_id)
         for chainlit_id in chainlit_ids:
             if self._chainlit_sessions.get(chainlit_id) == session_id:
                 self._chainlit_sessions.pop(chainlit_id, None)
@@ -162,7 +172,7 @@ class CopilotSessionStore:
             session=session,
             reason=reason,
             socket_ids=socket_ids,
-            chainlit_session_ids=chainlit_ids,
+            chainlit_session_ids=tuple(chainlit_ids),
         )
 
     def _prune_locked(self, now: int) -> list[CopilotSessionInvalidation]:
@@ -188,28 +198,48 @@ class CopilotSessionStore:
     ) -> None:
         async with self._lock:
             for socket_id in invalidation.socket_ids:
+                self._invalidating_sockets.discard(socket_id)
                 if (
                     self._socket_sessions.get(socket_id)
                     == invalidation.session.session_id
                 ):
                     self._socket_sessions.pop(socket_id, None)
                     self._socket_chainlit_sessions.pop(socket_id, None)
+                    session_sockets = self._session_sockets.get(
+                        invalidation.session.session_id
+                    )
+                    if session_sockets is not None:
+                        session_sockets.discard(socket_id)
+                        if not session_sockets:
+                            self._session_sockets.pop(
+                                invalidation.session.session_id,
+                                None,
+                            )
 
     async def _notify_invalidations(
         self,
         invalidations: list[CopilotSessionInvalidation],
-    ) -> None:
+        *,
+        cleanup_on_failure: bool = True,
+    ) -> bool:
+        all_succeeded = True
         for invalidation in invalidations:
+            succeeded = True
             try:
                 if self._on_invalidate:
                     await self._on_invalidate(invalidation)
+                elif invalidation.socket_ids:
+                    succeeded = False
             except Exception:
+                succeeded = False
                 logger.exception(
                     "Failed to invalidate Copilot session resources: reason=%s",
                     invalidation.reason,
                 )
-            finally:
+            if succeeded or cleanup_on_failure:
                 await self._cleanup_socket_associations(invalidation)
+            all_succeeded = all_succeeded and succeeded
+        return all_succeeded
 
     async def _expire_if_due(self, session_id: str) -> None:
         invalidations: list[CopilotSessionInvalidation] = []
@@ -342,60 +372,139 @@ class CopilotSessionStore:
         socket_id: str,
         chainlit_session_id: str,
     ) -> bool:
-        invalidations: list[CopilotSessionInvalidation] = []
-        admitted = False
-        async with self._lock:
-            invalidations.extend(self._prune_locked(int(time.time())))
-            session = self._sessions.get(session_id)
-            if session:
+        async with self._connection_lock:
+            invalidations: list[CopilotSessionInvalidation] = []
+            replacement: CopilotSessionInvalidation | None = None
+            candidate_session: CopilotSession | None = None
+            idempotent = False
+
+            async with self._lock:
+                invalidations.extend(self._prune_locked(int(time.time())))
+                candidate_session = self._sessions.get(session_id)
+                if candidate_session:
+                    socket_owner = self._socket_sessions.get(socket_id)
+                    socket_chainlit_id = self._socket_chainlit_sessions.get(
+                        socket_id
+                    )
+                    idempotent = (
+                        socket_owner == session_id
+                        and socket_chainlit_id == chainlit_session_id
+                    )
+                    socket_already_bound = bool(
+                        socket_owner or socket_chainlit_id
+                    )
+                    chainlit_owner = self._chainlit_sessions.get(
+                        chainlit_session_id
+                    )
+                    session_sockets = self._session_sockets.get(
+                        session_id,
+                        set(),
+                    )
+                    replacement_socket_ids = tuple(
+                        sorted(
+                            existing_socket_id
+                            for existing_socket_id in session_sockets
+                            if existing_socket_id != socket_id
+                            and self._socket_chainlit_sessions.get(
+                                existing_socket_id
+                            )
+                            == chainlit_session_id
+                        )
+                    )
+                    has_physical_capacity = (
+                        bool(replacement_socket_ids)
+                        or len(session_sockets)
+                        < self.max_connections_per_session
+                    )
+                    can_bind = (
+                        not socket_already_bound
+                        and chainlit_owner in {None, session_id}
+                        and has_physical_capacity
+                        and (
+                            not replacement_socket_ids
+                            or self._on_invalidate is not None
+                        )
+                    )
+                    if can_bind and replacement_socket_ids:
+                        self._invalidating_sockets.update(
+                            replacement_socket_ids
+                        )
+                        replacement = CopilotSessionInvalidation(
+                            session=candidate_session,
+                            reason="socket_replaced",
+                            socket_ids=replacement_socket_ids,
+                            terminate_chainlit_sessions=False,
+                        )
+                    elif not can_bind and not idempotent:
+                        candidate_session = None
+
+            await self._notify_invalidations(invalidations)
+            if idempotent:
+                return True
+            if not candidate_session:
+                return False
+            if replacement:
+                disconnected = await self._notify_invalidations(
+                    [replacement],
+                    cleanup_on_failure=False,
+                )
+                if not disconnected:
+                    return False
+
+            async with self._lock:
+                if self._sessions.get(session_id) is not candidate_session:
+                    return False
+                if (
+                    self._socket_sessions.get(socket_id) is not None
+                    or self._socket_chainlit_sessions.get(socket_id) is not None
+                ):
+                    return False
+
+                chainlit_owner = self._chainlit_sessions.get(
+                    chainlit_session_id
+                )
+                if chainlit_owner not in {None, session_id}:
+                    return False
                 chainlit_ids = self._session_chainlit_sessions.setdefault(
                     session_id,
                     OrderedDict(),
                 )
-                is_existing_chainlit_session = chainlit_session_id in chainlit_ids
-                if (
-                    is_existing_chainlit_session
-                    or len(chainlit_ids) < self.max_connections_per_session
-                ):
-                    for old_socket_id, old_chainlit_id in list(
-                        self._socket_chainlit_sessions.items()
-                    ):
-                        if old_chainlit_id != chainlit_session_id:
-                            continue
-                        old_session_id = self._socket_sessions.pop(
-                            old_socket_id,
-                            None,
-                        )
-                        self._socket_chainlit_sessions.pop(old_socket_id, None)
-                        if old_session_id:
-                            self._session_sockets.get(
-                                old_session_id,
-                                set(),
-                            ).discard(old_socket_id)
+                session_sockets = self._session_sockets.setdefault(
+                    session_id,
+                    set(),
+                )
+                if len(session_sockets) >= self.max_connections_per_session:
+                    return False
 
-                    chainlit_ids[chainlit_session_id] = None
-                    chainlit_ids.move_to_end(chainlit_session_id)
-                    self._chainlit_sessions[chainlit_session_id] = session_id
-                    self._session_sockets.setdefault(session_id, set()).add(
-                        socket_id
-                    )
-                    self._socket_sessions[socket_id] = session_id
-                    self._socket_chainlit_sessions[
-                        socket_id
-                    ] = chainlit_session_id
-                    admitted = True
-        await self._notify_invalidations(invalidations)
-        return admitted
+                chainlit_ids[chainlit_session_id] = None
+                chainlit_ids.move_to_end(chainlit_session_id)
+                self._chainlit_sessions[chainlit_session_id] = session_id
+                session_sockets.add(socket_id)
+                self._socket_sessions[socket_id] = session_id
+                self._socket_chainlit_sessions[
+                    socket_id
+                ] = chainlit_session_id
+                return True
 
     async def unbind_socket(self, socket_id: str) -> None:
         async with self._lock:
+            self._invalidating_sockets.discard(socket_id)
             session_id = self._socket_sessions.pop(socket_id, None)
             self._socket_chainlit_sessions.pop(socket_id, None)
             if session_id:
-                self._session_sockets.get(session_id, set()).discard(socket_id)
+                session_sockets = self._session_sockets.get(session_id)
+                if session_sockets is not None:
+                    session_sockets.discard(socket_id)
+                    if not session_sockets:
+                        self._session_sockets.pop(session_id, None)
 
     async def release_chainlit_session(self, chainlit_session_id: str) -> None:
         async with self._lock:
+            if any(
+                mapped_chainlit_id == chainlit_session_id
+                for mapped_chainlit_id in self._socket_chainlit_sessions.values()
+            ):
+                return
             session_id = self._chainlit_sessions.pop(
                 chainlit_session_id,
                 None,
@@ -405,18 +514,6 @@ class CopilotSessionStore:
                     session_id,
                     OrderedDict(),
                 ).pop(chainlit_session_id, None)
-            for socket_id, mapped_chainlit_id in list(
-                self._socket_chainlit_sessions.items()
-            ):
-                if mapped_chainlit_id != chainlit_session_id:
-                    continue
-                mapped_session_id = self._socket_sessions.pop(socket_id, None)
-                self._socket_chainlit_sessions.pop(socket_id, None)
-                if mapped_session_id:
-                    self._session_sockets.get(
-                        mapped_session_id,
-                        set(),
-                    ).discard(socket_id)
 
     async def chainlit_session_owner(
         self,
@@ -430,7 +527,11 @@ class CopilotSessionStore:
         async with self._lock:
             invalidations.extend(self._prune_locked(int(time.time())))
             session_id = self._socket_sessions.get(socket_id)
-            active = bool(session_id and session_id in self._sessions)
+            active = bool(
+                session_id
+                and session_id in self._sessions
+                and socket_id not in self._invalidating_sockets
+            )
         await self._notify_invalidations(invalidations)
         return active
 

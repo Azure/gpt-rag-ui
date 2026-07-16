@@ -290,6 +290,108 @@ class EmbedSecurityTests(unittest.TestCase):
 
 
 class BridgeGuardTests(unittest.IsolatedAsyncioTestCase):
+    async def test_physical_socket_cap_disconnects_all_hundred_restores(self):
+        active_socket_ids = set()
+        disconnected_socket_ids = []
+
+        async def disconnect(socket_id, *, namespace):
+            self.assertEqual("/", namespace)
+            disconnected_socket_ids.append(socket_id)
+            active_socket_ids.discard(socket_id)
+
+        class FakeSio:
+            def __init__(self):
+                self.emit = AsyncMock()
+                self.call = AsyncMock()
+                self.disconnect = AsyncMock(side_effect=disconnect)
+                self.handlers = {"/": {}}
+
+            def on(self, event, handler):
+                self.handlers["/"][event] = handler
+
+        sio = FakeSio()
+        with patch.dict(
+            os.environ,
+            {"CHAINLIT_AUTH_SECRET": "test-secret-with-adequate-length"},
+        ):
+            store = CopilotSessionStore(
+                max_sessions=1,
+                ttl_seconds=120,
+                max_connections_per_session=4,
+            )
+            configure_copilot_bridge_guards(sio, store)
+            session = await store.replace(
+                previous_session_id=None,
+                access_token="entra-secret",
+                claims={
+                    "tid": "11111111-2222-3333-4444-555555555555",
+                    "oid": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                    "exp": int(time.time()) + 600,
+                },
+                display_name="User",
+                principal_name="user@example.com",
+            )
+
+            admitted_socket_ids = []
+            max_active_sockets = 0
+            with (
+                patch(
+                    "chainlit.session.WebsocketSession.get",
+                    return_value=None,
+                ),
+                patch(
+                    "chainlit.session.WebsocketSession.get_by_id",
+                    return_value=None,
+                ),
+            ):
+                for index in range(4):
+                    socket_id = f"socket-{index}"
+                    self.assertTrue(
+                        await store.bind_connection(
+                            session_id=session.session_id,
+                            socket_id=socket_id,
+                            chainlit_session_id=f"chainlit-{index}",
+                        )
+                    )
+                    admitted_socket_ids.append(socket_id)
+                    active_socket_ids.add(socket_id)
+                    max_active_sockets = max(
+                        max_active_sockets,
+                        len(active_socket_ids),
+                    )
+
+                for index in range(4, 100):
+                    socket_id = f"socket-{index}"
+                    self.assertTrue(
+                        await store.bind_connection(
+                            session_id=session.session_id,
+                            socket_id=socket_id,
+                            chainlit_session_id="chainlit-0",
+                        )
+                    )
+                    admitted_socket_ids.append(socket_id)
+                    active_socket_ids.add(socket_id)
+                    max_active_sockets = max(
+                        max_active_sockets,
+                        len(active_socket_ids),
+                    )
+
+                self.assertEqual(4, max_active_sockets)
+                self.assertEqual(4, len(active_socket_ids))
+                self.assertEqual(
+                    set(admitted_socket_ids) - active_socket_ids,
+                    set(disconnected_socket_ids),
+                )
+
+                await store.delete(session.session_id)
+
+        self.assertFalse(active_socket_ids)
+        self.assertEqual(
+            set(admitted_socket_ids),
+            set(disconnected_socket_ids),
+        )
+        self.assertEqual(100, sio.disconnect.await_count)
+
     async def test_copilot_bridge_events_are_denied(self):
         original_window_handler = AsyncMock()
 
@@ -487,6 +589,109 @@ class BridgeGuardTests(unittest.IsolatedAsyncioTestCase):
             )
 
         original_connect.assert_awaited_once()
+
+    async def test_matching_restore_preserves_chainlit_session_state(self):
+        user = SimpleNamespace(identifier="tenant:user", metadata={})
+        task = SimpleNamespace(done=Mock(return_value=False), cancel=Mock())
+        websocket_session = SimpleNamespace(
+            id="chainlit-session",
+            socket_id="old-socket",
+            client_type="copilot",
+            user=user,
+            current_task=task,
+            to_clear=False,
+            delete=AsyncMock(),
+        )
+
+        async def original_connect(socket_id, _environ, _auth):
+            websocket_session.socket_id = socket_id
+            return True
+
+        class FakeSio:
+            def __init__(self):
+                self.emit = AsyncMock()
+                self.call = AsyncMock()
+                self.disconnect = AsyncMock()
+                self.handlers = {
+                    "/": {"connect": AsyncMock(side_effect=original_connect)}
+                }
+
+            def on(self, event, handler):
+                self.handlers["/"][event] = handler
+
+        with patch.dict(
+            os.environ,
+            {"CHAINLIT_AUTH_SECRET": "test-secret-with-adequate-length"},
+        ):
+            store = CopilotSessionStore(max_sessions=1, ttl_seconds=120)
+            session = await store.replace(
+                previous_session_id=None,
+                access_token="entra-secret",
+                claims={
+                    "tid": "11111111-2222-3333-4444-555555555555",
+                    "oid": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                    "exp": int(time.time()) + 600,
+                },
+                display_name="User",
+                principal_name="user@example.com",
+            )
+            user.identifier = session.principal_id
+            await store.bind_connection(
+                session_id=session.session_id,
+                socket_id="old-socket",
+                chainlit_session_id=websocket_session.id,
+            )
+            sio = FakeSio()
+            original_handler = sio.handlers["/"]["connect"]
+            configure_copilot_bridge_guards(sio, store)
+
+            with (
+                patch(
+                    "embed_security._existing_socket_session",
+                    return_value=websocket_session,
+                ),
+                patch(
+                    "embed_security._authenticated_socket_user",
+                    AsyncMock(return_value=user),
+                ),
+                patch(
+                    "chainlit.session.WebsocketSession.get",
+                    side_effect=lambda socket_id: (
+                        websocket_session
+                        if socket_id == websocket_session.socket_id
+                        else None
+                    ),
+                ),
+                patch(
+                    "chainlit.session.WebsocketSession.get_by_id",
+                    return_value=websocket_session,
+                ),
+            ):
+                self.assertTrue(
+                    await sio.handlers["/"]["connect"](
+                        "new-socket",
+                        {
+                            "asgi.scope": {
+                                COPILOT_SCOPE_SESSION_KEY: session.session_id
+                            }
+                        },
+                        {
+                            "sessionId": websocket_session.id,
+                            "clientType": "copilot",
+                        },
+                    )
+                )
+
+        original_handler.assert_awaited_once()
+        sio.disconnect.assert_awaited_once_with(
+            "old-socket",
+            namespace="/",
+        )
+        task.cancel.assert_not_called()
+        websocket_session.delete.assert_not_awaited()
+        self.assertFalse(websocket_session.to_clear)
+        self.assertFalse(await store.socket_is_active("old-socket"))
+        self.assertTrue(await store.socket_is_active("new-socket"))
 
     async def test_invalidated_runtime_copilot_session_cannot_restore_standalone(
         self,

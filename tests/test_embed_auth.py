@@ -1,3 +1,4 @@
+import asyncio
 import os
 import time
 import unittest
@@ -345,6 +346,171 @@ class EmbedAuthTests(unittest.IsolatedAsyncioTestCase):
                 socket_id="socket-two",
                 chainlit_session_id="chainlit-two",
             )
+        )
+
+    async def test_disconnected_logical_session_does_not_consume_socket_cap(self):
+        store = CopilotSessionStore(
+            max_sessions=1,
+            ttl_seconds=120,
+            max_connections_per_session=1,
+        )
+        session = await store.replace(
+            previous_session_id=None,
+            access_token="entra-secret",
+            claims={
+                "tid": TENANT_ID,
+                "oid": OBJECT_ID,
+                "exp": int(time.time()) + 600,
+            },
+            display_name="User",
+            principal_name="",
+        )
+        self.assertTrue(
+            await store.bind_connection(
+                session_id=session.session_id,
+                socket_id="socket-one",
+                chainlit_session_id="chainlit-one",
+            )
+        )
+        await store.unbind_socket("socket-one")
+
+        self.assertTrue(
+            await store.bind_connection(
+                session_id=session.session_id,
+                socket_id="socket-two",
+                chainlit_session_id="chainlit-two",
+            )
+        )
+
+    async def test_rebinding_same_physical_socket_is_idempotent(self):
+        invalidated = AsyncMock()
+        store = CopilotSessionStore(max_sessions=1, ttl_seconds=120)
+        store.set_invalidation_handler(invalidated)
+        session = await store.replace(
+            previous_session_id=None,
+            access_token="entra-secret",
+            claims={
+                "tid": TENANT_ID,
+                "oid": OBJECT_ID,
+                "exp": int(time.time()) + 600,
+            },
+            display_name="User",
+            principal_name="",
+        )
+
+        for _ in range(2):
+            self.assertTrue(
+                await store.bind_connection(
+                    session_id=session.session_id,
+                    socket_id="socket",
+                    chainlit_session_id="chainlit",
+                )
+            )
+
+        invalidated.assert_not_awaited()
+        await store.delete(session.session_id)
+        invalidation = invalidated.await_args.args[0]
+        self.assertEqual(("socket",), invalidation.socket_ids)
+        self.assertEqual(("chainlit",), invalidation.chainlit_session_ids)
+
+    async def test_concurrent_restores_leave_one_physical_socket_tracked(self):
+        invalidations = []
+
+        async def invalidate(invalidation):
+            await asyncio.sleep(0)
+            invalidations.append(invalidation)
+
+        store = CopilotSessionStore(
+            max_sessions=1,
+            ttl_seconds=120,
+            max_connections_per_session=4,
+        )
+        store.set_invalidation_handler(invalidate)
+        session = await store.replace(
+            previous_session_id=None,
+            access_token="entra-secret",
+            claims={
+                "tid": TENANT_ID,
+                "oid": OBJECT_ID,
+                "exp": int(time.time()) + 600,
+            },
+            display_name="User",
+            principal_name="",
+        )
+
+        socket_ids = [f"socket-{index}" for index in range(100)]
+        admitted = await asyncio.gather(
+            *(
+                store.bind_connection(
+                    session_id=session.session_id,
+                    socket_id=socket_id,
+                    chainlit_session_id="chainlit",
+                )
+                for socket_id in socket_ids
+            )
+        )
+
+        self.assertTrue(all(admitted))
+        active = [
+            socket_id
+            for socket_id in socket_ids
+            if await store.socket_is_active(socket_id)
+        ]
+        self.assertEqual(1, len(active))
+        self.assertEqual(
+            99,
+            sum(
+                invalidation.reason == "socket_replaced"
+                for invalidation in invalidations
+            ),
+        )
+
+        await store.delete(session.session_id)
+        invalidated_socket_ids = {
+            socket_id
+            for invalidation in invalidations
+            for socket_id in invalidation.socket_ids
+        }
+        self.assertEqual(set(socket_ids), invalidated_socket_ids)
+
+    async def test_failed_replacement_disconnect_does_not_admit_new_socket(self):
+        store = CopilotSessionStore(max_sessions=1, ttl_seconds=120)
+        session = await store.replace(
+            previous_session_id=None,
+            access_token="entra-secret",
+            claims={
+                "tid": TENANT_ID,
+                "oid": OBJECT_ID,
+                "exp": int(time.time()) + 600,
+            },
+            display_name="User",
+            principal_name="",
+        )
+        self.assertTrue(
+            await store.bind_connection(
+                session_id=session.session_id,
+                socket_id="old-socket",
+                chainlit_session_id="chainlit",
+            )
+        )
+        invalidated = AsyncMock(side_effect=RuntimeError("disconnect failed"))
+        store.set_invalidation_handler(invalidated)
+
+        self.assertFalse(
+            await store.bind_connection(
+                session_id=session.session_id,
+                socket_id="new-socket",
+                chainlit_session_id="chainlit",
+            )
+        )
+        self.assertFalse(await store.socket_is_active("old-socket"))
+        self.assertFalse(await store.socket_is_active("new-socket"))
+
+        await store.delete(session.session_id)
+        self.assertEqual(2, invalidated.await_count)
+        self.assertEqual(
+            ("old-socket",),
+            invalidated.await_args_list[1].args[0].socket_ids,
         )
 
     async def test_cookie_is_opaque_http_only_and_secure(self):

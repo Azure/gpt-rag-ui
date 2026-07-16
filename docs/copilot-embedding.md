@@ -362,8 +362,10 @@ process-local.
   Socket.IO polling, Socket.IO upgrade, and WebSocket traffic.
 - Restart, revision replacement, node loss, eviction, or affinity loss signs
   affected users out.
-- Each opaque session accepts at most four concurrent Socket.IO connections.
-  Additional connections are rejected; this limit is not configurable.
+- Each opaque session accepts at most four concurrent physical Socket.IO
+  connections. Restoring a Chainlit session explicitly disconnects its
+  superseded transport before admitting the replacement. Additional physical
+  connections are rejected; this limit is not configurable.
 - Affinity is not high availability. Resilient scale-out requires a shared,
   encrypted server-side session store in a future change.
 
