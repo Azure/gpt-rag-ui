@@ -14,6 +14,7 @@ from starlette.websockets import WebSocketDisconnect
 from embed_auth import COPILOT_SESSION_COOKIE
 from embed_config import EmbedSettings
 from embed_security import (
+    _authenticated_socket_user,
     _is_copilot_socket,
     _terminate_socket,
     configure_copilot_bridge_guards,
@@ -36,7 +37,7 @@ class FakeSessions:
         return self.session if session_id == SESSION_ID else None
 
 
-def create_app(session=None):
+def create_app(session=None, *, upload_enabled=True):
     app = FastAPI()
 
     @app.get("/protected")
@@ -50,6 +51,33 @@ def create_app(session=None):
     @app.post("/auth/jwt")
     async def jwt_auth():
         return {"unsafe": True}
+
+    @app.get("/auth/oauth/azure-ad")
+    async def oauth_auth():
+        return {"unsafe": True}
+
+    @app.post("/project/threads")
+    async def threads():
+        return {"unsafe": True}
+
+    @app.post("/project/file")
+    async def upload():
+        return {"unsafe": True}
+
+    @app.get("/project/settings")
+    async def project_settings():
+        return {
+            "dataPersistence": True,
+            "threadResumable": True,
+            "threadSharing": True,
+            "features": {
+                "spontaneous_file_upload": {"enabled": upload_enabled},
+            },
+        }
+
+    @app.get("/api/download/grant")
+    async def download(request: Request):
+        return {"access_token": request.cookies.get("access_token")}
 
     @app.websocket("/ws/socket.io")
     async def websocket_endpoint(websocket: WebSocket):
@@ -143,7 +171,7 @@ class EmbedSecurityTests(unittest.TestCase):
         self.assertEqual(200, response.status_code)
         self.assertEqual("internal-chainlit-jwt", response.json()["cookie"])
 
-    def test_cookie_without_portal_origin_does_not_override_standalone_auth(self):
+    def test_copilot_cookie_classifies_same_origin_request(self):
         session = SimpleNamespace(chainlit_token="internal-chainlit-jwt")
         with TestClient(create_app(session), base_url=CHAT) as client:
             response = client.get(
@@ -151,7 +179,7 @@ class EmbedSecurityTests(unittest.TestCase):
                 headers={"Cookie": f"{COPILOT_SESSION_COOKIE}={SESSION_ID}"},
             )
         self.assertEqual(200, response.status_code)
-        self.assertIsNone(response.json()["cookie"])
+        self.assertEqual("internal-chainlit-jwt", response.json()["cookie"])
 
     def test_referer_never_enables_copilot_auth(self):
         session = SimpleNamespace(chainlit_token="internal-chainlit-jwt")
@@ -165,9 +193,6 @@ class EmbedSecurityTests(unittest.TestCase):
                         "/protected",
                         headers={
                             "Referer": referer,
-                            "Cookie": (
-                                f"{COPILOT_SESSION_COOKIE}={SESSION_ID}"
-                            ),
                         },
                     )
                     self.assertEqual(200, response.status_code)
@@ -179,10 +204,60 @@ class EmbedSecurityTests(unittest.TestCase):
         self.assertEqual(200, response.status_code)
         self.assertIsNone(response.json()["cookie"])
 
+    def test_top_level_download_can_use_standalone_auth_without_copilot_cookie(self):
+        with TestClient(create_app(), base_url=CHAT) as client:
+            response = client.get(
+                "/api/download/grant",
+                headers={"Cookie": "access_token=standalone-token"},
+            )
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(
+            "standalone-token",
+            response.json()["access_token"],
+        )
+
+    def test_download_preserves_standalone_cookie_when_opaque_session_exists(self):
+        session = SimpleNamespace(
+            chainlit_token="internal-chainlit-jwt",
+            auth_mode="entra",
+        )
+        with TestClient(create_app(session), base_url=CHAT) as client:
+            response = client.get(
+                "/api/download/grant",
+                headers={
+                    "Cookie": (
+                        f"{COPILOT_SESSION_COOKIE}={SESSION_ID}; "
+                        "access_token=standalone-token"
+                    ),
+                },
+            )
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(
+            "standalone-token",
+            response.json()["access_token"],
+        )
+
     def test_chainlit_jwt_and_header_routes_are_disabled_for_portal(self):
         with TestClient(create_app(), base_url=CHAT) as client:
             response = client.post("/auth/jwt", headers={"Origin": PORTAL})
         self.assertEqual(404, response.status_code)
+
+    def test_chainlit_oauth_is_disabled_only_for_copilot_session(self):
+        session = SimpleNamespace(chainlit_token="internal-chainlit-jwt")
+        with TestClient(create_app(session), base_url=CHAT) as client:
+            standalone = client.get(
+                "/auth/oauth/azure-ad",
+                headers={"Origin": CHAT},
+            )
+            copilot = client.get(
+                "/auth/oauth/azure-ad",
+                headers={
+                    "Origin": CHAT,
+                    "Cookie": f"{COPILOT_SESSION_COOKIE}={SESSION_ID}",
+                },
+            )
+        self.assertEqual(200, standalone.status_code)
+        self.assertEqual(404, copilot.status_code)
 
     def test_websocket_rejects_wrong_origin_and_missing_session(self):
         with TestClient(create_app(), base_url=CHAT) as client:
@@ -223,6 +298,153 @@ class EmbedSecurityTests(unittest.TestCase):
                 },
             ) as websocket:
                 self.assertEqual("connected", websocket.receive_text())
+
+    def test_same_origin_mount_preserves_exact_path_separation(self):
+        session = SimpleNamespace(chainlit_token="internal-chainlit-jwt")
+        service = FastAPI()
+
+        @service.get("/protected")
+        async def protected(request: Request):
+            return {
+                "cookie": request.cookies.get(
+                    settings.chainlit_auth_cookie_name
+                )
+            }
+
+        @service.post("/copilot/auth/bootstrap")
+        async def bootstrap():
+            return {"ok": True}
+
+        settings = EmbedSettings(
+            enabled=True,
+            auth_mode="anonymous",
+            ui_origin=PORTAL,
+            root_path="/gpt-rag",
+            allowed_origins=(PORTAL,),
+        )
+        service.add_middleware(
+            CopilotRequestMiddleware,
+            settings=settings,
+            sessions=FakeSessions(session),
+        )
+        public = FastAPI()
+        public.mount("/gpt-rag", service)
+
+        with TestClient(public, base_url=PORTAL) as client:
+            bootstrap_response = client.post(
+                "/gpt-rag/copilot/auth/bootstrap",
+                headers={"Origin": PORTAL},
+            )
+            standalone = client.get(
+                "/gpt-rag/protected",
+                headers={"Origin": PORTAL},
+            )
+            copilot = client.get(
+                "/gpt-rag/protected",
+                headers={
+                    "Origin": PORTAL,
+                    "Cookie": f"{COPILOT_SESSION_COOKIE}={SESSION_ID}",
+                },
+            )
+            missing_prefix = client.get("/protected")
+            ambiguous_prefix = client.get("/gpt-rag-other/protected")
+
+        self.assertEqual(200, bootstrap_response.status_code)
+        self.assertIsNone(standalone.json()["cookie"])
+        self.assertEqual(
+            "internal-chainlit-jwt",
+            copilot.json()["cookie"],
+        )
+        self.assertEqual(404, missing_prefix.status_code)
+        self.assertEqual(404, ambiguous_prefix.status_code)
+
+    def test_anonymous_copilot_disables_identity_bound_routes(self):
+        session = SimpleNamespace(
+            chainlit_token="internal-chainlit-jwt",
+            auth_mode="anonymous",
+        )
+        with TestClient(create_app(session), base_url=CHAT) as client:
+            headers = {
+                "Origin": PORTAL,
+                "Cookie": f"{COPILOT_SESSION_COOKIE}={SESSION_ID}",
+            }
+            threads = client.post("/project/threads", headers=headers)
+            upload = client.post("/project/file", headers=headers)
+            feedback = client.put("/feedback", headers=headers)
+
+        self.assertEqual(403, threads.status_code)
+        self.assertEqual(403, upload.status_code)
+        self.assertEqual(403, feedback.status_code)
+
+    def test_anonymous_copilot_hides_identity_bound_capabilities(self):
+        session = SimpleNamespace(
+            chainlit_token="internal-chainlit-jwt",
+            auth_mode="anonymous",
+        )
+        with TestClient(create_app(session), base_url=CHAT) as client:
+            response = client.get(
+                "/project/settings",
+                headers={
+                    "Origin": PORTAL,
+                    "Cookie": f"{COPILOT_SESSION_COOKIE}={SESSION_ID}",
+                },
+            )
+
+        self.assertEqual(200, response.status_code)
+        settings = response.json()
+        self.assertFalse(settings["dataPersistence"])
+        self.assertFalse(settings["threadResumable"])
+        self.assertFalse(settings["threadSharing"])
+        self.assertFalse(
+            settings["features"]["spontaneous_file_upload"]["enabled"]
+        )
+
+    def test_entra_copilot_keeps_identity_bound_capabilities(self):
+        session = SimpleNamespace(
+            chainlit_token="internal-chainlit-jwt",
+            auth_mode="entra",
+        )
+        with TestClient(create_app(session), base_url=CHAT) as client:
+            response = client.get(
+                "/project/settings",
+                headers={
+                    "Origin": PORTAL,
+                    "Cookie": f"{COPILOT_SESSION_COOKIE}={SESSION_ID}",
+                },
+            )
+
+        self.assertEqual(200, response.status_code)
+        settings = response.json()
+        self.assertTrue(settings["dataPersistence"])
+        self.assertTrue(settings["threadResumable"])
+        self.assertTrue(
+            settings["features"]["spontaneous_file_upload"]["enabled"]
+        )
+
+    def test_entra_copilot_enables_upload_when_standalone_is_anonymous(self):
+        session = SimpleNamespace(
+            chainlit_token="internal-chainlit-jwt",
+            auth_mode="entra",
+        )
+        with TestClient(
+            create_app(session, upload_enabled=False),
+            base_url=CHAT,
+        ) as client:
+            response = client.get(
+                "/project/settings",
+                headers={
+                    "Origin": PORTAL,
+                    "Cookie": f"{COPILOT_SESSION_COOKIE}={SESSION_ID}",
+                },
+            )
+
+        self.assertEqual(200, response.status_code)
+        settings = response.json()
+        self.assertTrue(settings["dataPersistence"])
+        self.assertTrue(settings["threadResumable"])
+        self.assertTrue(
+            settings["features"]["spontaneous_file_upload"]["enabled"]
+        )
 
 
 class BridgeGuardTests(unittest.IsolatedAsyncioTestCase):
@@ -638,6 +860,23 @@ class BridgeGuardTests(unittest.IsolatedAsyncioTestCase):
         socket_session.delete.assert_awaited_once()
         socket_ids, _ = await registry.session_resources(SESSION_ID)
         self.assertFalse(socket_ids)
+
+    async def test_copilot_token_is_authenticated_without_global_oauth(self):
+        user = SimpleNamespace(identifier="anonymous-session")
+        authenticate = AsyncMock(return_value=user)
+        environ = {}
+        with (
+            patch("chainlit.socket._get_token", return_value="internal-token"),
+            patch("chainlit.auth.authenticate_user", authenticate),
+        ):
+            result = await _authenticated_socket_user(environ)
+
+        self.assertIs(user, result)
+        authenticate.assert_awaited_once_with("internal-token")
+        self.assertEqual(
+            "internal-token",
+            environ["_gpt_rag_authenticated_token"],
+        )
 
     async def test_copilot_bridge_events_are_denied(self):
         original_window_handler = AsyncMock()
@@ -1421,7 +1660,6 @@ class BridgeGuardTests(unittest.IsolatedAsyncioTestCase):
                 disconnect=AsyncMock(),
             )
         )
-
         with (
             patch(
                 "embed_security._authenticated_socket_user",
@@ -1487,7 +1725,7 @@ class BridgeGuardTests(unittest.IsolatedAsyncioTestCase):
         with patch(
             "embed_security._authenticated_socket_user",
             AsyncMock(return_value=user),
-        ), patch(
+        ),         patch(
             "chainlit.session.WebsocketSession.get",
             return_value=SimpleNamespace(
                 id="generated-session",
@@ -1497,7 +1735,11 @@ class BridgeGuardTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(
                 await sio.handlers["/"]["connect"](
                     "copilot-socket",
-                    {},
+                    {
+                        "asgi.scope": {
+                            "gpt_rag.copilot_session_id": SESSION_ID
+                        }
+                    },
                     {"clientType": "copilot"},
                 )
             )
@@ -1512,6 +1754,94 @@ class BridgeGuardTests(unittest.IsolatedAsyncioTestCase):
         sio.eio.disconnect.assert_awaited_once_with(
             "engine-webapp-socket"
         )
+
+    async def test_copilot_client_type_cannot_fall_back_to_standalone_user(self):
+        original_connect = AsyncMock(return_value=True)
+
+        class FakeSio:
+            def __init__(self):
+                self.emit = AsyncMock()
+                self.call = AsyncMock()
+                self.handlers = {"/": {"connect": original_connect}}
+
+            def on(self, event, handler):
+                self.handlers["/"][event] = handler
+
+        standalone_user = SimpleNamespace(
+            identifier="tenant:user",
+            metadata={"auth_source": "oauth"},
+        )
+        sio = FakeSio()
+        configure_copilot_bridge_guards(sio, sessions=FakeSessions())
+
+        with patch(
+            "embed_security._authenticated_socket_user",
+            AsyncMock(return_value=standalone_user),
+        ):
+            with self.assertRaises(SocketIOConnectionRefusedError):
+                await sio.handlers["/"]["connect"](
+                    "socket",
+                    {},
+                    {"clientType": "copilot"},
+                )
+
+        original_connect.assert_not_awaited()
+
+    async def test_copilot_socket_requires_opaque_cookie_binding(self):
+        original_connect = AsyncMock(return_value=True)
+
+        class FakeEngineIo:
+            def __init__(self):
+                self.handlers = {
+                    "connect": AsyncMock(return_value=True),
+                }
+                self.disconnect = AsyncMock()
+
+            def on(self, event, handler):
+                self.handlers[event] = handler
+
+        class FakeSio:
+            def __init__(self):
+                self.emit = AsyncMock()
+                self.call = AsyncMock()
+                self.disconnect = AsyncMock()
+                self.manager = SimpleNamespace(
+                    eio_sid_from_sid=lambda socket_id, namespace: (
+                        f"engine-{socket_id}"
+                    )
+                )
+                self.eio = FakeEngineIo()
+                self.handlers = {"/": {"connect": original_connect}}
+
+            def on(self, event, handler):
+                self.handlers["/"][event] = handler
+
+        user = SimpleNamespace(
+            identifier="tenant:user",
+            metadata={
+                "auth_source": "copilot_session",
+                "copilot_session_id": SESSION_ID,
+            },
+        )
+        active_session = SimpleNamespace(principal_id=user.identifier)
+        sio = FakeSio()
+        configure_copilot_bridge_guards(
+            sio,
+            sessions=FakeSessions(active_session),
+        )
+
+        with patch(
+            "embed_security._authenticated_socket_user",
+            AsyncMock(return_value=user),
+        ):
+            with self.assertRaises(SocketIOConnectionRefusedError):
+                await sio.handlers["/"]["connect"](
+                    "socket",
+                    {"asgi.scope": {}},
+                    {"clientType": "copilot"},
+                )
+        original_connect.assert_not_awaited()
+        sio.eio.disconnect.assert_awaited_once_with("engine-socket")
 
 
 if __name__ == "__main__":

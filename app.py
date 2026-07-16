@@ -369,19 +369,40 @@ def check_authorization() -> dict:
     app_user = cl.user_session.get("user")
     if app_user:
         metadata = app_user.metadata or {}
+        is_anonymous_copilot = (
+            metadata.get("auth_source") == "copilot_session"
+            and metadata.get("copilot_auth_mode") == "anonymous"
+        )
         return {
             'authorized': metadata.get('authorized', True),
-            'client_principal_id': metadata.get('client_principal_id', 'no-auth'),
-            'client_principal_name': metadata.get('client_principal_name', 'anonymous'),
-            'client_group_names': metadata.get('client_group_names', []),
+            'client_principal_id': (
+                'no-auth'
+                if is_anonymous_copilot
+                else metadata.get('client_principal_id', 'no-auth')
+            ),
+            'client_principal_name': (
+                'anonymous'
+                if is_anonymous_copilot
+                else metadata.get('client_principal_name', 'anonymous')
+            ),
+            'client_group_names': (
+                [] if is_anonymous_copilot else metadata.get('client_group_names', [])
+            ),
             'access_token': (
                 metadata.get('access_token')
                 if metadata.get("auth_source") != "copilot_session"
                 else None
             ),
-            'principal_id': metadata.get('principal_id', ''),
-            'tenant_id': metadata.get('tenant_id', ''),
-            'object_id': metadata.get('object_id', ''),
+            'principal_id': (
+                '' if is_anonymous_copilot else metadata.get('principal_id', '')
+            ),
+            'tenant_id': (
+                '' if is_anonymous_copilot else metadata.get('tenant_id', '')
+            ),
+            'object_id': (
+                '' if is_anonymous_copilot else metadata.get('object_id', '')
+            ),
+            'copilot_auth_mode': metadata.get('copilot_auth_mode', ''),
         }
 
     # If OAuth is configured but we don't have a user in session,
@@ -400,6 +421,10 @@ def check_authorization() -> dict:
     }
 
 
+def _feedback_is_available(auth_info: dict) -> bool:
+    return auth_info.get("copilot_auth_mode") != "anonymous"
+
+
 async def get_auth_info() -> dict:
     """Return the effective auth info for the current session.
 
@@ -411,8 +436,10 @@ async def get_auth_info() -> dict:
     if app_user:
         metadata = app_user.metadata or {}
         if metadata.get("auth_source") == "copilot_session":
+            active = await is_copilot_session_active(metadata)
             access_token = await resolve_access_token(metadata)
-            if not access_token:
+            auth_mode = metadata.get("copilot_auth_mode")
+            if not active or (auth_mode == "entra" and not access_token):
                 logger.warning(
                     "Embedded Copilot session expired for user=%s",
                     metadata.get("client_principal_name")
@@ -429,6 +456,7 @@ async def get_auth_info() -> dict:
                     'auth_error': 'session_expired',
                 }
         else:
+            auth_mode = ""
             access_token = metadata.get("access_token")
 
         # Opportunistic token refresh (OAuth mode only).
@@ -451,15 +479,36 @@ async def get_auth_info() -> dict:
                     'auth_error': 'session_expired',
                 }
 
+        is_anonymous_copilot = (
+            metadata.get("auth_source") == "copilot_session"
+            and auth_mode == "anonymous"
+        )
         return {
             'authorized': metadata.get('authorized', True),
-            'client_principal_id': metadata.get('client_principal_id', 'no-auth'),
-            'client_principal_name': metadata.get('client_principal_name', 'anonymous'),
-            'client_group_names': metadata.get('client_group_names', []),
+            'client_principal_id': (
+                'no-auth'
+                if is_anonymous_copilot
+                else metadata.get('client_principal_id', 'no-auth')
+            ),
+            'client_principal_name': (
+                'anonymous'
+                if is_anonymous_copilot
+                else metadata.get('client_principal_name', 'anonymous')
+            ),
+            'client_group_names': (
+                [] if is_anonymous_copilot else metadata.get('client_group_names', [])
+            ),
             'access_token': access_token,
-            'principal_id': metadata.get('principal_id', ''),
-            'tenant_id': metadata.get('tenant_id', ''),
-            'object_id': metadata.get('object_id', ''),
+            'principal_id': (
+                '' if is_anonymous_copilot else metadata.get('principal_id', '')
+            ),
+            'tenant_id': (
+                '' if is_anonymous_copilot else metadata.get('tenant_id', '')
+            ),
+            'object_id': (
+                '' if is_anonymous_copilot else metadata.get('object_id', '')
+            ),
+            'copilot_auth_mode': auth_mode,
         }
 
     return {
@@ -530,11 +579,19 @@ else:
         logger.warning(
             "Authentication disabled: OAuth not configured; running in anonymous mode (ALLOW_ANONYMOUS=true)"
         )
+    elif COPILOT_ENABLED:
+        logger.warning(
+            "Standalone OAuth is unavailable and standalone anonymous access is "
+            "disabled; explicitly configured Copilot sessions remain available."
+        )
     else:
         raise RuntimeError(
             "OAuth is not configured (missing client_id/tenant_id/client_secret) and ALLOW_ANONYMOUS=false. "
             "Set OAUTH_AZURE_AD_CLIENT_ID, OAUTH_AZURE_AD_TENANT_ID, and OAUTH_AZURE_AD_CLIENT_SECRET (or authClientSecret)."
         )
+
+if COPILOT_ENABLED and not OAUTH_CONFIGURED:
+    import datalayer  # noqa: F401  — binds opaque Copilot users to their sessions
 
 tracer = Telemetry.get_tracer(__name__)
 
@@ -629,6 +686,10 @@ async def handle_message(message: cl.Message):
                 name = getattr(element, "name", "upload")
                 path = getattr(element, "path", None)
                 size = getattr(element, "size", 0) or 0
+
+                if auth_info.get("copilot_auth_mode") == "anonymous":
+                    rejected.append(f"{name} (uploads require Entra Copilot mode)")
+                    continue
 
                 if not path:
                     rejected.append(f"{name} (missing path)")
@@ -943,7 +1004,11 @@ async def handle_message(message: cl.Message):
                 message.id,
                 len(references),
             )
-        if ENABLE_FEEDBACK and (message.content or "").strip():
+        if (
+            ENABLE_FEEDBACK
+            and _feedback_is_available(auth_info)
+            and (message.content or "").strip()
+        ):
             response_msg.actions = create_feedback_actions(
                 message.id, conversation_id, message.content
             )

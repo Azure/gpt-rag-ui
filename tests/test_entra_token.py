@@ -12,6 +12,7 @@ from entra_token import EntraTokenError, EntraTokenValidator
 TENANT_ID = "11111111-2222-3333-4444-555555555555"
 AUDIENCE = "api://aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 ISSUER = f"https://login.microsoftonline.com/{TENANT_ID}/v2.0"
+PORTAL_CLIENT_ID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 
 
 class EntraTokenValidatorTests(unittest.IsolatedAsyncioTestCase):
@@ -30,6 +31,7 @@ class EntraTokenValidatorTests(unittest.IsolatedAsyncioTestCase):
         self.validator = EntraTokenValidator(
             tenant_id=TENANT_ID,
             audience=AUDIENCE,
+            allowed_client_ids=(PORTAL_CLIENT_ID,),
             clock_skew_seconds=0,
             jwks_loader=load_jwks,
         )
@@ -46,6 +48,8 @@ class EntraTokenValidatorTests(unittest.IsolatedAsyncioTestCase):
             "name": "Portal User",
             "preferred_username": "portal.user@example.com",
             "scp": "openid user_impersonation",
+            "ver": "2.0",
+            "azp": PORTAL_CLIENT_ID,
             "iat": now,
             "nbf": now - 1,
             "exp": now + 300,
@@ -97,6 +101,8 @@ class EntraTokenValidatorTests(unittest.IsolatedAsyncioTestCase):
                 "tid": TENANT_ID,
                 "sub": "subject-only-is-not-accepted",
                 "scp": "user_impersonation",
+                "ver": "2.0",
+                "azp": PORTAL_CLIENT_ID,
                 "iat": now,
                 "nbf": now - 1,
                 "exp": now + 300,
@@ -127,6 +133,7 @@ class EntraTokenValidatorTests(unittest.IsolatedAsyncioTestCase):
         validator = EntraTokenValidator(
             tenant_id=TENANT_ID,
             audience=AUDIENCE,
+            allowed_client_ids=(PORTAL_CLIENT_ID,),
             jwks_loader=counted_loader,
         )
 
@@ -144,6 +151,8 @@ class EntraTokenValidatorTests(unittest.IsolatedAsyncioTestCase):
                 "tid": TENANT_ID,
                 "oid": "user",
                 "scp": "user_impersonation",
+                "ver": "2.0",
+                "azp": PORTAL_CLIENT_ID,
                 "exp": int(time.time()) + 300,
             },
             "not-a-public-key-but-long-enough-for-hs256",
@@ -152,6 +161,29 @@ class EntraTokenValidatorTests(unittest.IsolatedAsyncioTestCase):
         )
         with self.assertRaisesRegex(EntraTokenError, "RS256"):
             await self.validator.validate(token)
+
+    async def test_rejects_missing_or_unlisted_authorized_party(self):
+        for claims in (
+            {"azp": None},
+            {"azp": "99999999-8888-7777-6666-555555555555"},
+            {"azp": None, "appid": PORTAL_CLIENT_ID},
+        ):
+            with self.subTest(claims=claims):
+                with self.assertRaisesRegex(
+                    EntraTokenError,
+                    "portal client",
+                ):
+                    await self.validator.validate(self.create_token(**claims))
+
+    async def test_rejects_v1_token_even_with_appid(self):
+        with self.assertRaisesRegex(EntraTokenError, "v2.0"):
+            await self.validator.validate(
+                self.create_token(
+                    ver="1.0",
+                    azp=None,
+                    appid=PORTAL_CLIENT_ID,
+                )
+            )
 
 
 if __name__ == "__main__":

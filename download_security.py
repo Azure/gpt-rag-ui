@@ -65,19 +65,39 @@ class DownloadTokenManager:
             port = parsed_url.port
         except ValueError as exc:
             raise ValueError(
-                "The download public URL must be an absolute origin."
+                "The download public URL must be an absolute URL with a "
+                "canonical root path."
             ) from exc
+        path = parsed_url.path
+        invalid_path = (
+            path not in {"", "/"}
+            and (
+                not path.startswith("/")
+                or path.endswith("/")
+                or "//" in path
+                or "\\" in path
+                or "%" in path
+                or any(
+                    segment in {"", ".", ".."}
+                    for segment in path.split("/")[1:]
+                )
+                or any(ord(char) < 32 for char in path)
+            )
+        )
         if (
             parsed_url.scheme not in {"http", "https"}
             or not parsed_url.hostname
             or parsed_url.username
             or parsed_url.password
-            or parsed_url.path not in {"", "/"}
+            or invalid_path
             or parsed_url.query
             or parsed_url.fragment
             or (port is not None and port <= 0)
         ):
-            raise ValueError("The download public URL must be an absolute origin.")
+            raise ValueError(
+                "The download public URL must be an absolute URL with a "
+                "canonical root path."
+            )
         if max_age_seconds < 1:
             raise ValueError("Download grants require a positive lifetime.")
 
@@ -105,6 +125,7 @@ class DownloadTokenManager:
             and normalized_blob
             and len(normalized_blob) <= 1024
             and not normalized_blob.startswith("/")
+            and "%" not in normalized_blob
             and not any(ord(char) < 32 for char in normalized_blob)
             and not any(
                 part in {"", ".", ".."} for part in normalized_blob.split("/")
@@ -192,6 +213,7 @@ async def resolve_download_principal(
     expected_principal_id: str | None = None,
 ) -> DownloadPrincipal | None:
     request_session = get_request_copilot_session()
+    mismatched_principal = None
     if request_session:
         opaque_session = await sessions.get(
             getattr(request_session, "session_id", None)
@@ -202,13 +224,18 @@ async def resolve_download_principal(
             or opaque_session.principal_id != request_session.principal_id
         ):
             return None
-        return DownloadPrincipal(
+        opaque_principal = DownloadPrincipal(
             principal_id=opaque_session.principal_id,
             metadata=opaque_session.user_metadata(),
         )
+        if (
+            not expected_principal_id
+            or opaque_principal.principal_id == expected_principal_id
+        ):
+            return opaque_principal
+        mismatched_principal = opaque_principal
 
-    mismatched_principal = None
-    if not request.headers.getlist("Origin"):
+    if not request_session and not request.headers.getlist("Origin"):
         opaque_session = await sessions.get(session_id_from_request(request))
         if opaque_session:
             mismatched_principal = DownloadPrincipal(

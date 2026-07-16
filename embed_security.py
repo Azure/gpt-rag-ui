@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
@@ -26,7 +27,15 @@ _COPILOT_AUTH_PATHS = {
     "/copilot/auth/bootstrap",
     "/copilot/auth/logout",
 }
-_DISABLED_CHAINLIT_AUTH_PATHS = {"/auth/jwt", "/auth/header"}
+_DISABLED_CHAINLIT_AUTH_PATHS = {"/auth/jwt", "/auth/header", "/logout"}
+_COPILOT_ONLY_PATH_PREFIXES = ("/copilot",)
+_COPILOT_SCOPE_SESSION_KEY = "gpt_rag.copilot_session_id"
+_ANONYMOUS_DISABLED_PATH_PREFIXES = (
+    "/feedback",
+    "/project/file",
+    "/project/thread",
+    "/project/threads",
+)
 _BLOCKED_BRIDGE_EVENTS = {"call_fn", "window_message"}
 DEFAULT_MAX_CONNECTIONS_PER_SESSION = 4
 _copilot_sio = None
@@ -569,17 +578,47 @@ def _cookie_value(scope, name: str) -> str | None:
     return cookies.get(name)
 
 
-def _inject_chainlit_cookie(scope, token: str) -> dict:
+def _has_cookie_name(scope, name: str) -> bool:
+    return any(
+        segment.partition("=")[0].strip() == name
+        for raw_cookie in _header_values(scope, b"cookie")
+        for segment in raw_cookie.split(";")
+    )
+
+
+def _application_path(scope, configured_root_path: str) -> str:
+    """Return the path as seen by the mounted GPT-RAG UI application."""
+
+    path = str(scope.get("path") or "/")
+    candidates = (
+        str(scope.get("root_path") or "").rstrip("/"),
+        configured_root_path.rstrip("/"),
+    )
+    for prefix in candidates:
+        if not prefix:
+            continue
+        if path == prefix:
+            return "/"
+        if path.startswith(f"{prefix}/"):
+            return path[len(prefix) :]
+    return path
+
+
+def _inject_chainlit_cookie(
+    scope,
+    token: str,
+    cookie_name: str,
+) -> dict:
     cookies = _parsed_cookies(scope)
     existing = []
     if cookies:
         for name, value in cookies.items():
-            if name == "access_token" or name.startswith("access_token_"):
+            if name == cookie_name or name.startswith(f"{cookie_name}_"):
                 continue
             cookie = SimpleCookie()
             cookie[name] = value
             existing.append(f"{name}={cookie[name].coded_value}")
-    existing.append(f"access_token={token}")
+    existing.append(f"{cookie_name}={token}")
 
     headers = [
         (key, value)
@@ -592,6 +631,63 @@ def _inject_chainlit_cookie(scope, token: str) -> dict:
     return updated
 
 
+def _copilot_project_settings_send(send, auth_mode: str):
+    """Expose only the capabilities supported by this Copilot auth mode."""
+
+    pending_start = None
+
+    async def send_response(message):
+        nonlocal pending_start
+        if message["type"] == "http.response.start":
+            pending_start = dict(message)
+            return
+
+        if pending_start is not None:
+            if (
+                message["type"] == "http.response.body"
+                and not message.get("more_body", False)
+            ):
+                try:
+                    payload = json.loads(message.get("body", b""))
+                    if auth_mode == "anonymous":
+                        payload["dataPersistence"] = False
+                        payload["threadResumable"] = False
+                        payload["threadSharing"] = False
+                    upload = (
+                        payload.get("features", {})
+                        .get("spontaneous_file_upload", {})
+                    )
+                    if isinstance(upload, dict):
+                        upload["enabled"] = auth_mode == "entra"
+                    body = json.dumps(
+                        payload,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                    message = dict(message)
+                    message["body"] = body
+                    headers = [
+                        (name, value)
+                        for name, value in pending_start.get("headers", [])
+                        if name.lower() != b"content-length"
+                    ]
+                    headers.append(
+                        (b"content-length", str(len(body)).encode("ascii"))
+                    )
+                    pending_start["headers"] = headers
+                except (TypeError, ValueError, AttributeError):
+                    logger.exception(
+                        "Could not apply Copilot project settings for auth mode %s",
+                        auth_mode,
+                    )
+
+            await send(pending_start)
+            pending_start = None
+
+        await send(message)
+
+    return send_response
+
+
 class CopilotRequestMiddleware:
     def __init__(
         self,
@@ -599,15 +695,36 @@ class CopilotRequestMiddleware:
         *,
         settings: EmbedSettings,
         sessions: CopilotSessionStore,
+        standalone_available: bool = True,
     ):
         self.app = app
         self.settings = settings
         self.sessions = sessions
+        self.allowed_origins = set(settings.runtime_allowed_origins)
         self.portal_origins = set(settings.allowed_origins)
+        self.standalone_available = standalone_available
 
     @staticmethod
     def _is_public_copilot_path(path: str) -> bool:
         return path == "/copilot" or path.startswith("/copilot/")
+
+    @staticmethod
+    def _is_explicit_copilot_path(path: str) -> bool:
+        return any(
+            path == prefix or path.startswith(f"{prefix}/")
+            for prefix in _COPILOT_ONLY_PATH_PREFIXES
+        )
+
+    @staticmethod
+    def _is_download_path(path: str) -> bool:
+        return path == "/api/download" or path.startswith("/api/download/")
+
+    @staticmethod
+    def _is_disabled_chainlit_auth_path(path: str) -> bool:
+        return (
+            path in _DISABLED_CHAINLIT_AUTH_PATHS
+            or path.startswith("/auth/oauth/")
+        )
 
     async def _reject(self, scope, receive, send, status_code: int) -> None:
         if scope["type"] == "websocket":
@@ -630,7 +747,7 @@ class CopilotRequestMiddleware:
             await self.app(scope, receive, send)
             return
 
-        path = scope.get("path", "")
+        path = _application_path(scope, self.settings.root_path)
         raw_origins = _header_values(scope, b"origin")
         raw_origin = raw_origins[0] if len(raw_origins) == 1 else ""
         origin = canonical_origin(raw_origin) if raw_origin else ""
@@ -638,21 +755,30 @@ class CopilotRequestMiddleware:
         session_id = (
             raw_session_id if is_valid_session_id(raw_session_id) else None
         )
-        is_portal = origin in self.portal_origins
-        is_standalone = origin == self.settings.ui_origin
+        is_allowed_origin = origin in self.allowed_origins
+        is_distinct_portal = (
+            origin in self.portal_origins
+            and origin != self.settings.ui_origin
+        )
+        has_copilot_cookie = _has_cookie_name(scope, COPILOT_SESSION_COOKIE)
+        is_copilot = (
+            self._is_explicit_copilot_path(path)
+            or is_distinct_portal
+            or has_copilot_cookie
+        )
 
         if len(raw_origins) > 1 or (
-            raw_origins and not (is_portal or is_standalone)
+            raw_origins and not is_allowed_origin
         ):
             await self._reject(scope, receive, send, 403)
             return
         if scope["type"] == "websocket" and not raw_origins:
             await self._reject(scope, receive, send, 403)
             return
-        if path in _COPILOT_AUTH_PATHS and not is_portal:
+        if path in _COPILOT_AUTH_PATHS and not is_allowed_origin:
             await self._reject(scope, receive, send, 403)
             return
-        if is_portal and path in _DISABLED_CHAINLIT_AUTH_PATHS:
+        if is_copilot and self._is_disabled_chainlit_auth_path(path):
             response = PlainTextResponse(
                 "Not found",
                 status_code=404,
@@ -665,20 +791,56 @@ class CopilotRequestMiddleware:
             scope["type"] == "http"
             and scope.get("method", "").upper() == "OPTIONS"
         )
+        is_download = self._is_download_path(path)
         request_session = None
         if (
-            is_portal
+            is_copilot
             and not self._is_public_copilot_path(path)
             and not is_preflight
         ):
             request_session = await self.sessions.get(session_id)
-            if not request_session:
+            if not request_session and not is_download:
                 await self._reject(scope, receive, send, 401)
                 return
-            scope = _inject_chainlit_cookie(
-                scope,
-                request_session.chainlit_token,
+            if request_session:
+                if not is_download:
+                    scope = _inject_chainlit_cookie(
+                        scope,
+                        request_session.chainlit_token,
+                        self.settings.chainlit_auth_cookie_name,
+                    )
+                scope[_COPILOT_SCOPE_SESSION_KEY] = session_id
+
+            if (
+                request_session
+                and getattr(request_session, "auth_mode", "entra") == "anonymous"
+                and any(
+                    path == prefix or path.startswith(f"{prefix}/")
+                    for prefix in _ANONYMOUS_DISABLED_PATH_PREFIXES
+                )
+            ):
+                response = PlainTextResponse(
+                    "This operation requires Entra Copilot mode.",
+                    status_code=403,
+                    headers={"Cache-Control": "no-store"},
+                )
+                await response(scope, receive, send)
+                return
+
+        if not is_copilot and not self.standalone_available:
+            if scope["type"] == "websocket":
+                await send({"type": "websocket.close", "code": 1013})
+                return
+            response = PlainTextResponse(
+                "Standalone authentication is not configured.",
+                status_code=503,
+                headers={
+                    "Cache-Control": "no-store",
+                    "Retry-After": "30",
+                },
             )
+            await response(scope, receive, send)
+            return
 
         if not request_session:
             await self.app(scope, receive, send)
@@ -686,7 +848,18 @@ class CopilotRequestMiddleware:
 
         context_token = bind_request_copilot_session(request_session)
         try:
-            await self.app(scope, receive, send)
+            downstream_send = (
+                _copilot_project_settings_send(
+                    send,
+                    request_session.auth_mode,
+                )
+                if (
+                    scope["type"] == "http"
+                    and path == "/project/settings"
+                )
+                else send
+            )
+            await self.app(scope, receive, downstream_send)
         finally:
             reset_request_copilot_session(context_token)
 
@@ -749,9 +922,12 @@ def _existing_socket_session(session_id: str | None):
 
 
 async def _authenticated_socket_user(environ):
-    from chainlit.socket import _authenticate_connection
+    from chainlit.auth import authenticate_user
+    from chainlit.socket import _get_token
 
-    user, _ = await _authenticate_connection(environ)
+    token = _get_token(environ)
+    user = await authenticate_user(token) if token else None
+    environ["_gpt_rag_authenticated_token"] = token
     return user
 
 
@@ -1136,6 +1312,17 @@ def configure_copilot_bridge_guards(
             is_copilot_identity = (
                 metadata.get("auth_source") == "copilot_session"
             )
+            requested_copilot = auth_payload.get("clientType") == "copilot"
+            if requested_copilot != is_copilot_identity:
+                logger.warning(
+                    "Blocked Socket.IO connection with mismatched Copilot "
+                    "client type and authenticated identity"
+                )
+                await close_rejected_socket(socket_id)
+                raise SocketIOConnectionRefusedError(
+                    "authentication failed"
+                )
+
             requested_chainlit_session_id = auth_payload.get("sessionId")
             chainlit_session_id = (
                 requested_chainlit_session_id
@@ -1193,6 +1380,37 @@ def configure_copilot_bridge_guards(
                 )
                 await close_rejected_socket(socket_id)
                 raise SocketIOConnectionRefusedError("authentication failed")
+
+            if (
+                getattr(active_session, "auth_mode", "entra") == "anonymous"
+                and (chainlit_session_id or auth_payload.get("threadId"))
+            ):
+                logger.warning(
+                    "Blocked thread recovery for an anonymous Copilot session"
+                )
+                await close_rejected_socket(socket_id)
+                raise SocketIOConnectionRefusedError(
+                    "authorization failed"
+                )
+
+            thread_id = auth_payload.get("threadId")
+            if isinstance(thread_id, str) and thread_id:
+                from chainlit.data import get_data_layer
+
+                if data_layer := get_data_layer():
+                    thread = await data_layer.get_thread(thread_id)
+                    if (
+                        thread
+                        and thread.get("userIdentifier")
+                        != current_user.identifier
+                    ):
+                        logger.warning(
+                            "Blocked Copilot thread recovery across principals"
+                        )
+                        await close_rejected_socket(socket_id)
+                        raise SocketIOConnectionRefusedError(
+                            "authorization failed"
+                        )
 
             restore_cleanup_tasks: list[asyncio.Task] = []
 

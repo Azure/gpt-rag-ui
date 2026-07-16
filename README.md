@@ -29,53 +29,52 @@ repository-specific security contract and portal integration steps for the
 opt-in Chainlit Copilot widget are documented in
 [Embed GPT-RAG with Chainlit Copilot](docs/copilot-embedding.md).
 
-Chainlit 2.9.4 floating Copilot mode uses a dedicated Entra bootstrap flow.
-It does not use an iframe or expose Chainlit's `/auth/jwt` route to the host.
-Configure the UI with:
+Chainlit 2.9.4 floating Copilot mode uses an explicit
+`CHAINLIT_COPILOT_AUTH_MODE=anonymous|entra`; there is no default or
+authentication-failure fallback. Both modes issue only a bounded, opaque
+`Secure; HttpOnly` cookie to the browser. Entra mode additionally requires
+tenant, audience, scope, and `CHAINLIT_COPILOT_ENTRA_ALLOWED_CLIENT_IDS`;
+only v2 tokens whose `azp` is allow-listed are accepted.
 
-- `CHAINLIT_COPILOT_ENABLED`
-- `CHAINLIT_AUTH_SECRET`
-- `CHAINLIT_URL`
-- `CHAINLIT_ALLOWED_ORIGINS`
-- `CHAINLIT_COOKIE_SAMESITE`
-- `CHAINLIT_COPILOT_ENTRA_TENANT_ID`
-- `CHAINLIT_COPILOT_ENTRA_AUDIENCE`
-- `CHAINLIT_COPILOT_ENTRA_REQUIRED_SCOPE`
-- `CHAINLIT_COPILOT_SESSION_TTL_SECONDS`
-- `CHAINLIT_COPILOT_MAX_SESSIONS`
-- `CHAINLIT_COPILOT_BOOTSTRAP_RATE_LIMIT_PER_MINUTE`
-- `CITATION_SHARED_DOWNLOAD_CONTAINERS`
+The preferred topology is a same-origin reverse-proxy path:
 
-The shared citation setting can mark only the configured document or image
-container as uniformly readable; it cannot add an arbitrary storage container,
-and the conversation-upload container always remains conversation-bound.
+```text
+CHAINLIT_COPILOT_ENABLED=true
+CHAINLIT_COPILOT_AUTH_MODE=anonymous
+CHAINLIT_URL=https://portal.contoso.com
+CHAINLIT_ROOT_PATH=/gpt-rag
+CHAINLIT_ALLOWED_ORIGINS=https://portal.contoso.com
+```
 
-When Copilot mode is enabled, `CHAINLIT_AUTH_SECRET` must be a persistent,
-operator-managed value of at least 32 UTF-8 bytes, generated with at least 256
-bits of entropy and shared by every replica. Store it in Key Vault. The public integration
-endpoints are `POST /copilot/auth/bootstrap`,
-`POST /copilot/auth/logout`, and `GET /api/download/{grant_token}`.
+For Entra, set `CHAINLIT_COPILOT_AUTH_MODE=entra` and also configure
+`CHAINLIT_COPILOT_ENTRA_TENANT_ID`,
+`CHAINLIT_COPILOT_ENTRA_AUDIENCE`,
+`CHAINLIT_COPILOT_ENTRA_ALLOWED_CLIENT_IDS`, and optionally
+`CHAINLIT_COPILOT_ENTRA_REQUIRED_SCOPE` (default `user_impersonation`).
+`CHAINLIT_COOKIE_SAMESITE=none` is needed only for a cross-site portal.
+Session bounds use `CHAINLIT_COPILOT_SESSION_TTL_SECONDS`,
+`CHAINLIT_COPILOT_MAX_SESSIONS`, and
+`CHAINLIT_COPILOT_BOOTSTRAP_RATE_LIMIT_PER_MINUTE`.
 
-The browser receives only a Secure, HttpOnly opaque identity cookie. Entra and
-internal Chainlit tokens remain in bounded process memory, and the session
-expires at the earlier of the Entra token expiry and the configured TTL.
-Replacement, logout, expiry, and eviction invalidate associated sockets and
-active work. At most 20 exact portal origins can be configured, and they must be
-distinct from the UI origin. `Referer` is never
-used for authentication or authorization. Citation and download URLs are
-absolute, signed, principal-bound, conversation-authorized, and container/path
-checked before chunked streaming. Grants expire after one hour, and rotating the
-signing secret invalidates existing sessions and grants.
+The proxy must preserve `/gpt-rag` for HTTP, static assets, downloads,
+Socket.IO polling/upgrades, and WebSockets. The public endpoints are beneath
+that base, including `/copilot/index.js`, `/copilot/auth/bootstrap`,
+`/copilot/auth/logout`, `/project/settings`, `/ws/socket.io`, and
+`/api/download/{grant_token}`. Sibling subdomains remain supported with exact
+CORS; unrelated cross-site embedding is best effort because third-party
+cookies may be blocked.
 
-Process-local session state requires one Uvicorn process in a single active
-Container Apps revision with `minReplicas=maxReplicas=1`, or verified end-to-end
-affinity across bootstrap, HTTP, Socket.IO polling/upgrades, and WebSockets.
-Do not split traffic across revisions. Restarts, revision switches, and affinity
-loss sign users out. Bootstrap throttling is local defense
-in depth; configure authoritative limits at the trusted ingress. Browsers that
-block the required third-party cookie cannot use the floating integration, and
-there is no token-in-browser fallback. Standalone Chainlit behavior is unchanged
-while `CHAINLIT_COPILOT_ENABLED=false`.
+`CHAINLIT_AUTH_SECRET` must be an operator-managed Key Vault secret of at least
+32 UTF-8 bytes. Entra and internal Chainlit tokens never become widget
+`accessToken` values. Citation grants are absolute, signed, short-lived, and
+rechecked against identity, conversation, container, and blob path. Anonymous
+mode intentionally has no durable thread recovery, user-bound uploads, or
+authenticated citation downloads.
+
+Process-local state requires one Uvicorn process, one active revision, and one
+replica. Restarts and revision switches sign users out. Standalone OAuth and
+`ALLOW_ANONYMOUS` remain independent, and standalone behavior is unchanged
+when `CHAINLIT_COPILOT_ENABLED=false`.
 
 ## Prerequisites
 

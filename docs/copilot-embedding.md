@@ -1,8 +1,11 @@
 # Embed GPT-RAG with Chainlit Copilot
 
-Chainlit Copilot can add GPT-RAG as a floating chat button and popover in an
-external portal. Embedding is off by default. Enabling it adds a separate Entra
-bootstrap policy without changing or bypassing the standalone OAuth policy.
+Chainlit Copilot can add GPT-RAG as a floating chat button and popover in a
+portal. Embedding is off by default. When it is enabled,
+`CHAINLIT_COPILOT_AUTH_MODE` must explicitly select `anonymous` or `entra`.
+There is no default and an Entra failure never falls back to anonymous access.
+The Copilot policy is separate from the standalone Chainlit OAuth and
+`ALLOW_ANONYMOUS` policy.
 
 Chainlit 2.9.4 mounts the widget in an open Shadow DOM in the portal document.
 It does not use an iframe. GPT-RAG validates and supports only Chainlit's
@@ -11,19 +14,22 @@ server-enforced and have not been validated.
 
 ## Security model
 
-The portal acquires a short-lived Entra access token and sends it once to
-`POST /copilot/auth/bootstrap`. GPT-RAG validates and authorizes the token,
-stores it only in bounded server memory, and returns an opaque session cookie.
-The cookie is `HttpOnly` and `Secure`; it contains no Entra or Chainlit token.
-Its lifetime is the lesser of the configured Copilot TTL and the Entra `exp`.
+Both modes start at `POST {publicBase}/copilot/auth/bootstrap` and receive a
+bounded, opaque `HttpOnly; Secure` cookie. In `anonymous` mode, the request must
+not contain `Authorization`; GPT-RAG creates an ephemeral identity and stores no
+Entra token. In `entra` mode, the portal sends one delegated Entra v2 access
+token. GPT-RAG validates its signature, issuer, audience, tenant, scope,
+`tid`, `oid`, `ver`, and authorized-party `azp` before retaining the token only
+in bounded server memory. The cookie contains neither an Entra token nor a
+Chainlit token.
 
-The Chainlit widget is mounted without `accessToken`. Subsequent HTTP,
+The Chainlit widget is mounted without a raw Entra `accessToken`. Subsequent HTTP,
 Socket.IO polling, Socket.IO upgrade, and WebSocket requests must carry the
-opaque cookie and an exact configured portal origin. Top-level citation
-navigation normally omits `Origin`; the dedicated download endpoint resolves
-the opaque cookie directly and repeats principal, conversation, container, and
-path authorization. `Referer` is never an authentication or authorization
-input.
+opaque cookie. For a same-origin portal, the cookie is what distinguishes
+Copilot traffic from standalone traffic under the configured public path.
+Top-level citation navigation normally omits `Origin`; the dedicated download
+endpoint resolves the cookie directly and repeats principal, conversation,
+container, and path authorization. `Referer` is never trusted.
 
 ```mermaid
 sequenceDiagram
@@ -32,11 +38,16 @@ sequenceDiagram
     participant UI as GPT-RAG UI
     participant CL as Chainlit Copilot
 
-    Portal->>Entra: Acquire delegated API token
-    Entra-->>Portal: Short-lived access token
-    Portal->>UI: POST /copilot/auth/bootstrap<br/>Bearer access token
-    UI->>UI: Validate RS256, iss, aud, tid, oid, scp, exp
-    UI->>UI: Authorize user and store bounded token state
+    opt Entra mode
+        Portal->>Entra: Acquire delegated API token
+        Entra-->>Portal: Short-lived v2 access token
+        Portal->>UI: POST bootstrap with delegated access token
+        UI->>UI: Validate token and azp allow-list
+    end
+    opt Anonymous mode
+        Portal->>UI: POST bootstrap without Authorization
+        UI->>UI: Create ephemeral bounded identity
+    end
     UI-->>Portal: Opaque HttpOnly Secure cookie
     Portal->>Portal: Load /copilot/index.js
     Portal->>CL: mountChainlitWidget without accessToken
@@ -51,22 +62,34 @@ label. Container environment variables with the same names take precedence.
 | Key | Required | Description |
 | --- | --- | --- |
 | `CHAINLIT_COPILOT_ENABLED` | Yes | Set to `true` to enable embedding. Default: `false`. |
-| `CHAINLIT_AUTH_SECRET` | Yes | Persistent secret shared by the UI replicas for Chainlit sessions and signed download grants. It must contain at least 32 UTF-8 bytes. Use a random value with at least 256 bits of entropy and store it through a Key Vault-backed App Configuration reference. Copilot startup fails rather than generating a temporary value. |
-| `CHAINLIT_URL` | Yes | Exact public HTTPS origin of the GPT-RAG UI, for example `https://chat.contoso.com`. Paths are not accepted. |
-| `CHAINLIT_ALLOWED_ORIGINS` | Yes | Comma-separated portal origins, with at most 20 explicit entries. The portal origins must be distinct from `CHAINLIT_URL`. Wildcards, paths, credentials, `null`, and non-local HTTP origins are rejected. |
+| `CHAINLIT_COPILOT_AUTH_MODE` | Yes | Required when embedding is enabled. The only values are `anonymous` and `entra`; there is no default. |
+| `CHAINLIT_AUTH_SECRET` | Yes | Persistent secret used for Chainlit sessions and signed download grants. It must contain at least 32 UTF-8 bytes. Use a random value with at least 256 bits of entropy and store it through a Key Vault-backed App Configuration reference. Copilot startup fails rather than generating a temporary value. Replicas must share it and require end-to-end affinity; see the deployment limitation. |
+| `CHAINLIT_URL` | Yes | Exact public HTTPS origin, for example `https://portal.contoso.com` or `https://chat.contoso.com`. It is an origin only; paths are rejected. |
+| `CHAINLIT_ROOT_PATH` | When origins match | Optional canonical public path prefix, for example `/gpt-rag`. Use an empty value for an origin-root deployment. It must start with one `/`, must not end in `/`, and cannot contain dot segments, percent encoding, a query, or a fragment. A non-root path is required when a portal origin equals `CHAINLIT_URL`. |
+| `CHAINLIT_ALLOWED_ORIGINS` | Yes | Comma-separated exact portal origins, with at most 20 explicit entries. A value may equal `CHAINLIT_URL` only when `CHAINLIT_ROOT_PATH` is non-empty. Wildcards, paths, credentials, `null`, and non-local HTTP origins are rejected. |
 | `CHAINLIT_COOKIE_SAMESITE` | No | `lax` by default. Use `none` only when the portal and UI are cross-site. The Copilot cookie is always `Secure`. |
-| `CHAINLIT_COPILOT_ENTRA_TENANT_ID` | Yes | Tenant GUID accepted in `tid` and the exact v2 issuer. |
-| `CHAINLIT_COPILOT_ENTRA_AUDIENCE` | Yes | Exact API audience expected in `aud`. |
-| `CHAINLIT_COPILOT_ENTRA_REQUIRED_SCOPE` | No | Delegated scope required in `scp`. Default: `user_impersonation`. App-only tokens are rejected. |
+| `CHAINLIT_COPILOT_ENTRA_TENANT_ID` | Entra | Tenant GUID accepted in `tid` and the exact v2 issuer. |
+| `CHAINLIT_COPILOT_ENTRA_AUDIENCE` | Entra | Exact API audience expected in `aud`. |
+| `CHAINLIT_COPILOT_ENTRA_ALLOWED_CLIENT_IDS` | Entra | Comma-separated application (client) GUIDs authorized to bootstrap from the portal, with at most 50 entries. The v2 token's `azp` must match one value. Empty or malformed lists fail startup. Arbitrary portal clients are never accepted. |
+| `CHAINLIT_COPILOT_ENTRA_REQUIRED_SCOPE` | No | Delegated scope required in `scp` for Entra mode. Default: `user_impersonation`. App-only tokens are rejected. |
 | `CHAINLIT_COPILOT_SESSION_TTL_SECONDS` | No | Server-side session TTL from 60 to 86400 seconds. Default: 3600. Entra expiry can shorten it. |
 | `CHAINLIT_COPILOT_MAX_SESSIONS` | No | Maximum in-memory Copilot sessions from 1 to 10000. Default: 1000. The least recently used session is evicted at capacity. |
 | `CHAINLIT_COPILOT_BOOTSTRAP_RATE_LIMIT_PER_MINUTE` | No | Process-local bootstrap attempt limit per direct peer and exact origin, from 1 to 600. Default: 60. Returns `429` with `Retry-After`. This is defense in depth, not a replacement for trusted-ingress throttling. |
 | `CITATION_SHARED_DOWNLOAD_CONTAINERS` | No | Comma-separated configured document or image containers whose contents have uniform access for every authorized UI user. Default: empty. Values must match `DOCUMENTS_STORAGE_CONTAINER` or `DOCUMENTS_IMAGES_STORAGE_CONTAINER`; this setting cannot introduce another container. The conversation-upload container remains conversation-bound. Never add permission-trimmed containers. |
 
-The standalone deployment must have OAuth configured and
-`ALLOW_ANONYMOUS=false`. Copilot configuration never disables OAuth, enables
-anonymous access, or converts an authentication failure into anonymous chat.
-Invalid or incomplete enabled configuration fails startup.
+`anonymous` Copilot mode is intentional and isolated. It does not use
+`ALLOW_ANONYMOUS` as its authorization switch, disable OAuth, or convert any
+standalone or Entra authentication failure into anonymous chat. `entra` mode
+accepts v2 access tokens only and does not use the v1 `appid` claim. Invalid or
+incomplete enabled configuration fails startup.
+
+The standalone route policy remains independent. Existing OAuth or anonymous
+standalone access continues to work. If neither is available, non-Copilot
+requests fail with `503` while an explicitly configured Copilot mode can still
+operate. When Copilot is disabled, standalone behavior is unchanged.
+Enabling Copilot changes the process default for standalone anonymous access
+to `false`; explicitly set `ALLOW_ANONYMOUS=true` if standalone anonymous
+access must remain available without OAuth.
 Standalone development can still generate a temporary `CHAINLIT_AUTH_SECRET`
 when embedding is disabled.
 
@@ -75,11 +98,145 @@ Rotating `CHAINLIT_AUTH_SECRET` also requires a restart and signs out current
 users. Existing Chainlit tokens and one-hour citation grants signed with the
 previous value stop validating.
 
-If both `ALLOWED_USER_PRINCIPALS` and `ALLOWED_USER_NAMES` are empty, every
-valid delegated user in the configured tenant is authorized. Treat that as an
-explicit deployment decision and record security-owner sign-off.
+In Entra mode, if both `ALLOWED_USER_PRINCIPALS` and `ALLOWED_USER_NAMES` are
+empty, every valid delegated user from an allowed portal client in the
+configured tenant is authorized. Treat that as an explicit deployment decision
+and record security-owner sign-off.
 
-## Portal bootstrap
+## Public URL and reverse-proxy contract
+
+The public base URL is the exact concatenation of `CHAINLIT_URL` and
+`CHAINLIT_ROOT_PATH`. Prefer a same-origin path because it avoids third-party
+cookie dependence:
+
+```text
+CHAINLIT_URL=https://portal.contoso.com
+CHAINLIT_ROOT_PATH=/gpt-rag
+CHAINLIT_ALLOWED_ORIGINS=https://portal.contoso.com
+```
+
+This produces `https://portal.contoso.com/gpt-rag`. The reverse proxy must send
+the exact `/gpt-rag` prefix and every descendant to the GPT-RAG UI. It must not
+strip the prefix and must not rely on `X-Forwarded-Prefix` to add it. Preserve
+methods, query strings, request bodies, `Origin`, cookies, and `Set-Cookie`.
+Support HTTP, Socket.IO polling and upgrades, and WebSocket upgrades on the same
+prefix. Requests outside `/gpt-rag` remain portal routes. Requests that omit,
+duplicate, percent-encode, or ambiguously rewrite the prefix fail closed.
+Chainlit auth, OAuth-state, and Copilot session cookies are scoped to the
+configured root. Changing from `/` to a non-root path signs users in again and
+uses root-specific internal Chainlit cookie names so stale root cookies cannot
+shadow the new session after a secret rotation. Signed legacy GPT-RAG cookies
+using the current internal name are expired during the next auth lifecycle.
+
+A sibling-subdomain deployment remains supported:
+
+```text
+CHAINLIT_URL=https://chat.contoso.com
+CHAINLIT_ROOT_PATH=
+CHAINLIT_ALLOWED_ORIGINS=https://portal.contoso.com
+CHAINLIT_COOKIE_SAMESITE=none
+```
+
+Use exact CORS origins. Unrelated cross-site embedding is best effort because
+browsers may block the required third-party cookie.
+
+All public routes are beneath the public base:
+
+| Purpose | Public path |
+| --- | --- |
+| Copilot bundle | `/copilot/index.js` |
+| Bootstrap | `/copilot/auth/bootstrap` |
+| Logout | `/copilot/auth/logout` |
+| Widget settings and APIs | `/project/settings` and other authorized `/project/*` routes |
+| Socket.IO polling and upgrade | `/ws/socket.io` |
+| Static content | `/assets/*`, `/public/*`, and `/version-footer` |
+| Authorized citation download | `/api/download/{grant_token}` |
+
+Bootstrap is `POST` and returns
+`{"success":true,"authMode":"anonymous|entra","expiresAt":<unix-seconds>}` plus
+the path-scoped cookie. Logout is `POST`, returns `{"success":true}`, deletes
+the bounded session, disconnects its active sockets, and clears that cookie.
+The bundle, static content, settings, version footer, and downloads use `GET`;
+Socket.IO uses its normal `GET`/`POST` polling and upgrade flow.
+
+For the same-origin example, bootstrap is therefore
+`https://portal.contoso.com/gpt-rag/copilot/auth/bootstrap`, Socket.IO is
+`https://portal.contoso.com/gpt-rag/ws/socket.io`, and download grants start
+with `https://portal.contoso.com/gpt-rag/api/download/`.
+
+## Anonymous portal example
+
+Anonymous mode must be deliberately configured:
+
+```text
+CHAINLIT_COPILOT_ENABLED=true
+CHAINLIT_COPILOT_AUTH_MODE=anonymous
+CHAINLIT_URL=https://portal.contoso.com
+CHAINLIT_ROOT_PATH=/gpt-rag
+CHAINLIT_ALLOWED_ORIGINS=https://portal.contoso.com
+CHAINLIT_AUTH_SECRET=<Key Vault-backed secret with at least 32 bytes>
+```
+
+Bootstrap without an `Authorization` header, then mount without
+`accessToken`. Supplying an authorization header is a configuration error and
+returns `400`; it is never treated as anonymous fallback.
+
+```html
+<div id="gpt-rag-status" role="status">Loading assistant...</div>
+<script>
+  const chainlitServer = "https://portal.contoso.com/gpt-rag";
+
+  async function startAnonymousAssistant() {
+    const status = document.getElementById("gpt-rag-status");
+    const bootstrap = await fetch(
+      `${chainlitServer}/copilot/auth/bootstrap`,
+      { method: "POST", credentials: "include" },
+    );
+    if (!bootstrap.ok) {
+      status.textContent = "The assistant is unavailable.";
+      return;
+    }
+
+    const script = document.createElement("script");
+    script.src = `${chainlitServer}/copilot/index.js`;
+    script.onload = () => {
+      window.mountChainlitWidget({ chainlitServer, theme: "light" });
+      status.hidden = true;
+    };
+    script.onerror = () => {
+      status.textContent = "The assistant is unavailable.";
+    };
+    document.head.appendChild(script);
+  }
+
+  void startAnonymousAssistant();
+</script>
+```
+
+Anonymous sessions support chat with an ephemeral identity. Durable thread
+listing/recovery, user-bound uploads, feedback and other identity-bound routes,
+and authenticated citation downloads are unavailable. Unauthorized citations
+render as text rather than insecure links.
+
+## Entra portal example
+
+```text
+CHAINLIT_COPILOT_ENABLED=true
+CHAINLIT_COPILOT_AUTH_MODE=entra
+CHAINLIT_URL=https://portal.contoso.com
+CHAINLIT_ROOT_PATH=/gpt-rag
+CHAINLIT_ALLOWED_ORIGINS=https://portal.contoso.com
+CHAINLIT_AUTH_SECRET=<Key Vault-backed secret with at least 32 bytes>
+CHAINLIT_COPILOT_ENTRA_TENANT_ID=11111111-1111-4111-8111-111111111111
+CHAINLIT_COPILOT_ENTRA_AUDIENCE=api://22222222-2222-4222-8222-222222222222
+CHAINLIT_COPILOT_ENTRA_ALLOWED_CLIENT_IDS=33333333-3333-4333-8333-333333333333
+CHAINLIT_COPILOT_ENTRA_REQUIRED_SCOPE=user_impersonation
+```
+
+The allowed client ID is the portal app registration's application (client)
+ID. Add more GUIDs as a comma-separated allow-list only when each portal is
+authorized to bootstrap GPT-RAG. The API token must be a v2 token whose `azp`
+matches that list; `appid`-only v1 tokens are rejected.
 
 Acquire the API token through the portal's existing MSAL flow, bootstrap the
 server session, and only then load and mount the widget.
@@ -87,7 +244,7 @@ server session, and only then load and mount the widget.
 ```html
 <div id="gpt-rag-status" role="status">Loading assistant...</div>
 <script>
-  const chainlitServer = "https://chat.contoso.com";
+  const chainlitServer = "https://portal.contoso.com/gpt-rag";
   let sessionExpiryTimer;
 
   async function bootstrapAssistant(accessToken) {
@@ -160,6 +317,7 @@ server session, and only then load and mount the widget.
     status.hidden = false;
     status.textContent = "Loading assistant...";
     try {
+      // portalAuth is the portal's own MSAL-backed token acquisition wrapper.
       const token = await portalAuth.getGptRagAccessToken({ forceRefresh });
       let response = await bootstrapAssistant(token);
 
@@ -254,7 +412,8 @@ authentication failure, or WebSocket `4401` as a signed-out assistant:
 1. Unmount and remove the current widget.
 2. Remove `chainlit-copilot-thread-id`.
 3. Show a visible message such as "Your assistant session expired. Reconnecting..."
-4. Acquire a fresh Entra token and call bootstrap once.
+4. In Entra mode, acquire a fresh token; in anonymous mode, send no token.
+   Call bootstrap once.
 5. Mount a fresh widget only after bootstrap succeeds.
 
 Do not reconnect indefinitely. After one failed refresh, show a sign-in action
@@ -273,6 +432,9 @@ explicitly.
 
 ```js
 async function stopAssistant() {
+  if (typeof sessionExpiryTimer !== "undefined") {
+    clearTimeout(sessionExpiryTimer);
+  }
   window.unmountChainlitWidget?.();
   document.getElementById("chainlit-copilot")?.remove();
   localStorage.removeItem("chainlit-copilot-thread-id");
@@ -286,7 +448,7 @@ async function stopAssistant() {
 ```
 
 Unmounting tears down the widget's Socket.IO connection. On portal logout,
-call `stopAssistant` and remain signed out. On account change:
+call `stopAssistant` and remain signed out. In Entra mode, on account change:
 
 1. Stop and remove the old widget.
 2. Clear the old server session and local thread ID.
@@ -340,28 +502,33 @@ Account switching injects the external bundle again. With a nonce-based portal
 CSP, the newly created script element must receive a fresh valid nonce just as
 it did on the initial load.
 
-## Exact-origin and download behavior
+## Exact-origin, path, and download behavior
 
 - Portal browser traffic is accepted only from exact
-  `CHAINLIT_ALLOWED_ORIGINS` values. The UI and portal must use distinct
-  origins, and at most 20 portal origins can be configured.
-- The standalone UI origin comes from exact `CHAINLIT_URL` and retains its
-  existing OAuth policy.
+  `CHAINLIT_ALLOWED_ORIGINS` values, with at most 20 configured origins.
+  Same-origin traffic is separated by the exact `CHAINLIT_ROOT_PATH`, explicit
+  Copilot routes, and the opaque Copilot cookie. A request with no Copilot
+  cookie remains on the standalone policy.
+- The public origin comes from `CHAINLIT_URL`; the optional public prefix comes
+  only from `CHAINLIT_ROOT_PATH`. Neither setting is inferred from forwarding
+  headers.
 - Requests with an unlisted `Origin` are rejected before Chainlit handles
-  them. A Copilot cookie is honored by the Chainlit request pipeline only with
-  an exact portal `Origin`; otherwise it is ignored so it cannot override
-  standalone OAuth handling. The dedicated top-level download route is the sole
-  no-`Origin` exception. It accepts either the opaque Copilot session cookie or
-  the existing standalone Chainlit authentication cookie, then repeats all
-  download authorization checks. If both cookies are present, the identity
-  matching the signed download grant is selected. `Referer` is ignored.
-- `/auth/jwt` and `/auth/header` are unavailable to portal origins. The portal
-  uses only the dedicated bootstrap endpoint.
-- Citation URLs are absolute URLs on `CHAINLIT_URL`. They contain a short-lived,
+  them. A valid Copilot cookie binds the request to the Copilot policy. The
+  dedicated top-level download route also accepts a no-`Origin` navigation,
+  resolves the opaque Copilot or existing standalone Chainlit cookie, and then
+  repeats every download authorization check. If both cookies are present, the
+  identity matching the signed grant is selected. `Referer` is ignored.
+- `/auth/jwt`, `/auth/header`, `/auth/oauth/*`, and `/logout` are unavailable
+  to a Copilot session. The portal uses only the dedicated bootstrap and
+  Copilot logout endpoints.
+- Citation URLs are absolute URLs on `CHAINLIT_URL` plus
+  `CHAINLIT_ROOT_PATH`. They contain a short-lived,
   signed grant bound to the authenticated principal, conversation, container,
   and blob. The server rechecks the session and conversation ownership before
   streaming the blob in chunks. Grants expire after 3,600 seconds and secret
-  rotation invalidates them. Conversation IDs must be canonical UUIDs.
+  rotation invalidates them. Conversation IDs must be canonical UUIDs. Blob grant
+  targets containing residual percent escapes are rejected to prevent multi-stage
+  URL decoding; such blob names must be renamed before they can be linked.
   Conversation uploads must be under
   `conversations/<owned-conversation-id>/`. Other containers are default-denied
   unless the configured document or image container is explicitly listed in
@@ -372,7 +539,7 @@ it did on the initial load.
   Permission-trimmed containers require a future document-level authorization
   integration and must not be listed. Unauthorized citations render as text
   without a link. Direct SAS and public-blob fallbacks are not used.
-- Users are identified as `tid:oid`. Tokens without both claims are rejected,
+- Entra users are identified as `tid:oid`. Tokens without both claims are rejected,
   and thread ownership is checked before list/get/resume/rename/delete,
   feedback, and download operations.
 - Prefer lowercase `tid:oid` values in `ALLOWED_USER_PRINCIPALS`. Bare `oid`
@@ -406,7 +573,8 @@ upgrading Chainlit.
 
 ## Deployment limitation
 
-The bounded Copilot session and Entra token state is process-local.
+The bounded Copilot session state and, in Entra mode, retained token state are
+process-local.
 
 - One UI replica is the supported safe default.
 - Multiple replicas require session affinity covering bootstrap, HTTP,
@@ -423,8 +591,9 @@ revision, and do not split traffic across revisions. `minReplicas=1` and
 revisions receive traffic. A revision switch still loses process-local sessions
 and signs users out. If scaling out, verify affinity for every path listed above
 instead of assuming gateway cookie affinity also pins the backend replica. Also
-verify that `CHAINLIT_URL` is the externally visible UI origin after
-gateway/proxy rewriting; it is used to mint absolute citation URLs.
+verify that `CHAINLIT_URL` plus `CHAINLIT_ROOT_PATH` is the externally visible
+public base after gateway/proxy routing; it is used to mint absolute citation
+URLs.
 
 Prefer publishing the portal and UI through the approved Zero Trust gateway or
 front door. Do not expose the Container App directly.
@@ -441,13 +610,15 @@ per-user or per-client rate limits at that ingress.
 
 | Symptom | Check |
 | --- | --- |
-| Bootstrap 403 | The browser `Origin` exactly matches `CHAINLIT_ALLOWED_ORIGINS`, including scheme and port. |
+| Bootstrap 400 in anonymous mode | Remove the `Authorization` header. Anonymous mode never consumes or falls back from a token. |
+| Bootstrap 403 | The browser `Origin` exactly matches `CHAINLIT_ALLOWED_ORIGINS`. In Entra mode also check user policy and that v2 `azp` is in `CHAINLIT_COPILOT_ENTRA_ALLOWED_CLIENT_IDS`. |
 | Bootstrap appears as a CORS/network error | The portal origin is not listed, is malformed, or the request bypassed the approved ingress. Unlisted origins cannot read the UI's `403`. |
-| Bootstrap 401 | Token issuer, audience, tenant, `oid`, delegated scope, signature, and expiry. Reacquire once. |
+| Bootstrap 401 in Entra mode | Token version, issuer, audience, tenant, `tid`, `oid`, delegated scope, signature, and expiry. Reacquire once. |
 | Bootstrap 429 | Honor `Retry-After`, stop automatic retries, and inspect trusted-ingress limits if the condition persists. |
 | Bootstrap 503 | Entra JWKS could not be reached. Show the unavailable state; do not start a sign-in loop. |
 | Widget reports authentication failure | Bootstrap completed before mounting and the request used `credentials: "include"`. |
 | Cookie absent after successful bootstrap | HTTPS is used; for cross-site portals use `SameSite=None`; check browser third-party-cookie policy. This is distinct from token verification failure. |
+| Same-origin path returns 404 | The proxy preserves the exact `CHAINLIT_ROOT_PATH` instead of stripping it or relying on `X-Forwarded-Prefix`. |
 | CSP blocks the widget | Portal `script-src`, `connect-src`, `style-src`, and font rules include the required sources. |
 | Socket.IO 403 or WebSocket 1008/4401 | Exact origin, cookie delivery, session affinity, and server session expiry. |
 | Citation returns 404 | Session is current, the conversation belongs to the user, the signed grant is unmodified, and the blob exists. |
@@ -468,6 +639,8 @@ per-user or per-client rate limits at that ingress.
 - Cross-site operation still depends on the target browser accepting the
   `SameSite=None; Secure` cookie. There is no safe application fallback when
   third-party cookies are blocked.
+- Anonymous mode intentionally has no durable user identity, thread recovery,
+  user-bound upload, or authenticated citation-download support.
 - One browser profile and portal origin cannot maintain independent Copilot
   accounts across tabs because the opaque cookie and thread key are shared.
 - Shared citation containers are all-or-nothing. Leave them unlisted to render

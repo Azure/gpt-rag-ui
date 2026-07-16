@@ -24,7 +24,7 @@ from embed_auth import (
     set_copilot_session_cookie,
 )
 from embed_security import CopilotRequestMiddleware
-from entra_token import EntraTokenError
+from entra_token import EntraClientNotAllowedError, EntraTokenError
 
 
 TENANT_ID = "11111111-2222-3333-4444-555555555555"
@@ -278,17 +278,77 @@ class EmbedAuthTests(unittest.IsolatedAsyncioTestCase):
             principal_name="",
         )
         response = Response()
-        set_copilot_session_cookie(response, session, same_site="none")
+        set_copilot_session_cookie(
+            response,
+            session,
+            same_site="none",
+            path="/gpt-rag",
+        )
         cookie = response.headers["set-cookie"]
         self.assertIn(f"{COPILOT_SESSION_COOKIE}={session.session_id}", cookie)
         self.assertIn("HttpOnly", cookie)
         self.assertIn("Secure", cookie)
         self.assertIn("SameSite=none", cookie)
+        self.assertIn("Path=/gpt-rag", cookie)
         self.assertNotIn("entra-secret", cookie)
+        self.assertTrue(
+            any(
+                "Max-Age=0" in header and "Path=/" in header
+                for header in response.headers.getlist("set-cookie")
+            )
+        )
 
         clear_response = Response()
-        clear_copilot_session_cookie(clear_response, same_site="none")
+        clear_copilot_session_cookie(
+            clear_response,
+            same_site="none",
+            path="/gpt-rag",
+        )
         self.assertIn("Max-Age=0", clear_response.headers["set-cookie"])
+        self.assertIn("Path=/gpt-rag", clear_response.headers["set-cookie"])
+        self.assertEqual(
+            2,
+            len(clear_response.headers.getlist("set-cookie")),
+        )
+
+    async def test_anonymous_bootstrap_is_explicit_and_rejects_bearer_tokens(self):
+        settings = EmbedSettings(
+            enabled=True,
+            auth_mode="anonymous",
+            ui_origin="https://portal.example.com",
+            root_path="/gpt-rag",
+            allowed_origins=("https://portal.example.com",),
+            session_ttl_seconds=120,
+        )
+        sessions = CopilotSessionStore(max_sessions=10, ttl_seconds=120)
+        app = FastAPI()
+        register_copilot_auth_routes(
+            app,
+            settings=settings,
+            sessions=sessions,
+            validator=None,
+            config=FakeConfig(),
+        )
+        transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="https://portal.example.com",
+        ) as client:
+            bootstrap = await client.post("/copilot/auth/bootstrap")
+            session_id = client.cookies.get(COPILOT_SESSION_COOKIE)
+            rejected = await client.post(
+                "/copilot/auth/bootstrap",
+                headers={"Authorization": "Bearer must-not-downgrade"},
+            )
+
+        self.assertEqual(200, bootstrap.status_code)
+        self.assertEqual("anonymous", bootstrap.json()["authMode"])
+        self.assertIn("Path=/gpt-rag", bootstrap.headers["set-cookie"])
+        session = await sessions.get(session_id)
+        self.assertEqual("anonymous", session.auth_mode)
+        self.assertIsNone(session.access_token)
+        self.assertEqual(400, rejected.status_code)
+        self.assertIsNotNone(await sessions.get(session_id))
 
     async def test_store_invalidation_covers_replacement_eviction_and_expiry(self):
         invalidated = []
@@ -343,6 +403,7 @@ class EmbedAuthTests(unittest.IsolatedAsyncioTestCase):
     async def test_bootstrap_logout_and_error_contract(self):
         settings = EmbedSettings(
             enabled=True,
+            auth_mode="entra",
             ui_origin="https://chat.example.com",
             allowed_origins=("https://portal.example.com",),
             cookie_samesite="none",
@@ -409,6 +470,7 @@ class EmbedAuthTests(unittest.IsolatedAsyncioTestCase):
     async def test_failed_rebootstrap_preserves_valid_current_session(self):
         settings = EmbedSettings(
             enabled=True,
+            auth_mode="entra",
             ui_origin="https://chat.example.com",
             allowed_origins=("https://portal.example.com",),
             cookie_samesite="none",
@@ -468,6 +530,7 @@ class EmbedAuthTests(unittest.IsolatedAsyncioTestCase):
     async def test_denied_account_switch_clears_previous_session(self):
         settings = EmbedSettings(
             enabled=True,
+            auth_mode="entra",
             ui_origin="https://chat.example.com",
             allowed_origins=("https://portal.example.com",),
             cookie_samesite="none",
@@ -535,6 +598,7 @@ class EmbedAuthTests(unittest.IsolatedAsyncioTestCase):
     async def test_bootstrap_negative_responses(self):
         settings = EmbedSettings(
             enabled=True,
+            auth_mode="entra",
             ui_origin="https://chat.example.com",
             allowed_origins=("https://portal.example.com",),
             cookie_samesite="none",
@@ -576,6 +640,14 @@ class EmbedAuthTests(unittest.IsolatedAsyncioTestCase):
             headers={"Authorization": "Bearer invalid"},
         )
         self.assertEqual(401, invalid.status_code)
+
+        unauthorized_client = await run_request(
+            AsyncMock(
+                side_effect=EntraClientNotAllowedError("not allowed")
+            ),
+            headers={"Authorization": "Bearer token"},
+        )
+        self.assertEqual(403, unauthorized_client.status_code)
 
         unavailable = await run_request(
             AsyncMock(
@@ -648,6 +720,7 @@ class EmbedAuthTests(unittest.IsolatedAsyncioTestCase):
         portal = "https://portal.example.com"
         settings = EmbedSettings(
             enabled=True,
+            auth_mode="entra",
             ui_origin="https://chat.example.com",
             allowed_origins=(portal,),
             max_sessions=10,
@@ -724,6 +797,7 @@ class EmbedAuthTests(unittest.IsolatedAsyncioTestCase):
         portal = "https://portal.example.com"
         settings = EmbedSettings(
             enabled=True,
+            auth_mode="entra",
             ui_origin="https://chat.example.com",
             allowed_origins=(portal,),
             max_sessions=10,

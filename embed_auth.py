@@ -7,12 +7,13 @@ import os
 import re
 import secrets
 import time
+import uuid
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from http.cookies import CookieError, SimpleCookie
-from typing import Protocol
+from typing import Literal, Protocol
 
 import httpx
 import jwt
@@ -25,10 +26,11 @@ from starlette.responses import JSONResponse, Response
 from auth_common import canonical_principal_id, is_user_authorized
 from connectors.appconfig import AppConfigClient
 from embed_config import EmbedSettings
-from entra_token import EntraTokenError
+from entra_token import EntraClientNotAllowedError, EntraTokenError
 
 
 COPILOT_SESSION_COOKIE = "gpt_rag_copilot_session"
+ANONYMOUS_TENANT_ID = "00000000-0000-0000-0000-000000000000"
 logger = logging.getLogger("gpt_rag_ui.embed_auth")
 _SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{43}$")
 _SESSION_FAMILY_BYTES = 16
@@ -60,7 +62,8 @@ class CopilotSession:
     principal_id: str
     tenant_id: str
     object_id: str
-    access_token: str = field(repr=False)
+    auth_mode: Literal["anonymous", "entra"]
+    access_token: str | None = field(repr=False)
     chainlit_token: str = field(repr=False)
     expires_at: int
     display_name: str
@@ -68,18 +71,22 @@ class CopilotSession:
     group_ids: tuple[str, ...] = ()
 
     def user_metadata(self) -> dict:
+        is_entra = self.auth_mode == "entra"
         return {
             "authorized": True,
             "auth_source": "copilot_session",
+            "copilot_auth_mode": self.auth_mode,
             "copilot_session_id": self.session_id,
             "tenant_id": self.tenant_id,
             "object_id": self.object_id,
             "principal_id": self.principal_id,
             # Downstream ACL and orchestrator contracts use a bare Entra oid.
-            "client_principal_id": self.object_id,
-            "client_principal_name": self.principal_name,
+            "client_principal_id": self.object_id if is_entra else "no-auth",
+            "client_principal_name": (
+                self.principal_name if is_entra else "anonymous"
+            ),
             "user_name": self.principal_id,
-            "client_group_names": list(self.group_ids),
+            "client_group_names": list(self.group_ids) if is_entra else [],
         }
 
 
@@ -173,16 +180,22 @@ class CopilotSessionStore:
         self,
         *,
         previous_session_id: str | None,
-        access_token: str,
+        access_token: str | None,
         claims: dict,
         display_name: str,
         principal_name: str,
+        auth_mode: Literal["anonymous", "entra"] = "entra",
     ) -> CopilotSession:
+        if auth_mode == "entra" and not access_token:
+            raise ValueError("An Entra Copilot session requires an access token.")
+        if auth_mode == "anonymous" and access_token:
+            raise ValueError("An anonymous Copilot session cannot retain an access token.")
+
         now = int(time.time())
         token_expires_at = int(claims["exp"])
         expires_at = min(token_expires_at, now + self.ttl_seconds)
         if expires_at <= now:
-            raise ValueError("The Entra access token has expired.")
+            raise ValueError("The Copilot session credential has expired.")
 
         tenant_id = str(claims["tid"])
         object_id = str(claims["oid"])
@@ -193,7 +206,6 @@ class CopilotSessionStore:
             for group in claims.get("groups", [])
             if isinstance(group, str)
         )
-
         invalidated: list[str] = []
         async with self._lock:
             invalidated.extend(self._prune_locked(now))
@@ -224,14 +236,21 @@ class CopilotSessionStore:
                 metadata={
                     "authorized": True,
                     "auth_source": "copilot_session",
+                    "copilot_auth_mode": auth_mode,
                     "copilot_session_id": session_id,
                     "tenant_id": tenant_id,
                     "object_id": object_id,
                     "principal_id": principal_id,
-                    "client_principal_id": object_id,
-                    "client_principal_name": principal_name,
+                    "client_principal_id": (
+                        object_id if auth_mode == "entra" else "no-auth"
+                    ),
+                    "client_principal_name": (
+                        principal_name if auth_mode == "entra" else "anonymous"
+                    ),
                     "user_name": principal_id,
-                    "client_group_names": list(group_ids),
+                    "client_group_names": (
+                        list(group_ids) if auth_mode == "entra" else []
+                    ),
                 },
             )
             chainlit_token = create_embed_session_jwt(user, expires_at)
@@ -240,6 +259,7 @@ class CopilotSessionStore:
                 principal_id=principal_id,
                 tenant_id=tenant_id,
                 object_id=object_id,
+                auth_mode=auth_mode,
                 access_token=access_token,
                 chainlit_token=chainlit_token,
                 expires_at=expires_at,
@@ -260,6 +280,24 @@ class CopilotSessionStore:
                 invalidated.append(evicted_id)
         await self._notify_invalidated(invalidated)
         return session
+
+    async def replace_anonymous(
+        self,
+        *,
+        previous_session_id: str | None,
+    ) -> CopilotSession:
+        return await self.replace(
+            previous_session_id=previous_session_id,
+            access_token=None,
+            claims={
+                "tid": ANONYMOUS_TENANT_ID,
+                "oid": str(uuid.uuid4()),
+                "exp": int(time.time()) + self.ttl_seconds,
+            },
+            display_name="Anonymous",
+            principal_name="anonymous",
+            auth_mode="anonymous",
+        )
 
     async def get(self, session_id: str | None) -> CopilotSession | None:
         if not is_valid_session_id(session_id):
@@ -415,26 +453,48 @@ def set_copilot_session_cookie(
     session: CopilotSession,
     *,
     same_site: str,
+    path: str = "/",
 ) -> None:
     response.set_cookie(
         key=COPILOT_SESSION_COOKIE,
         value=session.session_id,
         max_age=max(0, session.expires_at - int(time.time())),
-        path="/",
+        path=path,
         secure=True,
         httponly=True,
         samesite=same_site,
     )
+    if path != "/":
+        response.delete_cookie(
+            key=COPILOT_SESSION_COOKIE,
+            path="/",
+            secure=True,
+            httponly=True,
+            samesite=same_site,
+        )
 
 
-def clear_copilot_session_cookie(response: Response, *, same_site: str) -> None:
+def clear_copilot_session_cookie(
+    response: Response,
+    *,
+    same_site: str,
+    path: str = "/",
+) -> None:
     response.delete_cookie(
         key=COPILOT_SESSION_COOKIE,
-        path="/",
+        path=path,
         secure=True,
         httponly=True,
         samesite=same_site,
     )
+    if path != "/":
+        response.delete_cookie(
+            key=COPILOT_SESSION_COOKIE,
+            path="/",
+            secure=True,
+            httponly=True,
+            samesite=same_site,
+        )
 
 
 def session_id_from_request(request: Request) -> str | None:
@@ -490,7 +550,32 @@ def _auth_error_response(
         clear_copilot_session_cookie(
             response,
             same_site=settings.cookie_samesite,
+            path=settings.cookie_path,
         )
+    return response
+
+
+def _session_response(
+    session: CopilotSession,
+    settings: EmbedSettings,
+) -> JSONResponse:
+    response = JSONResponse(
+        {
+            "success": True,
+            "authMode": session.auth_mode,
+            "expiresAt": session.expires_at,
+        },
+        headers={
+            "Cache-Control": "no-store",
+            "Pragma": "no-cache",
+        },
+    )
+    set_copilot_session_cookie(
+        response,
+        session,
+        same_site=settings.cookie_samesite,
+        path=settings.cookie_path,
+    )
     return response
 
 
@@ -499,10 +584,15 @@ def register_copilot_auth_routes(
     *,
     settings: EmbedSettings,
     sessions: CopilotSessionStore,
-    validator: TokenValidator,
+    validator: TokenValidator | None,
     config: AppConfigClient,
     rate_limiter: BootstrapRateLimiter | None = None,
 ) -> None:
+    if settings.uses_entra and validator is None:
+        raise ValueError("Entra Copilot mode requires a token validator.")
+    if settings.auth_mode not in {"anonymous", "entra"}:
+        raise ValueError("Copilot auth mode is not configured.")
+
     limiter = rate_limiter or BootstrapRateLimiter(
         max_attempts=settings.bootstrap_rate_limit_per_minute,
         max_keys=max(256, min(settings.max_sessions * 2, 20000)),
@@ -544,6 +634,21 @@ def register_copilot_auth_routes(
             )
 
         authorization_values = request.headers.getlist("Authorization")
+        if settings.auth_mode == "anonymous":
+            if authorization_values:
+                logger.warning(
+                    "Anonymous Copilot bootstrap rejected an Authorization header"
+                )
+                return auth_error(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Authorization is not accepted in anonymous mode",
+                    clear_cookie=False,
+                )
+            session = await sessions.replace_anonymous(
+                previous_session_id=previous_session_id,
+            )
+            return _session_response(session, settings)
+
         authorization = (
             authorization_values[0] if len(authorization_values) == 1 else ""
         )
@@ -560,7 +665,19 @@ def register_copilot_auth_routes(
 
         access_token = access_token.strip()
         try:
+            assert validator is not None
             claims = await validator.validate(access_token)
+        except EntraClientNotAllowedError:
+            logger.warning(
+                "Copilot bootstrap denied an unauthorized portal client"
+            )
+            if previous_session:
+                await sessions.delete(previous_session.session_id)
+            return auth_error(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Portal client access denied",
+                clear_cookie=True,
+            )
         except EntraTokenError:
             logger.warning("Copilot bootstrap rejected an invalid Entra token")
             return auth_error(
@@ -614,6 +731,7 @@ def register_copilot_auth_routes(
                     claims.get("name") or principal_name or principal_id
                 ),
                 principal_name=principal_name,
+                auth_mode="entra",
             )
         except (KeyError, TypeError, ValueError):
             logger.warning("Copilot bootstrap rejected invalid token claims")
@@ -622,19 +740,7 @@ def register_copilot_auth_routes(
                 detail="Authentication failed",
             )
 
-        response = JSONResponse(
-            {"success": True, "expiresAt": session.expires_at},
-            headers={
-                "Cache-Control": "no-store",
-                "Pragma": "no-cache",
-            },
-        )
-        set_copilot_session_cookie(
-            response,
-            session,
-            same_site=settings.cookie_samesite,
-        )
-        return response
+        return _session_response(session, settings)
 
     @app.post("/copilot/auth/logout")
     async def logout_copilot(request: Request):
@@ -649,8 +755,30 @@ def register_copilot_auth_routes(
         clear_copilot_session_cookie(
             response,
             same_site=settings.cookie_samesite,
+            path=settings.cookie_path,
         )
         return response
+
+
+async def _active_copilot_session(
+    metadata: dict | None,
+) -> CopilotSession | None:
+    metadata = metadata or {}
+    if metadata.get("auth_source") != "copilot_session":
+        return None
+    try:
+        store = get_session_store()
+    except RuntimeError:
+        return None
+    session = await store.get(str(metadata.get("copilot_session_id") or ""))
+    if (
+        not session
+        or session.principal_id != metadata.get("principal_id")
+        or session.auth_mode != metadata.get("copilot_auth_mode")
+    ):
+        return None
+    return session
+
 
 async def resolve_access_token(metadata: dict | None) -> str | None:
     metadata = metadata or {}
@@ -658,18 +786,12 @@ async def resolve_access_token(metadata: dict | None) -> str | None:
         token = str(metadata.get("access_token") or "").strip()
         return token or None
 
-    try:
-        store = get_session_store()
-    except RuntimeError:
-        return None
-    session = await store.get(str(metadata.get("copilot_session_id") or ""))
-    if not session or session.principal_id != metadata.get("principal_id"):
-        return None
-    return session.access_token
+    session = await _active_copilot_session(metadata)
+    return session.access_token if session else None
 
 
 async def is_copilot_session_active(metadata: dict | None) -> bool:
     metadata = metadata or {}
     if metadata.get("auth_source") != "copilot_session":
         return True
-    return bool(await resolve_access_token(metadata))
+    return bool(await _active_copilot_session(metadata))

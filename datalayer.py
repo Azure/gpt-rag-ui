@@ -123,7 +123,6 @@ class OrchestratorDataLayer(BaseDataLayer):
                 createdAt=_get_current_timestamp(),
                 metadata=request_session.user_metadata(),
             )
-            _users[identifier] = user
             _request_user_metadata.set(user.metadata)
             return user
 
@@ -153,7 +152,8 @@ class OrchestratorDataLayer(BaseDataLayer):
             createdAt=_get_current_timestamp(),
             metadata=user.metadata or {},
         )
-        _users[user.identifier] = persisted
+        if persisted.metadata.get("auth_source") != "copilot_session":
+            _users[user.identifier] = persisted
         _request_user_metadata.set(persisted.metadata)
         return persisted
 

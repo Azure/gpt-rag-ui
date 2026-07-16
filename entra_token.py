@@ -15,6 +15,10 @@ class EntraTokenError(ValueError):
     """Raised when an embedded-session Entra token cannot be trusted."""
 
 
+class EntraClientNotAllowedError(EntraTokenError):
+    """Raised when a valid token was issued to an unauthorized portal client."""
+
+
 JwksLoader = Callable[[], Awaitable[Mapping[str, Any]]]
 
 
@@ -24,6 +28,7 @@ class EntraTokenValidator:
         *,
         tenant_id: str,
         audience: str,
+        allowed_client_ids: tuple[str, ...],
         required_scope: str = "user_impersonation",
         cache_ttl_seconds: int = 3600,
         unknown_key_refresh_interval_seconds: int = 60,
@@ -32,6 +37,19 @@ class EntraTokenValidator:
     ):
         self.tenant_id = normalize_guid(tenant_id, claim_name="tenant_id")
         self.audience = audience
+        try:
+            self.allowed_client_ids = frozenset(
+                normalize_guid(client_id, claim_name="allowed_client_id")
+                for client_id in allowed_client_ids
+            )
+        except ValueError as exc:
+            raise EntraTokenError(
+                "The authorized portal client list contains an invalid GUID."
+            ) from exc
+        if not self.allowed_client_ids:
+            raise EntraTokenError(
+                "At least one authorized portal client ID is required."
+            )
         self.required_scope = required_scope
         self.issuer = f"https://login.microsoftonline.com/{self.tenant_id}/v2.0"
         self.jwks_url = (
@@ -157,6 +175,22 @@ class EntraTokenValidator:
         except jwt.PyJWTError as exc:
             raise EntraTokenError("The Entra access token is invalid.") from exc
 
+        if claims.get("ver") != "2.0":
+            raise EntraTokenError("Only Entra v2.0 access tokens are accepted.")
+        try:
+            authorized_party = normalize_guid(
+                claims.get("azp"),
+                claim_name="azp",
+            )
+        except ValueError as exc:
+            raise EntraClientNotAllowedError(
+                "The Entra access token does not identify an authorized portal client."
+            ) from exc
+        if authorized_party not in self.allowed_client_ids:
+            raise EntraClientNotAllowedError(
+                "The Entra access token portal client is not allowed."
+            )
+
         try:
             token_tenant_id = normalize_guid(claims.get("tid"), claim_name="tid")
             object_id = normalize_guid(claims.get("oid"), claim_name="oid")
@@ -178,4 +212,5 @@ class EntraTokenValidator:
             )
         claims["tid"] = token_tenant_id
         claims["oid"] = object_id
+        claims["azp"] = authorized_party
         return claims
