@@ -3,7 +3,7 @@
 ## [Unreleased]
 
 ### Added
-- **Secure opt-in Chainlit Copilot embedding ([Azure/GPT-RAG#556](https://github.com/Azure/GPT-RAG/issues/556))**: Added a dedicated Entra bootstrap endpoint, bounded server-side token state behind an opaque `HttpOnly` session cookie, exact portal-origin enforcement for HTTP and Socket.IO/WebSocket traffic, authenticated principal/conversation/blob-bound SHA-256 citation grants with default-denied shared containers, `tid:oid` thread ownership, persistent Chainlit signing-secret enforcement, default-denied browser bridges, and an operator guide that documents Chainlit 2.9.4 Shadow DOM/CSP and single-replica limitations. Standalone OAuth remains a separate fail-closed policy.
+- **Secure opt-in Chainlit Copilot embedding ([Azure/GPT-RAG#556](https://github.com/Azure/GPT-RAG/issues/556))**: Added a dedicated Entra bootstrap endpoint, bounded per-principal server-side token state behind an opaque `HttpOnly` session cookie, moved standalone OAuth credentials out of Chainlit cookies and persisted profiles into bounded server memory, required a persistent signing secret in Copilot mode, added active socket/task invalidation on replacement or expiry, enforced exact portal origins for HTTP and Socket.IO/WebSocket traffic, added authenticated principal/conversation/blob-bound Copilot citation grants with default-denied shared containers, bound users and threads to `tid:oid`, default-denied browser bridges, and documented Chainlit 2.9.4 Shadow DOM, CSP, accessibility validation, and single-replica limitations. Copilot is opt-in; disabled deployments retain the existing standalone anonymous/OAuth and legacy citation-download behavior.
 
 ## [v2.3.13] - 2026-06-15
 

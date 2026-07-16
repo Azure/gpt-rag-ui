@@ -19,7 +19,8 @@ from conversation_security import (
     get_owned_conversation,
     principal_id_from_metadata,
 )
-from embed_auth import get_request_copilot_session
+from auth_session import current_user_metadata
+from embed_auth import current_copilot_session
 
 
 _CONTAINER_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])?$")
@@ -178,7 +179,7 @@ def is_download_target_allowed(
 async def resolve_download_principal(
     request: Request,
 ) -> DownloadPrincipal | None:
-    opaque_session = get_request_copilot_session()
+    opaque_session = current_copilot_session()
     if opaque_session:
         return DownloadPrincipal(
             principal_id=opaque_session.principal_id,
@@ -195,10 +196,19 @@ async def resolve_download_principal(
     if not user or not (user.metadata or {}).get("authorized", True):
         return None
 
-    metadata = dict(user.metadata or {})
-    principal_id = principal_id_from_metadata(metadata)
+    persisted_metadata = dict(user.metadata or {})
+    principal_id = principal_id_from_metadata(persisted_metadata)
     if not principal_id or principal_id != user.identifier:
         return None
+
+    runtime_metadata = current_user_metadata() or {}
+    if runtime_metadata:
+        runtime_principal = principal_id_from_metadata(runtime_metadata)
+        if runtime_principal != principal_id:
+            return None
+        metadata = runtime_metadata
+    else:
+        metadata = persisted_metadata
     return DownloadPrincipal(
         principal_id=principal_id,
         metadata=metadata,

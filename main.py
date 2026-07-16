@@ -1,7 +1,7 @@
 import logging
 import os
 import secrets
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from io import BytesIO
@@ -311,7 +311,7 @@ def _evaluate_auth_state(
     default_allow_anonymous = (
         False
         if embed_settings.enabled
-        else ((not running_in_azure_host) or (not oauth_configured))
+        else (not running_in_azure_host) or (not oauth_configured)
     )
 
     allow_anonymous_source = "default"
@@ -589,6 +589,102 @@ def _configure_embed_environment(settings: EmbedSettings) -> None:
     os.environ["CHAINLIT_PUBLIC_URL"] = settings.ui_origin
 
 
+def _create_legacy_download_app(
+    *,
+    download_from_blob: Callable[[str], bytes],
+    documents_container: str,
+    images_container: str,
+    copilot_sessions=None,
+) -> FastAPI:
+    """Build the pre-Copilot standalone download route unchanged."""
+
+    def handle_file_download(file_path: str):
+        try:
+            file_bytes = download_from_blob(file_path)
+            if not file_bytes:
+                return Response(
+                    "File not found or empty.",
+                    status_code=404,
+                    media_type="text/plain",
+                )
+        except Exception as exc:
+            error_message = str(exc)
+            status_code = 404 if "BlobNotFound" in error_message else 500
+            logger.exception("Download error for '%s'", file_path)
+            return Response(
+                (
+                    "Blob not found"
+                    if status_code == 404
+                    else "Internal server error"
+                )
+                + f": {error_message}.",
+                status_code=status_code,
+                media_type="text/plain",
+            )
+
+        actual_file_name = os.path.basename(file_path)
+        return StreamingResponse(
+            BytesIO(file_bytes),
+            media_type="application/octet-stream",
+            headers={
+                "Content-Disposition": (
+                    f'attachment; filename="{actual_file_name}"'
+                )
+            },
+        )
+
+    download_app = FastAPI()
+
+    @download_app.get("/{container_name}/{file_path:path}")
+    async def download_blob_file(
+        container_name: str,
+        file_path: str,
+    ):
+        from auth_session import current_oauth_credential
+        from embed_auth import current_copilot_session
+
+        if copilot_sessions:
+            standalone_credential = await current_oauth_credential()
+            if current_copilot_session() or not standalone_credential:
+                return Response(
+                    "Container not found",
+                    status_code=404,
+                    media_type="text/plain",
+                )
+
+        logger.info(
+            "Download request received: container=%s file=%s",
+            container_name,
+            file_path,
+        )
+        normalized = container_name.strip().strip("/")
+        target_container = None
+        if normalized == documents_container:
+            target_container = documents_container
+        elif normalized == images_container:
+            target_container = images_container
+
+        if not target_container:
+            logger.warning(
+                "Rejected download for unknown container '%s'",
+                container_name,
+            )
+            return Response(
+                "Container not found",
+                status_code=404,
+                media_type="text/plain",
+            )
+
+        return handle_file_download(f"{target_container}/{file_path}")
+
+    if copilot_sessions:
+        from auth_session import ChainlitAuthContextMiddleware
+
+        download_app.add_middleware(ChainlitAuthContextMiddleware)
+
+    return download_app
+
+
 def _create_chainlit_app(
     config: AppConfigClient,
     auth_state: AuthState | None = None,
@@ -600,9 +696,9 @@ def _create_chainlit_app(
     """
 
     embed_settings = embed_settings or EmbedSettings()
-    _configure_embed_environment(embed_settings)
-    _configure_auth_environment(config, auth_state)
     effective_auth = auth_state or _evaluate_auth_state(config, embed_settings)
+    _configure_embed_environment(embed_settings)
+    _configure_auth_environment(config, effective_auth)
     _sync_chainlit_spontaneous_file_upload(effective_auth)
 
     download_tokens = None
@@ -617,12 +713,10 @@ def _create_chainlit_app(
     copilot_sessions = None
     if embed_settings.enabled:
         from embed_auth import configure_session_store
-        from embed_security import disconnect_copilot_session
 
         copilot_sessions = configure_session_store(
             max_sessions=embed_settings.max_sessions,
             ttl_seconds=embed_settings.session_ttl_seconds,
-            on_invalidate=disconnect_copilot_session,
         )
 
     # Importing chainlit.config does not create the server app, so enabled
@@ -631,9 +725,18 @@ def _create_chainlit_app(
 
     configure_chainlit_allowed_origins(embed_settings, chainlit_config)
     from chainlit.server import app as chainlit_app, sio
+    from auth_session import ChainlitAuthContextMiddleware
     from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
     from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
     from starlette.middleware.cors import CORSMiddleware
+
+    if not getattr(
+        chainlit_app.state,
+        "gpt_rag_auth_context_middleware",
+        False,
+    ):
+        chainlit_app.add_middleware(ChainlitAuthContextMiddleware)
+        chainlit_app.state.gpt_rag_auth_context_middleware = True
 
     account_name = _get_str_config(config, "STORAGE_ACCOUNT_NAME")
     documents_container = _get_str_config(config, "DOCUMENTS_STORAGE_CONTAINER")
@@ -665,70 +768,12 @@ def _create_chainlit_app(
             logger.exception("Error downloading blob '%s'", file_name)
             raise
 
-    blob_download_app = None
-    if not embed_settings.enabled:
-        # Preserve the existing standalone route and response contract. Copilot
-        # mode registers a different, authenticated grant route on host_app.
-        blob_download_app = FastAPI()
-
-        def handle_file_download(file_path: str):
-            try:
-                file_bytes = download_from_blob(file_path)
-                if not file_bytes:
-                    return Response(
-                        "File not found or empty.",
-                        status_code=404,
-                        media_type="text/plain",
-                    )
-            except Exception as exc:
-                error_message = str(exc)
-                status_code = 404 if "BlobNotFound" in error_message else 500
-                logger.exception("Download error for '%s'", file_path)
-                return Response(
-                    (
-                        "Blob not found"
-                        if status_code == 404
-                        else "Internal server error"
-                    )
-                    + f": {error_message}.",
-                    status_code=status_code,
-                    media_type="text/plain",
-                )
-
-            actual_file_name = os.path.basename(file_path)
-            return StreamingResponse(
-                BytesIO(file_bytes),
-                media_type="application/octet-stream",
-                headers={
-                    "Content-Disposition": (
-                        f'attachment; filename="{actual_file_name}"'
-                    )
-                },
-            )
-
-        @blob_download_app.get("/{container_name}/{file_path:path}")
-        async def download_standalone_blob(
-            container_name: str,
-            file_path: str,
-        ):
-            logger.info(
-                "Download request received: container=%s file=%s",
-                container_name,
-                file_path,
-            )
-            normalized = container_name.strip().strip("/")
-            target_container = None
-            if normalized == documents_container:
-                target_container = documents_container
-            elif normalized == images_container:
-                target_container = images_container
-            if not target_container:
-                return Response(
-                    "Container not found",
-                    status_code=404,
-                    media_type="text/plain",
-                )
-            return handle_file_download(f"{target_container}/{file_path}")
+    legacy_download_app = _create_legacy_download_app(
+        download_from_blob=download_from_blob,
+        documents_container=documents_container,
+        images_container=images_container,
+        copilot_sessions=copilot_sessions,
+    )
 
     # One-time runtime auth-mode log (useful when operators attach to logs after startup).
     _auth_mode_logged = False
@@ -788,11 +833,13 @@ def _create_chainlit_app(
 
     host_app = FastAPI(title="GPT-RAG UI host")
     if embed_settings.enabled:
+        from auth_session import ChainlitAuthContextMiddleware
         from embed_security import (
             configure_copilot_bridge_guards,
             CopilotRequestMiddleware,
         )
 
+        host_app.add_middleware(ChainlitAuthContextMiddleware)
         host_app.add_middleware(
             CopilotRequestMiddleware,
             settings=embed_settings,
@@ -807,10 +854,9 @@ def _create_chainlit_app(
             allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
             allow_headers=["Authorization", "Content-Type"],
         )
-        configure_copilot_bridge_guards(sio)
+        configure_copilot_bridge_guards(sio, copilot_sessions)
         logger.info(
-            "Chainlit Copilot enabled: origins=%s cookie_samesite=%s "
-            "max_sessions=%s session_ttl_seconds=%s",
+            "Chainlit Copilot enabled: origins=%s cookie_samesite=%s max_sessions=%s session_ttl_seconds=%s",
             list(embed_settings.allowed_origins),
             embed_settings.cookie_samesite,
             embed_settings.max_sessions,
@@ -876,12 +922,10 @@ def _create_chainlit_app(
         }
         return JSONResponse(payload)
 
-    if blob_download_app is not None:
-        host_app.mount("/api/download", blob_download_app)
-        logger.info("Mounted standalone blob downloads at /api/download")
-
+    host_app.mount("/api/download", legacy_download_app)
     host_app.mount("/", chainlit_app)
 
+    logger.info("Mounted legacy blob download app at /api/download")
     logger.info("Mounted Chainlit app at / on host app")
 
     FastAPIInstrumentor.instrument_app(host_app)

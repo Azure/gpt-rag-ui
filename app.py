@@ -16,10 +16,15 @@ from orchestrator_client import call_orchestrator_stream
 from feedback import register_feedback_handlers,create_feedback_actions
 from dependencies import get_config
 from connectors import BlobClient
-from conversation_security import get_owned_conversation
 from ingestion_client import ingest_files_session
 from download_security import get_download_tokens, is_download_target_allowed
-from embed_auth import is_copilot_session_active, resolve_access_token
+from auth_session import (
+    current_chainlit_user,
+    current_user_metadata,
+    delete_current_oauth_credential,
+    OAUTH_SESSION_SOURCE,
+)
+from embed_auth import current_copilot_session, resolve_access_token
 
 from constants import APPLICATION_INSIGHTS_CONNECTION_STRING, APP_NAME, UUID_REGEX, REFERENCE_REGEX, TERMINATE_TOKEN
 from telemetry import Telemetry
@@ -61,7 +66,11 @@ if _allow_anonymous_effective is not None:
 else:
     ALLOW_ANONYMOUS = config.get(
         "ALLOW_ANONYMOUS",
-        not _is_running_in_azure_host,
+        (
+            False
+            if COPILOT_ENABLED
+            else (not _is_running_in_azure_host) or (not OAUTH_CONFIGURED)
+        ),
         bool,
     )
 STORAGE_ACCOUNT_NAME = config.get("STORAGE_ACCOUNT_NAME", "", str)
@@ -100,42 +109,53 @@ def extract_conversation_id_from_chunk(chunk: str) -> Tuple[Optional[str], str]:
         return conv_id, chunk[match.end():]
     return None, chunk
 
-
 def generate_blob_sas_url(
     container: str,
     blob_name: str,
     expiry_hours: int = 1,
 ) -> str:
-    """Preserve the standalone direct-SAS citation behavior."""
+    """Preserve the legacy standalone SAS citation behavior."""
 
-    blob_url = (
-        f"https://{STORAGE_ACCOUNT_NAME}.blob.core.windows.net/"
-        f"{container}/{blob_name}"
-    )
-    blob_client = BlobClient(blob_url=blob_url)
-    if not blob_client.exists():
-        logger.info(
-            "Blob not found: %s/%s - reference will be omitted",
-            container,
-            blob_name,
-        )
-        raise FileNotFoundError(f"Blob '{container}/{blob_name}' not found")
-
-    from datetime import timezone
-
-    expiry = datetime.now(timezone.utc) + timedelta(hours=expiry_hours)
     try:
-        return blob_client.generate_sas_url(
-            expiry=expiry,
-            permissions="r",
+        blob_url = (
+            f"https://{STORAGE_ACCOUNT_NAME}.blob.core.windows.net/"
+            f"{container}/{blob_name}"
         )
-    except AttributeError:
-        logger.warning(
-            "SAS generation not supported, using direct blob URL for %s/%s",
+        blob_client = BlobClient(blob_url=blob_url)
+        if not blob_client.exists():
+            logger.info(
+                "Blob not found: %s/%s - reference will be omitted",
+                container,
+                blob_name,
+            )
+            raise FileNotFoundError(
+                f"Blob '{container}/{blob_name}' not found"
+            )
+
+        from datetime import timezone
+
+        expiry = datetime.now(timezone.utc) + timedelta(hours=expiry_hours)
+        try:
+            return blob_client.generate_sas_url(
+                expiry=expiry,
+                permissions="r",
+            )
+        except AttributeError:
+            logger.warning(
+                "SAS generation not supported, using direct blob URL for %s/%s",
+                container,
+                blob_name,
+            )
+            return blob_url
+    except FileNotFoundError:
+        raise
+    except Exception:
+        logger.exception(
+            "Failed to generate blob URL for %s/%s",
             container,
             blob_name,
         )
-        return blob_url
+        raise
 
 
 def _resolve_legacy_reference_href(raw_href: str) -> Optional[str]:
@@ -154,6 +174,7 @@ def _resolve_legacy_reference_href(raw_href: str) -> Optional[str]:
     ).lstrip("/")
     query = f"?{split_href.query}" if split_href.query else ""
     fragment = f"#{split_href.fragment}" if split_href.fragment else ""
+
     extension = path.rsplit(".", 1)[-1].lower() if "." in path else ""
     container = DOCUMENTS_CONTAINER
     if extension in IMAGE_EXTENSIONS and IMAGES_CONTAINER:
@@ -174,18 +195,24 @@ def _resolve_legacy_reference_href(raw_href: str) -> Optional[str]:
         else:
             blob_name = path
         container = CONVERSATION_DOCUMENTS_CONTAINER
-    elif container and path.startswith(f"{container}/"):
-        blob_name = path[len(container) + 1 :]
+    elif container:
+        if path.startswith(f"{container}/"):
+            blob_name = path[len(container) + 1 :]
+        elif path:
+            blob_name = path
+        else:
+            blob_name = ""
     else:
         blob_name = path
 
     if not blob_name:
         return None
+
     try:
         sas_url = generate_blob_sas_url(container, blob_name)
     except FileNotFoundError:
         logger.info(
-            "Reference '%s' points to missing blob %s/%s",
+            "Reference '%s' points to missing blob %s/%s - omitting from output",
             raw_href,
             container,
             blob_name,
@@ -193,9 +220,8 @@ def _resolve_legacy_reference_href(raw_href: str) -> Optional[str]:
         return None
     except Exception:
         logger.warning(
-            "Failed to build SAS URL for reference '%s'",
+            "Failed to build SAS URL for reference '%s' - omitting from output",
             raw_href,
-            exc_info=True,
         )
         return None
 
@@ -205,7 +231,11 @@ def _resolve_legacy_reference_href(raw_href: str) -> Optional[str]:
     return sas_url
 
 
-def _resolve_secure_reference_href(
+def _uses_copilot_download_grants() -> bool:
+    return COPILOT_ENABLED and current_copilot_session() is not None
+
+
+def _resolve_copilot_reference_href(
     raw_href: str,
     *,
     conversation_id: str,
@@ -225,9 +255,6 @@ def _resolve_secure_reference_href(
         except RuntimeError:
             return None
         return href if href.startswith(download_prefix) else None
-
-    if href.startswith("/api/download/") or href.startswith("api/download/"):
-        return None
 
     path = urllib.parse.unquote(split_href.path.replace("\\", "/")).lstrip("/")
     fragment = f"#{split_href.fragment}" if split_href.fragment else ""
@@ -303,9 +330,9 @@ def resolve_reference_href(
     conversation_id: str = "",
     principal_id: str = "",
 ) -> Optional[str]:
-    if not COPILOT_ENABLED:
+    if not _uses_copilot_download_grants():
         return _resolve_legacy_reference_href(raw_href)
-    return _resolve_secure_reference_href(
+    return _resolve_copilot_reference_href(
         raw_href,
         conversation_id=conversation_id,
         principal_id=principal_id,
@@ -334,37 +361,36 @@ def replace_source_reference_links(
         if resolved_href:
             if references is not None:
                 references.add(resolved_href)
-            logger.debug("Resolved reference '%s' -> '%s'", raw_href, resolved_href)
+            logger.debug("Resolved reference '%s'", raw_href)
             return f"[{display_text}]({resolved_href})"
-        if COPILOT_ENABLED:
+        if not _uses_copilot_download_grants():
             logger.debug(
-                "Rendering citation '%s' without an unauthorized link",
+                "Omitting reference '[%s](%s)' - target not found",
                 display_text,
+                raw_href,
             )
-            return display_text
-        logger.debug(
-            "Omitting reference '[%s](%s)' - target not found",
-            display_text,
-            raw_href,
-        )
-        return ""
+            return ""
+        logger.debug("Rendering citation '%s' without an unauthorized link", display_text)
+        return display_text
 
     return REFERENCE_REGEX.sub(replacer, text)
 
 def check_authorization() -> dict:
     app_user = cl.user_session.get("user")
     if app_user:
-        metadata = app_user.metadata or {}
+        runtime_user = current_chainlit_user()
+        metadata = (
+            current_user_metadata()
+            if runtime_user
+            and runtime_user.identifier == app_user.identifier
+            else None
+        ) or app_user.metadata or {}
         return {
             'authorized': metadata.get('authorized', True),
             'client_principal_id': metadata.get('client_principal_id', 'no-auth'),
             'client_principal_name': metadata.get('client_principal_name', 'anonymous'),
             'client_group_names': metadata.get('client_group_names', []),
-            'access_token': (
-                metadata.get('access_token')
-                if metadata.get("auth_source") != "copilot_session"
-                else None
-            ),
+            'access_token': None,
             'principal_id': metadata.get('principal_id', ''),
             'tenant_id': metadata.get('tenant_id', ''),
             'object_id': metadata.get('object_id', ''),
@@ -395,8 +421,14 @@ async def get_auth_info() -> dict:
 
     app_user = cl.user_session.get("user")
     if app_user:
-        metadata = app_user.metadata or {}
-        if metadata.get("auth_source") == "copilot_session":
+        runtime_user = current_chainlit_user()
+        if runtime_user and runtime_user.identifier == app_user.identifier:
+            metadata = dict(runtime_user.metadata or {})
+        else:
+            runtime_user = app_user
+            metadata = dict(app_user.metadata or {})
+
+        if current_copilot_session():
             access_token = await resolve_access_token(metadata)
             if not access_token:
                 logger.warning(
@@ -414,18 +446,17 @@ async def get_auth_info() -> dict:
                     'access_token': None,
                     'auth_error': 'session_expired',
                 }
-        else:
-            access_token = metadata.get("access_token")
-
-        # Opportunistic token refresh (OAuth mode only).
-        if metadata.get("auth_source") == "oauth":
+        elif metadata.get("auth_source") == OAUTH_SESSION_SOURCE:
             try:
-                # Import is safe because we import auth_oauth only when OAUTH_CONFIGURED.
-                refreshed = await auth_oauth.ensure_fresh_user_access_token(app_user, min_ttl_seconds=120)
-                if refreshed:
-                    cl.user_session.set("user", app_user)
+                # Credentials remain in bounded server memory, never in the user JWT.
+                await auth_oauth.ensure_fresh_user_access_token(
+                    runtime_user,
+                    min_ttl_seconds=120,
+                )
+                access_token = await resolve_access_token(metadata)
             except Exception:
                 # If refresh fails, clear the user session so the UI can re-auth.
+                await delete_current_oauth_credential()
                 logger.warning("User access token refresh failed; clearing session to force re-auth", exc_info=True)
                 cl.user_session.set("user", None)
                 return {
@@ -436,6 +467,25 @@ async def get_auth_info() -> dict:
                     'access_token': None,
                     'auth_error': 'session_expired',
                 }
+        else:
+            access_token = await resolve_access_token(metadata)
+
+        if OAUTH_CONFIGURED and not access_token:
+            logger.warning(
+                "Authenticated session has no active server-side credential for user=%s",
+                metadata.get("client_principal_name")
+                or metadata.get("client_principal_id")
+                or app_user.identifier,
+            )
+            cl.user_session.set("user", None)
+            return {
+                'authorized': False,
+                'client_principal_id': 'no-auth',
+                'client_principal_name': 'anonymous',
+                'client_group_names': [],
+                'access_token': None,
+                'auth_error': 'session_expired',
+            }
 
         return {
             'authorized': metadata.get('authorized', True),
@@ -539,11 +589,7 @@ async def on_chat_start():
 @cl.on_chat_resume
 async def on_chat_resume(thread: ThreadDict):
     app_user = cl.user_session.get("user")
-    if (
-        not app_user
-        or not await is_copilot_session_active(app_user.metadata)
-        or thread.get("userIdentifier") != app_user.identifier
-    ):
+    if not app_user or thread.get("userIdentifier") != app_user.identifier:
         logger.warning("Blocked unauthorized chat resume: thread=%s", thread["id"])
         raise PermissionError("Thread access denied.")
     cl.user_session.set("conversation_id", thread["id"])
@@ -556,7 +602,6 @@ async def handle_message(message: cl.Message):
 
         message.id = message.id or str(uuid.uuid4())
         conversation_id = cl.user_session.get("conversation_id") or ""
-        existing_conversation_id = str(conversation_id).strip()
         response_msg = cl.Message(content="")
 
         def _trim_for_log(value: str, limit: int = 400) -> str:
@@ -644,22 +689,6 @@ async def handle_message(message: cl.Message):
         if len(uploaded_files) > max_files:
             rejected.extend([f["name"] + " (too many files)" for f in uploaded_files[max_files:]])
             uploaded_files = uploaded_files[:max_files]
-
-        if uploaded_files and existing_conversation_id:
-            owned_conversation = await get_owned_conversation(
-                existing_conversation_id,
-                auth_info,
-            )
-            if not owned_conversation:
-                logger.warning(
-                    "Blocked upload to missing or unauthorized conversation=%s",
-                    existing_conversation_id,
-                )
-                rejected.extend(
-                    f"{file['name']} (conversation access denied)"
-                    for file in uploaded_files
-                )
-                uploaded_files = []
 
         if rejected:
             _skip_msg = "Some files were skipped:\n- " + "\n- ".join(rejected) + "\n\n"

@@ -5,8 +5,9 @@ import re
 import secrets
 import time
 from collections import OrderedDict
-from collections.abc import Awaitable, Callable
-from contextvars import ContextVar, Token
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from http.cookies import CookieError, SimpleCookie
 from typing import Protocol
@@ -19,17 +20,23 @@ from fastapi import FastAPI, status
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
-from auth_common import canonical_principal_id, is_user_authorized
+from auth_common import (
+    canonical_principal_id,
+    is_user_authorized,
+    safe_profile_metadata,
+)
+from auth_session import current_oauth_credential
 from connectors.appconfig import AppConfigClient
 from embed_config import EmbedSettings
 from entra_token import EntraTokenError
 
 
-COPILOT_SESSION_COOKIE = "gpt_rag_copilot_session"
 logger = logging.getLogger("gpt_rag_ui.embed_auth")
-_SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{43}$")
 
-SessionInvalidationCallback = Callable[[str], Awaitable[None]]
+COPILOT_SESSION_COOKIE = "gpt_rag_copilot_session"
+COPILOT_SCOPE_SESSION_KEY = "gpt_rag.copilot_session_id"
+DEFAULT_MAX_CONNECTIONS_PER_SESSION = 4
+_SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{43}$")
 
 
 @dataclass(frozen=True)
@@ -41,24 +48,49 @@ class CopilotSession:
     access_token: str = field(repr=False)
     chainlit_token: str = field(repr=False)
     expires_at: int
-    display_name: str
-    principal_name: str
     group_ids: tuple[str, ...] = ()
 
     def user_metadata(self) -> dict:
-        return {
-            "authorized": True,
-            "auth_source": "copilot_session",
-            "copilot_session_id": self.session_id,
-            "tenant_id": self.tenant_id,
-            "object_id": self.object_id,
-            "principal_id": self.principal_id,
-            # Downstream ACL and orchestrator contracts use a bare Entra oid.
-            "client_principal_id": self.object_id,
-            "client_principal_name": self.principal_name,
-            "user_name": self.principal_id,
-            "client_group_names": list(self.group_ids),
-        }
+        """Return only canonical profile data for the current request."""
+
+        return safe_profile_metadata(
+            {
+                "authorized": True,
+                "tenant_id": self.tenant_id,
+                "object_id": self.object_id,
+                "principal_id": self.principal_id,
+                "client_group_names": list(self.group_ids),
+            }
+        )
+
+
+@dataclass(frozen=True)
+class CopilotSessionInvalidation:
+    session: CopilotSession
+    reason: str
+    socket_ids: tuple[str, ...] = ()
+    chainlit_session_ids: tuple[str, ...] = ()
+
+
+InvalidationHandler = Callable[[CopilotSessionInvalidation], Awaitable[None]]
+
+_current_copilot_session: ContextVar[CopilotSession | None] = ContextVar(
+    "current_copilot_session",
+    default=None,
+)
+
+
+@contextmanager
+def bind_copilot_session(session: CopilotSession) -> Iterator[None]:
+    token = _current_copilot_session.set(session)
+    try:
+        yield
+    finally:
+        _current_copilot_session.reset(token)
+
+
+def current_copilot_session() -> CopilotSession | None:
+    return _current_copilot_session.get()
 
 
 class CopilotSessionStore:
@@ -67,67 +99,130 @@ class CopilotSessionStore:
         *,
         max_sessions: int,
         ttl_seconds: int,
-        on_invalidate: SessionInvalidationCallback | None = None,
+        max_connections_per_session: int = DEFAULT_MAX_CONNECTIONS_PER_SESSION,
     ):
-        if max_sessions < 1 or ttl_seconds < 1:
-            raise ValueError("Copilot session bounds must be positive.")
         self.max_sessions = max_sessions
         self.ttl_seconds = ttl_seconds
+        self.max_connections_per_session = max_connections_per_session
         self._sessions: OrderedDict[str, CopilotSession] = OrderedDict()
-        self._expiry_tasks: dict[str, asyncio.Task[None]] = {}
+        self._principal_sessions: dict[str, str] = {}
+        self._session_sockets: dict[str, set[str]] = {}
+        self._socket_sessions: dict[str, str] = {}
+        self._socket_chainlit_sessions: dict[str, str] = {}
+        self._session_chainlit_sessions: dict[str, OrderedDict[str, None]] = {}
+        self._chainlit_sessions: dict[str, str] = {}
+        self._expiry_handles: dict[str, asyncio.TimerHandle] = {}
+        self._on_invalidate: InvalidationHandler | None = None
         self._lock = asyncio.Lock()
-        self._on_invalidate = on_invalidate
 
-    def _cancel_expiry_locked(self, session_id: str) -> None:
-        task = self._expiry_tasks.pop(session_id, None)
-        if task and task is not asyncio.current_task():
-            task.cancel()
+    def set_invalidation_handler(
+        self,
+        handler: InvalidationHandler | None,
+    ) -> None:
+        self._on_invalidate = handler
 
-    def _remove_locked(self, session_id: str) -> CopilotSession | None:
+    def _schedule_expiry_locked(self, session: CopilotSession) -> None:
+        delay = max(0, session.expires_at - int(time.time()))
+        loop = asyncio.get_running_loop()
+        self._expiry_handles[session.session_id] = loop.call_later(
+            delay,
+            lambda: asyncio.create_task(
+                self._expire_if_due(session.session_id)
+            ),
+        )
+
+    def _remove_locked(
+        self,
+        session_id: str,
+        *,
+        reason: str,
+    ) -> CopilotSessionInvalidation | None:
         session = self._sessions.pop(session_id, None)
-        self._cancel_expiry_locked(session_id)
-        return session
+        if not session:
+            return None
 
-    def _prune_locked(self, now: int) -> list[str]:
-        expired = [
+        handle = self._expiry_handles.pop(session_id, None)
+        if handle:
+            handle.cancel()
+        if self._principal_sessions.get(session.principal_id) == session_id:
+            self._principal_sessions.pop(session.principal_id, None)
+
+        socket_ids = tuple(self._session_sockets.pop(session_id, set()))
+        chainlit_ids = tuple(
+            self._session_chainlit_sessions.pop(
+                session_id,
+                OrderedDict(),
+            ).keys()
+        )
+        for chainlit_id in chainlit_ids:
+            if self._chainlit_sessions.get(chainlit_id) == session_id:
+                self._chainlit_sessions.pop(chainlit_id, None)
+
+        return CopilotSessionInvalidation(
+            session=session,
+            reason=reason,
+            socket_ids=socket_ids,
+            chainlit_session_ids=chainlit_ids,
+        )
+
+    def _prune_locked(self, now: int) -> list[CopilotSessionInvalidation]:
+        expired_ids = [
             session_id
             for session_id, session in self._sessions.items()
             if session.expires_at <= now
         ]
-        for session_id in expired:
-            self._remove_locked(session_id)
-        return expired
+        return [
+            invalidation
+            for session_id in expired_ids
+            if (
+                invalidation := self._remove_locked(
+                    session_id,
+                    reason="expired",
+                )
+            )
+        ]
 
-    async def _expire_at(self, session_id: str, expires_at: int) -> None:
-        try:
-            while True:
-                delay = expires_at - time.time()
-                if delay > 0:
-                    await asyncio.sleep(delay)
+    async def _cleanup_socket_associations(
+        self,
+        invalidation: CopilotSessionInvalidation,
+    ) -> None:
+        async with self._lock:
+            for socket_id in invalidation.socket_ids:
+                if (
+                    self._socket_sessions.get(socket_id)
+                    == invalidation.session.session_id
+                ):
+                    self._socket_sessions.pop(socket_id, None)
+                    self._socket_chainlit_sessions.pop(socket_id, None)
 
-                async with self._lock:
-                    session = self._sessions.get(session_id)
-                    if not session or session.expires_at != expires_at:
-                        return
-                    if session.expires_at > time.time():
-                        continue
-                    self._sessions.pop(session_id, None)
-                    self._expiry_tasks.pop(session_id, None)
-                await self._notify_invalidated([session_id])
-                return
-        except asyncio.CancelledError:
-            return
-
-    async def _notify_invalidated(self, session_ids: list[str]) -> None:
-        if not self._on_invalidate:
-            return
-        for session_id in dict.fromkeys(session_ids):
+    async def _notify_invalidations(
+        self,
+        invalidations: list[CopilotSessionInvalidation],
+    ) -> None:
+        for invalidation in invalidations:
             try:
-                await self._on_invalidate(session_id)
+                if self._on_invalidate:
+                    await self._on_invalidate(invalidation)
             except Exception:
                 logger.exception(
-                    "Failed to disconnect invalidated Copilot session"
+                    "Failed to invalidate Copilot session resources: reason=%s",
+                    invalidation.reason,
                 )
+            finally:
+                await self._cleanup_socket_associations(invalidation)
+
+    async def _expire_if_due(self, session_id: str) -> None:
+        invalidations: list[CopilotSessionInvalidation] = []
+        async with self._lock:
+            session = self._sessions.get(session_id)
+            if session and session.expires_at <= int(time.time()):
+                invalidation = self._remove_locked(
+                    session_id,
+                    reason="expired",
+                )
+                if invalidation:
+                    invalidations.append(invalidation)
+        await self._notify_invalidations(invalidations)
 
     async def replace(
         self,
@@ -144,31 +239,25 @@ class CopilotSessionStore:
         if expires_at <= now:
             raise ValueError("The Entra access token has expired.")
 
-        tenant_id = str(claims["tid"])
-        object_id = str(claims["oid"])
+        tenant_id = str(claims["tid"]).lower()
+        object_id = str(claims["oid"]).lower()
         principal_id = canonical_principal_id(tenant_id, object_id)
-        tenant_id, object_id = principal_id.split(":", 1)
         session_id = secrets.token_urlsafe(32)
-        group_ids = tuple(
-            str(group)
-            for group in claims.get("groups", [])
-            if isinstance(group, str)
-        )
-        user = User(
-            identifier=principal_id,
-            display_name=display_name,
-            metadata={
+        profile = safe_profile_metadata(
+            {
                 "authorized": True,
-                "auth_source": "copilot_session",
-                "copilot_session_id": session_id,
                 "tenant_id": tenant_id,
                 "object_id": object_id,
                 "principal_id": principal_id,
-                "client_principal_id": object_id,
                 "client_principal_name": principal_name,
-                "user_name": principal_id,
-                "client_group_names": list(group_ids),
-            },
+                "client_group_names": claims.get("groups", []),
+            }
+        )
+        group_ids = tuple(profile["client_group_names"])
+        user = User(
+            identifier=principal_id,
+            display_name=display_name,
+            metadata=profile,
         )
         chainlit_token = create_embed_session_jwt(user, expires_at)
         session = CopilotSession(
@@ -179,76 +268,193 @@ class CopilotSessionStore:
             access_token=access_token,
             chainlit_token=chainlit_token,
             expires_at=expires_at,
-            display_name=display_name,
-            principal_name=principal_name,
             group_ids=group_ids,
         )
 
-        invalidated: list[str] = []
+        invalidations: list[CopilotSessionInvalidation] = []
         async with self._lock:
-            invalidated.extend(self._prune_locked(now))
+            invalidations.extend(self._prune_locked(now))
+
             if previous_session_id:
-                self._remove_locked(previous_session_id)
-                invalidated.append(previous_session_id)
+                previous = self._remove_locked(
+                    previous_session_id,
+                    reason="replaced",
+                )
+                if previous:
+                    invalidations.append(previous)
+
+            principal_session_id = self._principal_sessions.get(principal_id)
+            if principal_session_id:
+                previous = self._remove_locked(
+                    principal_session_id,
+                    reason="principal_replaced",
+                )
+                if previous:
+                    invalidations.append(previous)
+
             self._sessions[session_id] = session
-            self._expiry_tasks[session_id] = asyncio.create_task(
-                self._expire_at(session_id, expires_at),
-                name=f"copilot-session-expiry-{session_id[:8]}",
-            )
+            self._principal_sessions[principal_id] = session_id
+            self._schedule_expiry_locked(session)
+
             while len(self._sessions) > self.max_sessions:
-                evicted_id, _ = self._sessions.popitem(last=False)
-                self._cancel_expiry_locked(evicted_id)
-                invalidated.append(evicted_id)
-        await self._notify_invalidated(invalidated)
+                oldest_session_id = next(iter(self._sessions))
+                evicted = self._remove_locked(
+                    oldest_session_id,
+                    reason="capacity",
+                )
+                if evicted:
+                    invalidations.append(evicted)
+
+        await self._notify_invalidations(invalidations)
         return session
 
     async def get(self, session_id: str | None) -> CopilotSession | None:
-        if not is_valid_session_id(session_id):
+        if not session_id:
             return None
-        now = int(time.time())
+        invalidations: list[CopilotSessionInvalidation] = []
         async with self._lock:
-            invalidated = self._prune_locked(now)
+            invalidations.extend(self._prune_locked(int(time.time())))
             session = self._sessions.get(session_id)
             if session:
                 self._sessions.move_to_end(session_id)
-        await self._notify_invalidated(invalidated)
+        await self._notify_invalidations(invalidations)
         return session
 
-    async def delete(self, session_id: str | None) -> None:
-        if not is_valid_session_id(session_id):
+    async def delete(
+        self,
+        session_id: str | None,
+        *,
+        reason: str = "logout",
+    ) -> None:
+        if not session_id:
             return
+        invalidations: list[CopilotSessionInvalidation] = []
         async with self._lock:
-            self._remove_locked(session_id)
-        # Always notify. The process may still have a live upgraded socket after
-        # the bounded state entry was evicted or expired.
-        await self._notify_invalidated([session_id])
+            invalidation = self._remove_locked(session_id, reason=reason)
+            if invalidation:
+                invalidations.append(invalidation)
+        await self._notify_invalidations(invalidations)
+
+    async def bind_connection(
+        self,
+        *,
+        session_id: str,
+        socket_id: str,
+        chainlit_session_id: str,
+    ) -> bool:
+        invalidations: list[CopilotSessionInvalidation] = []
+        admitted = False
+        async with self._lock:
+            invalidations.extend(self._prune_locked(int(time.time())))
+            session = self._sessions.get(session_id)
+            if session:
+                chainlit_ids = self._session_chainlit_sessions.setdefault(
+                    session_id,
+                    OrderedDict(),
+                )
+                is_existing_chainlit_session = chainlit_session_id in chainlit_ids
+                if (
+                    is_existing_chainlit_session
+                    or len(chainlit_ids) < self.max_connections_per_session
+                ):
+                    for old_socket_id, old_chainlit_id in list(
+                        self._socket_chainlit_sessions.items()
+                    ):
+                        if old_chainlit_id != chainlit_session_id:
+                            continue
+                        old_session_id = self._socket_sessions.pop(
+                            old_socket_id,
+                            None,
+                        )
+                        self._socket_chainlit_sessions.pop(old_socket_id, None)
+                        if old_session_id:
+                            self._session_sockets.get(
+                                old_session_id,
+                                set(),
+                            ).discard(old_socket_id)
+
+                    chainlit_ids[chainlit_session_id] = None
+                    chainlit_ids.move_to_end(chainlit_session_id)
+                    self._chainlit_sessions[chainlit_session_id] = session_id
+                    self._session_sockets.setdefault(session_id, set()).add(
+                        socket_id
+                    )
+                    self._socket_sessions[socket_id] = session_id
+                    self._socket_chainlit_sessions[
+                        socket_id
+                    ] = chainlit_session_id
+                    admitted = True
+        await self._notify_invalidations(invalidations)
+        return admitted
+
+    async def unbind_socket(self, socket_id: str) -> None:
+        async with self._lock:
+            session_id = self._socket_sessions.pop(socket_id, None)
+            self._socket_chainlit_sessions.pop(socket_id, None)
+            if session_id:
+                self._session_sockets.get(session_id, set()).discard(socket_id)
+
+    async def release_chainlit_session(self, chainlit_session_id: str) -> None:
+        async with self._lock:
+            session_id = self._chainlit_sessions.pop(
+                chainlit_session_id,
+                None,
+            )
+            if session_id:
+                self._session_chainlit_sessions.get(
+                    session_id,
+                    OrderedDict(),
+                ).pop(chainlit_session_id, None)
+            for socket_id, mapped_chainlit_id in list(
+                self._socket_chainlit_sessions.items()
+            ):
+                if mapped_chainlit_id != chainlit_session_id:
+                    continue
+                mapped_session_id = self._socket_sessions.pop(socket_id, None)
+                self._socket_chainlit_sessions.pop(socket_id, None)
+                if mapped_session_id:
+                    self._session_sockets.get(
+                        mapped_session_id,
+                        set(),
+                    ).discard(socket_id)
+
+    async def chainlit_session_owner(
+        self,
+        chainlit_session_id: str,
+    ) -> str | None:
+        async with self._lock:
+            return self._chainlit_sessions.get(chainlit_session_id)
+
+    async def socket_is_active(self, socket_id: str) -> bool:
+        invalidations: list[CopilotSessionInvalidation] = []
+        async with self._lock:
+            invalidations.extend(self._prune_locked(int(time.time())))
+            session_id = self._socket_sessions.get(socket_id)
+            active = bool(session_id and session_id in self._sessions)
+        await self._notify_invalidations(invalidations)
+        return active
 
     async def count(self) -> int:
+        invalidations: list[CopilotSessionInvalidation] = []
         async with self._lock:
-            invalidated = self._prune_locked(int(time.time()))
+            invalidations.extend(self._prune_locked(int(time.time())))
             count = len(self._sessions)
-        await self._notify_invalidated(invalidated)
+        await self._notify_invalidations(invalidations)
         return count
 
 
 _session_store: CopilotSessionStore | None = None
-_request_copilot_session: ContextVar[CopilotSession | None] = ContextVar(
-    "request_copilot_session",
-    default=None,
-)
 
 
 def configure_session_store(
     *,
     max_sessions: int,
     ttl_seconds: int,
-    on_invalidate: SessionInvalidationCallback | None = None,
 ) -> CopilotSessionStore:
     global _session_store
     _session_store = CopilotSessionStore(
         max_sessions=max_sessions,
         ttl_seconds=ttl_seconds,
-        on_invalidate=on_invalidate,
     )
     return _session_store
 
@@ -259,26 +465,13 @@ def get_session_store() -> CopilotSessionStore:
     return _session_store
 
 
-def bind_request_copilot_session(
-    session: CopilotSession,
-) -> Token[CopilotSession | None]:
-    return _request_copilot_session.set(session)
-
-
-def reset_request_copilot_session(token: Token[CopilotSession | None]) -> None:
-    _request_copilot_session.reset(token)
-
-
-def get_request_copilot_session() -> CopilotSession | None:
-    return _request_copilot_session.get()
-
-
-def is_valid_session_id(value: str | None) -> bool:
-    return bool(value and _SESSION_ID_PATTERN.fullmatch(value))
-
-
 def create_embed_session_jwt(user: User, expires_at: int) -> str:
-    session_token = create_jwt(user)
+    safe_user = User(
+        identifier=user.identifier,
+        display_name=user.display_name,
+        metadata=safe_profile_metadata(user.metadata),
+    )
+    session_token = create_jwt(safe_user)
     payload = jwt.decode(
         session_token,
         options={"verify_signature": False},
@@ -287,9 +480,7 @@ def create_embed_session_jwt(user: User, expires_at: int) -> str:
     payload["exp"] = min(int(payload["exp"]), int(expires_at))
     secret = os.environ.get("CHAINLIT_AUTH_SECRET")
     if not secret:
-        raise RuntimeError(
-            "CHAINLIT_AUTH_SECRET is required for authenticated sessions."
-        )
+        raise RuntimeError("CHAINLIT_AUTH_SECRET is required for authenticated sessions.")
     return jwt.encode(payload, secret, algorithm="HS256")
 
 
@@ -310,7 +501,11 @@ def set_copilot_session_cookie(
     )
 
 
-def clear_copilot_session_cookie(response: Response, *, same_site: str) -> None:
+def clear_copilot_session_cookie(
+    response: Response,
+    *,
+    same_site: str,
+) -> None:
     response.delete_cookie(
         key=COPILOT_SESSION_COOKIE,
         path="/",
@@ -346,6 +541,44 @@ def session_id_from_request(request: Request) -> str | None:
     return session_id if is_valid_session_id(session_id) else None
 
 
+def is_valid_session_id(value: str | None) -> bool:
+    return bool(value and _SESSION_ID_PATTERN.fullmatch(value))
+
+
+def _metadata_principal_id(metadata: dict | None) -> str:
+    metadata = metadata or {}
+    try:
+        return canonical_principal_id(
+            str(metadata.get("tenant_id") or ""),
+            str(metadata.get("object_id") or ""),
+        )
+    except ValueError:
+        return ""
+
+
+async def resolve_access_token(metadata: dict | None) -> str | None:
+    """Resolve a credential from only the current authenticated session."""
+
+    metadata = metadata or {}
+    copilot_session = current_copilot_session()
+    if copilot_session:
+        active_session = await get_session_store().get(
+            copilot_session.session_id
+        )
+        if not active_session:
+            return None
+        metadata_principal = _metadata_principal_id(metadata)
+        if (
+            metadata_principal
+            and metadata_principal != active_session.principal_id
+        ):
+            return None
+        return active_session.access_token
+
+    credential = await current_oauth_credential(metadata)
+    return credential.access_token if credential else None
+
+
 class TokenValidator(Protocol):
     async def validate(self, token: str) -> dict:
         ...
@@ -358,15 +591,14 @@ def _auth_error_response(
     settings: EmbedSettings,
     clear_cookie: bool = True,
 ) -> JSONResponse:
-    headers = {
-        "Cache-Control": "no-store",
-        "Pragma": "no-cache",
-        "Vary": "Origin",
-    }
     response = JSONResponse(
         {"detail": detail},
         status_code=status_code,
-        headers=headers,
+        headers={
+            "Cache-Control": "no-store",
+            "Pragma": "no-cache",
+            "Vary": "Origin",
+        },
     )
     if clear_cookie:
         clear_copilot_session_cookie(
@@ -454,11 +686,7 @@ def register_copilot_auth_routes(
             or claims.get("upn")
             or ""
         )
-        if not is_user_authorized(
-            config,
-            principal_name,
-            principal_id,
-        ):
+        if not is_user_authorized(config, principal_name, principal_id):
             logger.warning("Copilot bootstrap denied principal=%s", principal_id)
             if previous_session:
                 await sessions.delete(previous_session.session_id)
@@ -516,25 +744,3 @@ def register_copilot_auth_routes(
             same_site=settings.cookie_samesite,
         )
         return response
-
-async def resolve_access_token(metadata: dict | None) -> str | None:
-    metadata = metadata or {}
-    if metadata.get("auth_source") != "copilot_session":
-        token = str(metadata.get("access_token") or "").strip()
-        return token or None
-
-    try:
-        store = get_session_store()
-    except RuntimeError:
-        return None
-    session = await store.get(str(metadata.get("copilot_session_id") or ""))
-    if not session or session.principal_id != metadata.get("principal_id"):
-        return None
-    return session.access_token
-
-
-async def is_copilot_session_active(metadata: dict | None) -> bool:
-    metadata = metadata or {}
-    if metadata.get("auth_source") != "copilot_session":
-        return True
-    return bool(await resolve_access_token(metadata))

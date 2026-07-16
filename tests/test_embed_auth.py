@@ -1,4 +1,3 @@
-import asyncio
 import os
 import time
 import unittest
@@ -11,7 +10,6 @@ from chainlit.user import User
 from fastapi import FastAPI
 from starlette.responses import Response
 
-from embed_config import EmbedSettings
 from embed_auth import (
     COPILOT_SESSION_COOKIE,
     CopilotSessionStore,
@@ -20,11 +18,13 @@ from embed_auth import (
     register_copilot_auth_routes,
     set_copilot_session_cookie,
 )
+from embed_config import EmbedSettings
 from entra_token import EntraTokenError
 
 
 TENANT_ID = "11111111-2222-3333-4444-555555555555"
 OBJECT_ID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+GROUP_ID = "bbbbbbbb-cccc-dddd-eeee-ffffffffffff"
 PRINCIPAL_ID = f"{TENANT_ID}:{OBJECT_ID}"
 
 
@@ -50,7 +50,14 @@ class EmbedAuthTests(unittest.IsolatedAsyncioTestCase):
         expires_at = int(time.time()) + 120
         user = User(
             identifier=f"{TENANT_ID}:{OBJECT_ID}",
-            metadata={"copilot_session_id": "opaque-id"},
+            metadata={
+                "tenant_id": TENANT_ID,
+                "object_id": OBJECT_ID,
+                "principal_id": f"{TENANT_ID}:{OBJECT_ID}",
+                "copilot_session_id": "opaque-id",
+                "access_token": "entra-secret",
+                "refresh_token": "refresh-secret",
+            },
         )
 
         session_token = create_embed_session_jwt(user, expires_at)
@@ -62,6 +69,10 @@ class EmbedAuthTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(expires_at, claims["exp"])
         self.assertNotIn("access_token", str(claims))
+        self.assertNotIn("refresh_token", str(claims))
+        self.assertNotIn("copilot_session_id", str(claims))
+        self.assertNotIn("opaque-id", str(claims))
+        self.assertNotIn("entra-secret", str(claims))
 
     async def test_sensitive_tokens_are_not_in_session_repr(self):
         store = CopilotSessionStore(max_sessions=1, ttl_seconds=120)
@@ -72,6 +83,7 @@ class EmbedAuthTests(unittest.IsolatedAsyncioTestCase):
                 "tid": TENANT_ID,
                 "oid": OBJECT_ID,
                 "exp": int(time.time()) + 600,
+                "groups": [GROUP_ID.upper(), "not-a-group-id"],
             },
             display_name="User",
             principal_name="user@example.com",
@@ -93,6 +105,15 @@ class EmbedAuthTests(unittest.IsolatedAsyncioTestCase):
             OBJECT_ID,
             claims["metadata"]["client_principal_id"],
         )
+        self.assertEqual((GROUP_ID,), session.group_ids)
+        self.assertEqual(
+            [GROUP_ID],
+            claims["metadata"]["client_group_names"],
+        )
+        self.assertNotIn("auth_source", claims["metadata"])
+        self.assertNotIn("copilot_session_id", claims["metadata"])
+        self.assertNotIn("access_token", claims["metadata"])
+        self.assertNotIn("refresh_token", claims["metadata"])
 
     async def test_store_caps_expiry_and_replaces_previous_session(self):
         store = CopilotSessionStore(max_sessions=2, ttl_seconds=120)
@@ -155,6 +176,177 @@ class EmbedAuthTests(unittest.IsolatedAsyncioTestCase):
                 principal_name="",
             )
 
+    async def test_cookie_less_rebootstrap_replaces_same_principal(self):
+        invalidated = AsyncMock()
+        store = CopilotSessionStore(max_sessions=5, ttl_seconds=120)
+        store.set_invalidation_handler(invalidated)
+        claims = {
+            "tid": TENANT_ID,
+            "oid": OBJECT_ID,
+            "exp": int(time.time()) + 600,
+        }
+        first = await store.replace(
+            previous_session_id=None,
+            access_token="first-token",
+            claims=claims,
+            display_name="User",
+            principal_name="user@example.com",
+        )
+        self.assertTrue(
+            await store.bind_connection(
+                session_id=first.session_id,
+                socket_id="socket-one",
+                chainlit_session_id="chainlit-one",
+            )
+        )
+
+        second = await store.replace(
+            previous_session_id=None,
+            access_token="second-token",
+            claims=claims,
+            display_name="User",
+            principal_name="user@example.com",
+        )
+
+        self.assertIsNone(await store.get(first.session_id))
+        self.assertEqual(second, await store.get(second.session_id))
+        invalidation = invalidated.await_args.args[0]
+        self.assertEqual("principal_replaced", invalidation.reason)
+        self.assertEqual(("socket-one",), invalidation.socket_ids)
+        self.assertEqual(("chainlit-one",), invalidation.chainlit_session_ids)
+        self.assertEqual(1, await store.count())
+
+    async def test_capacity_evicts_and_invalidates_unique_principal(self):
+        invalidated = AsyncMock()
+        store = CopilotSessionStore(max_sessions=1, ttl_seconds=120)
+        store.set_invalidation_handler(invalidated)
+        first = await store.replace(
+            previous_session_id=None,
+            access_token="first-token",
+            claims={
+                "tid": TENANT_ID,
+                "oid": OBJECT_ID,
+                "exp": int(time.time()) + 600,
+            },
+            display_name="First",
+            principal_name="first@example.com",
+        )
+        await store.bind_connection(
+            session_id=first.session_id,
+            socket_id="socket-one",
+            chainlit_session_id="chainlit-one",
+        )
+
+        second = await store.replace(
+            previous_session_id=None,
+            access_token="second-token",
+            claims={
+                "tid": TENANT_ID,
+                "oid": "bbbbbbbb-cccc-dddd-eeee-ffffffffffff",
+                "exp": int(time.time()) + 600,
+            },
+            display_name="Second",
+            principal_name="second@example.com",
+        )
+
+        self.assertIsNone(await store.get(first.session_id))
+        self.assertEqual(second, await store.get(second.session_id))
+        invalidation = invalidated.await_args.args[0]
+        self.assertEqual("capacity", invalidation.reason)
+        self.assertEqual(("socket-one",), invalidation.socket_ids)
+
+    async def test_logout_invalidates_bound_connections(self):
+        invalidated = AsyncMock()
+        store = CopilotSessionStore(max_sessions=1, ttl_seconds=120)
+        store.set_invalidation_handler(invalidated)
+        session = await store.replace(
+            previous_session_id=None,
+            access_token="entra-secret",
+            claims={
+                "tid": TENANT_ID,
+                "oid": OBJECT_ID,
+                "exp": int(time.time()) + 600,
+            },
+            display_name="User",
+            principal_name="",
+        )
+        await store.bind_connection(
+            session_id=session.session_id,
+            socket_id="socket",
+            chainlit_session_id="chainlit",
+        )
+
+        await store.delete(session.session_id)
+
+        self.assertIsNone(await store.get(session.session_id))
+        invalidation = invalidated.await_args.args[0]
+        self.assertEqual("logout", invalidation.reason)
+        self.assertEqual(("socket",), invalidation.socket_ids)
+
+    async def test_scheduled_expiry_invalidates_bound_connections(self):
+        invalidated = AsyncMock()
+        store = CopilotSessionStore(max_sessions=1, ttl_seconds=1)
+        store.set_invalidation_handler(invalidated)
+        now = int(time.time())
+        with patch("embed_auth.time.time", return_value=now):
+            session = await store.replace(
+                previous_session_id=None,
+                access_token="entra-secret",
+                claims={
+                    "tid": TENANT_ID,
+                    "oid": OBJECT_ID,
+                    "exp": now + 600,
+                },
+                display_name="User",
+                principal_name="",
+            )
+        await store.bind_connection(
+            session_id=session.session_id,
+            socket_id="socket",
+            chainlit_session_id="chainlit",
+        )
+
+        with patch("embed_auth.time.time", return_value=now + 2):
+            await store._expire_if_due(session.session_id)
+
+        self.assertIsNone(await store.get(session.session_id))
+        invalidation = invalidated.await_args.args[0]
+        self.assertEqual("expired", invalidation.reason)
+        self.assertEqual(("socket",), invalidation.socket_ids)
+        self.assertEqual(("chainlit",), invalidation.chainlit_session_ids)
+
+    async def test_per_session_connection_admission_is_bounded(self):
+        store = CopilotSessionStore(
+            max_sessions=1,
+            ttl_seconds=120,
+            max_connections_per_session=1,
+        )
+        session = await store.replace(
+            previous_session_id=None,
+            access_token="entra-secret",
+            claims={
+                "tid": TENANT_ID,
+                "oid": OBJECT_ID,
+                "exp": int(time.time()) + 600,
+            },
+            display_name="User",
+            principal_name="",
+        )
+        self.assertTrue(
+            await store.bind_connection(
+                session_id=session.session_id,
+                socket_id="socket-one",
+                chainlit_session_id="chainlit-one",
+            )
+        )
+        self.assertFalse(
+            await store.bind_connection(
+                session_id=session.session_id,
+                socket_id="socket-two",
+                chainlit_session_id="chainlit-two",
+            )
+        )
+
     async def test_cookie_is_opaque_http_only_and_secure(self):
         store = CopilotSessionStore(max_sessions=1, ttl_seconds=120)
         session = await store.replace(
@@ -181,54 +373,7 @@ class EmbedAuthTests(unittest.IsolatedAsyncioTestCase):
         clear_copilot_session_cookie(clear_response, same_site="none")
         self.assertIn("Max-Age=0", clear_response.headers["set-cookie"])
 
-    async def test_store_invalidation_covers_replacement_eviction_and_expiry(self):
-        invalidated = []
-        expired = asyncio.Event()
-
-        async def on_invalidate(session_id):
-            invalidated.append(session_id)
-            expired.set()
-
-        store = CopilotSessionStore(
-            max_sessions=1,
-            ttl_seconds=1,
-            on_invalidate=on_invalidate,
-        )
-        claims = {
-            "tid": TENANT_ID,
-            "oid": OBJECT_ID,
-            "exp": int(time.time()) + 30,
-        }
-        first = await store.replace(
-            previous_session_id=None,
-            access_token="one",
-            claims=claims,
-            display_name="User",
-            principal_name="",
-        )
-        second = await store.replace(
-            previous_session_id=first.session_id,
-            access_token="two",
-            claims=claims,
-            display_name="User",
-            principal_name="",
-        )
-        self.assertIn(first.session_id, invalidated)
-
-        third = await store.replace(
-            previous_session_id=None,
-            access_token="three",
-            claims=claims,
-            display_name="User",
-            principal_name="",
-        )
-        self.assertIn(second.session_id, invalidated)
-        expired.clear()
-        await asyncio.wait_for(expired.wait(), timeout=2)
-        self.assertIn(third.session_id, invalidated)
-        self.assertIsNone(await store.get(third.session_id))
-
-    async def test_bootstrap_logout_and_error_contract(self):
+    async def test_bootstrap_replaces_then_logout_invalidates_session(self):
         settings = EmbedSettings(
             enabled=True,
             ui_origin="https://chat.example.com",
@@ -239,14 +384,11 @@ class EmbedAuthTests(unittest.IsolatedAsyncioTestCase):
         )
         invalidated = []
 
-        async def on_invalidate(session_id):
-            invalidated.append(session_id)
+        async def on_invalidate(invalidation):
+            invalidated.append(invalidation.session.session_id)
 
-        sessions = CopilotSessionStore(
-            max_sessions=10,
-            ttl_seconds=120,
-            on_invalidate=on_invalidate,
-        )
+        sessions = CopilotSessionStore(max_sessions=10, ttl_seconds=120)
+        sessions.set_invalidation_handler(on_invalidate)
         validator = AsyncMock(
             return_value={
                 "tid": TENANT_ID,
@@ -271,19 +413,18 @@ class EmbedAuthTests(unittest.IsolatedAsyncioTestCase):
         ) as client:
             first = await client.post(
                 "/copilot/auth/bootstrap",
-                headers={"Authorization": "Bearer entra-one"},
+                headers={"Authorization": "Bearer bootstrap-token-one"},
             )
             first_session_id = client.cookies.get(COPILOT_SESSION_COOKIE)
             second = await client.post(
                 "/copilot/auth/bootstrap",
-                headers={"Authorization": "Bearer entra-two"},
+                headers={"Authorization": "Bearer bootstrap-token-two"},
             )
             second_session_id = client.cookies.get(COPILOT_SESSION_COOKIE)
             logout = await client.post("/copilot/auth/logout")
 
         self.assertEqual(200, first.status_code)
         self.assertEqual(200, second.status_code)
-        self.assertTrue(first.json()["expiresAt"])
         self.assertNotEqual(first_session_id, second_session_id)
         self.assertIsNone(await sessions.get(first_session_id))
         self.assertIsNone(await sessions.get(second_session_id))
@@ -291,8 +432,12 @@ class EmbedAuthTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(second_session_id, invalidated)
         self.assertEqual(200, logout.status_code)
         self.assertIn("Max-Age=0", logout.headers["set-cookie"])
-        self.assertNotIn("entra-one", first.text + first.headers["set-cookie"])
-        self.assertNotIn("entra-two", second.text + second.headers["set-cookie"])
+        serialized = first.text + second.text
+        set_cookies = (
+            first.headers["set-cookie"] + second.headers["set-cookie"]
+        )
+        self.assertNotIn("bootstrap-token-one", serialized + set_cookies)
+        self.assertNotIn("bootstrap-token-two", serialized + set_cookies)
 
     async def test_failed_rebootstrap_preserves_valid_current_session(self):
         settings = EmbedSettings(
@@ -303,24 +448,19 @@ class EmbedAuthTests(unittest.IsolatedAsyncioTestCase):
             max_sessions=10,
             session_ttl_seconds=120,
         )
-        invalidated = []
-
-        async def on_invalidate(session_id):
-            invalidated.append(session_id)
-
-        sessions = CopilotSessionStore(
-            max_sessions=10,
-            ttl_seconds=120,
-            on_invalidate=on_invalidate,
-        )
-        valid_claims = {
-            "tid": TENANT_ID,
-            "oid": OBJECT_ID,
-            "exp": int(time.time()) + 600,
-            "preferred_username": "user@example.com",
-        }
+        invalidated = AsyncMock()
+        sessions = CopilotSessionStore(max_sessions=10, ttl_seconds=120)
+        sessions.set_invalidation_handler(invalidated)
         validator = AsyncMock(
-            side_effect=[valid_claims, EntraTokenError("invalid")]
+            side_effect=[
+                {
+                    "tid": TENANT_ID,
+                    "oid": OBJECT_ID,
+                    "exp": int(time.time()) + 600,
+                    "preferred_username": "user@example.com",
+                },
+                EntraTokenError("invalid"),
+            ]
         )
         app = FastAPI()
         register_copilot_auth_routes(
@@ -337,20 +477,22 @@ class EmbedAuthTests(unittest.IsolatedAsyncioTestCase):
         ) as client:
             first = await client.post(
                 "/copilot/auth/bootstrap",
-                headers={"Authorization": "Bearer " + "token-one"},
+                headers={"Authorization": "Bearer valid-token"},
             )
             session_id = client.cookies.get(COPILOT_SESSION_COOKIE)
             failed = await client.post(
                 "/copilot/auth/bootstrap",
-                headers={"Authorization": "Bearer " + "invalid-token"},
+                headers={"Authorization": "Bearer invalid-token"},
             )
-            current_cookie = client.cookies.get(COPILOT_SESSION_COOKIE)
 
         self.assertEqual(200, first.status_code)
         self.assertEqual(401, failed.status_code)
-        self.assertEqual(session_id, current_cookie)
+        self.assertEqual(
+            session_id,
+            client.cookies.get(COPILOT_SESSION_COOKIE),
+        )
         self.assertIsNotNone(await sessions.get(session_id))
-        self.assertNotIn(session_id, invalidated)
+        invalidated.assert_not_awaited()
         self.assertNotIn("set-cookie", failed.headers)
 
     async def test_denied_account_switch_clears_previous_session(self):
@@ -362,16 +504,9 @@ class EmbedAuthTests(unittest.IsolatedAsyncioTestCase):
             max_sessions=10,
             session_ttl_seconds=120,
         )
-        invalidated = []
-
-        async def on_invalidate(session_id):
-            invalidated.append(session_id)
-
-        sessions = CopilotSessionStore(
-            max_sessions=10,
-            ttl_seconds=120,
-            on_invalidate=on_invalidate,
-        )
+        invalidated = AsyncMock()
+        sessions = CopilotSessionStore(max_sessions=10, ttl_seconds=120)
+        sessions.set_invalidation_handler(invalidated)
         validator = AsyncMock(
             side_effect=[
                 {
@@ -405,22 +540,24 @@ class EmbedAuthTests(unittest.IsolatedAsyncioTestCase):
         ) as client:
             first = await client.post(
                 "/copilot/auth/bootstrap",
-                headers={"Authorization": "Bearer " + "token-one"},
+                headers={"Authorization": "Bearer allowed-token"},
             )
             first_session_id = client.cookies.get(COPILOT_SESSION_COOKIE)
             denied = await client.post(
                 "/copilot/auth/bootstrap",
-                headers={"Authorization": "Bearer " + "token-two"},
+                headers={"Authorization": "Bearer denied-token"},
             )
-            current_cookie = client.cookies.get(COPILOT_SESSION_COOKIE)
 
         self.assertEqual(200, first.status_code)
         self.assertEqual(403, denied.status_code)
-        self.assertIsNone(current_cookie)
+        self.assertIsNone(client.cookies.get(COPILOT_SESSION_COOKIE))
         self.assertIsNone(await sessions.get(first_session_id))
-        self.assertIn(first_session_id, invalidated)
+        self.assertEqual(
+            first_session_id,
+            invalidated.await_args.args[0].session.session_id,
+        )
 
-    async def test_bootstrap_negative_responses(self):
+    async def test_bootstrap_rejects_missing_duplicate_and_unavailable_auth(self):
         settings = EmbedSettings(
             enabled=True,
             ui_origin="https://chat.example.com",
@@ -430,18 +567,17 @@ class EmbedAuthTests(unittest.IsolatedAsyncioTestCase):
             session_ttl_seconds=120,
         )
 
-        async def run_request(validator, config=None, headers=None):
+        async def request(validator, headers=None):
             app = FastAPI()
-            sessions = CopilotSessionStore(
-                max_sessions=10,
-                ttl_seconds=120,
-            )
             register_copilot_auth_routes(
                 app,
                 settings=settings,
-                sessions=sessions,
+                sessions=CopilotSessionStore(
+                    max_sessions=10,
+                    ttl_seconds=120,
+                ),
                 validator=SimpleNamespace(validate=validator),
-                config=config or FakeConfig(),
+                config=FakeConfig(),
             )
             transport = httpx.ASGITransport(
                 app=app,
@@ -456,41 +592,22 @@ class EmbedAuthTests(unittest.IsolatedAsyncioTestCase):
                     headers=headers,
                 )
 
-        missing = await run_request(AsyncMock())
-        self.assertEqual(401, missing.status_code)
-
-        invalid = await run_request(
-            AsyncMock(side_effect=EntraTokenError("invalid")),
-            headers={"Authorization": "Bearer invalid"},
-        )
-        self.assertEqual(401, invalid.status_code)
-
-        unavailable = await run_request(
+        self.assertEqual(401, (await request(AsyncMock())).status_code)
+        unavailable = await request(
             AsyncMock(
                 side_effect=httpx.ConnectError(
                     "unavailable",
-                    request=httpx.Request("GET", "https://login.example"),
+                    request=httpx.Request(
+                        "GET",
+                        "https://login.example",
+                    ),
                 )
             ),
             headers={"Authorization": "Bearer token"},
         )
         self.assertEqual(503, unavailable.status_code)
-
-        claims = {
-            "tid": TENANT_ID,
-            "oid": OBJECT_ID,
-            "exp": int(time.time()) + 600,
-            "preferred_username": "user@example.com",
-        }
-        denied = await run_request(
-            AsyncMock(return_value=claims),
-            config=FakeConfig({"ALLOWED_USER_NAMES": "other@example.com"}),
-            headers={"Authorization": "Bearer token"},
-        )
-        self.assertEqual(403, denied.status_code)
-
-        duplicate = await run_request(
-            AsyncMock(return_value=claims),
+        duplicate = await request(
+            AsyncMock(),
             headers=[
                 ("Authorization", "Bearer token-one"),
                 ("Authorization", "Bearer token-two"),

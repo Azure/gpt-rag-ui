@@ -17,6 +17,12 @@ stores it only in bounded server memory, and returns an opaque session cookie.
 The cookie is `HttpOnly` and `Secure`; it contains no Entra or Chainlit token.
 Its lifetime is the lesser of the configured Copilot TTL and the Entra `exp`.
 
+Standalone OAuth credentials are also held only in bounded process memory.
+The signed Chainlit authentication cookie contains a canonical profile and an
+opaque server-side credential identifier, never an Entra access token or refresh
+token. Persisted users and the `/user` response contain only the canonical
+profile, with no credential identifier or authentication-source marker.
+
 The Chainlit widget is mounted without `accessToken`. Subsequent HTTP,
 Socket.IO polling, Socket.IO upgrade, and WebSocket requests must carry the
 opaque cookie and an exact configured portal origin. Safe GET navigations such
@@ -51,19 +57,19 @@ label. Container environment variables with the same names take precedence.
 | `CHAINLIT_COPILOT_ENABLED` | Yes | Set to `true` to enable embedding. Default: `false`. |
 | `CHAINLIT_AUTH_SECRET` | Yes | Persistent secret shared by the UI replicas for Chainlit sessions and signed download grants. Store it through a Key Vault-backed App Configuration reference. Copilot startup fails rather than generating a temporary value. |
 | `CHAINLIT_URL` | Yes | Exact public HTTPS origin of the GPT-RAG UI, for example `https://chat.contoso.com`. Paths are not accepted. |
-| `CHAINLIT_ALLOWED_ORIGINS` | Yes | Comma-separated portal origins. Wildcards, paths, credentials, `null`, and non-local HTTP origins are rejected. |
-| `CHAINLIT_COOKIE_SAMESITE` | No | `lax` by default. Use `none` only when the portal and UI are cross-site. The Copilot cookie is always `Secure`. |
+| `CHAINLIT_ALLOWED_ORIGINS` | Yes | Comma-separated portal origins, with a maximum of 20. Wildcards, paths, credentials, `null`, and non-local HTTP origins are rejected. Do not include `CHAINLIT_URL`; startup rejects overlap between the standalone and portal origins. |
+| `CHAINLIT_COOKIE_SAMESITE` | No | `lax` by default. Accepted values are `lax`, `strict`, and `none`. Use `none` only when the portal and UI are cross-site; `strict` blocks cross-site bootstrap. The Copilot cookie is always `Secure`. |
 | `CHAINLIT_COPILOT_ENTRA_TENANT_ID` | Yes | Tenant GUID accepted in `tid` and the exact v2 issuer. |
 | `CHAINLIT_COPILOT_ENTRA_AUDIENCE` | Yes | Exact API audience expected in `aud`. |
-| `CHAINLIT_COPILOT_ENTRA_REQUIRED_SCOPE` | No | Delegated scope required in `scp`. Default: `user_impersonation`. App-only tokens are rejected. |
+| `CHAINLIT_COPILOT_ENTRA_REQUIRED_SCOPE` | No | One delegated scope name required in `scp`; spaces and multiple configured scope names are rejected. Default: `user_impersonation`. App-only tokens are rejected. |
 | `CHAINLIT_COPILOT_SESSION_TTL_SECONDS` | No | Server-side session TTL from 60 to 86400 seconds. Default: 3600. Entra expiry can shorten it. |
-| `CHAINLIT_COPILOT_MAX_SESSIONS` | No | Maximum in-memory Copilot sessions from 1 to 10000. Default: 1000. Oldest sessions are evicted at capacity. |
-| `CITATION_SHARED_DOWNLOAD_CONTAINERS` | No | Comma-separated storage containers whose contents have uniform access for every authorized UI user. Default: empty. Never add permission-trimmed containers. |
+| `CHAINLIT_COPILOT_MAX_SESSIONS` | No | Maximum in-memory Copilot sessions from 1 to 10000. Default: 1000. Only one opaque session is retained per `tid:oid`; replacement and capacity eviction disconnect associated sockets and cancel active tasks. |
+| `CITATION_SHARED_DOWNLOAD_CONTAINERS` | No | Comma-separated storage containers whose contents have uniform access for every authorized UI user. Entries must also be one of the configured documents, images, or conversation-documents containers; other names have no effect. Default: empty. Never add permission-trimmed containers. |
 
-The standalone deployment must have OAuth configured and
-`ALLOW_ANONYMOUS=false`. Copilot configuration never disables OAuth, enables
-anonymous access, or converts an authentication failure into anonymous chat.
-Invalid or incomplete enabled configuration fails startup.
+When Copilot embedding is enabled, the standalone deployment must have OAuth
+configured and `ALLOW_ANONYMOUS=false`. Copilot configuration never disables
+OAuth, enables anonymous access, or converts an authentication failure into
+anonymous chat. Invalid or incomplete enabled configuration fails startup.
 Standalone development can still generate a temporary `CHAINLIT_AUTH_SECRET`
 when embedding is disabled.
 
@@ -147,11 +153,17 @@ sign-in failure, and never mount an anonymous widget after bootstrap fails.
 The sample handles `429` because an approved gateway may rate-limit bootstrap;
 the UI endpoint itself does not currently emit that status.
 
+Successful bootstrap returns
+`{"success": true, "expiresAt": <Unix timestamp>}`. The portal may use
+`expiresAt` to schedule a complete stop, bootstrap, and remount before expiry.
+Do not bootstrap silently behind a live widget: replacing the opaque session
+disconnects its existing Socket.IO connections and cancels active tasks.
+
 ### Mid-session expiry
 
 The opaque session can expire because its configured TTL or the Entra token
-expires, because bounded state evicts an inactive session, or because the UI
-process restarts. The portal should treat an HTTP `401`, Socket.IO
+expires, because bounded state evicts the least-recently-used session, or because
+the UI process restarts. The portal should treat an HTTP `401`, Socket.IO
 authentication failure, or WebSocket `4401` as a signed-out assistant:
 
 1. Unmount and remove the current widget.
@@ -193,11 +205,14 @@ call `stopAssistant` and remain signed out. On account change:
 4. Bootstrap again.
 5. Mount a fresh widget.
 
-A successful bootstrap atomically replaces and disconnects any existing
-Copilot server session, so a different account cannot inherit the previous
-principal's state. A malformed token or temporary JWKS failure does not destroy
-an otherwise valid current session. An explicit logout or an authorization
-denial clears it.
+A successful bootstrap replaces any existing browser session. A cookie-less
+bootstrap also replaces the existing session for the same `tid:oid`, so repeated
+bootstrap cannot consume unbounded entries. Replacement, expiry, capacity
+eviction, and logout disconnect associated sockets, cancel the active Chainlit
+task, and reject further events from a surviving socket. A malformed token or
+temporary JWKS failure preserves an otherwise valid current session. An
+authorization denial, explicit logout, or failure without a valid prior session
+clears the browser cookie.
 
 Skipping the stop-and-clear sequence is not cosmetic: it can leave the old
 account's locally rendered thread visible. Treat a widget that shows the wrong
@@ -235,16 +250,27 @@ it did on the initial load.
   OAuth handling.
 - `/auth/jwt` and `/auth/header` are unavailable to portal origins. The portal
   uses only the dedicated bootstrap endpoint.
-- Citation URLs are absolute URLs on `CHAINLIT_URL`. They contain a short-lived,
-  signed grant bound to the authenticated principal, conversation, container,
-  and blob. The server rechecks the session and conversation ownership before
-  streaming the file. Conversation uploads must be under
+- Copilot citation URLs are absolute URLs on `CHAINLIT_URL`. They contain a
+  short-lived, signed grant bound to the authenticated principal, conversation,
+  container, and blob. The server rechecks the session and conversation
+  ownership before streaming the file. Conversation uploads must be under
   `conversations/<owned-conversation-id>/`. Other containers are default-denied
   unless explicitly listed in `CITATION_SHARED_DOWNLOAD_CONTAINERS`, which is
   safe only for corpora with uniform access for every authorized UI user.
+  Shared entries must also match the configured documents, images, or
+  conversation-documents container; arbitrary additional container names are
+  not admitted.
   Permission-trimmed containers require a future document-level authorization
   integration and must not be listed. Unauthorized citations render as text
-  without a link. Direct SAS and public-blob fallbacks are not used.
+  without a link. Direct SAS and public-blob fallbacks are not used for Copilot.
+- Standalone sessions retain the pre-existing SAS citation generation and
+  `/api/download/<container>/<path>` behavior. This remains true when Copilot is
+  disabled or when an authenticated standalone OAuth session uses an instance
+  where Copilot is enabled. Copilot and unauthenticated sessions on an enabled
+  instance cannot use the legacy container download route. When Copilot is
+  disabled, this compatibility path retains the existing bearer-SAS and route
+  access model; do not enable anonymous standalone access for restricted
+  corpora.
 - Users are identified as `tid:oid`. Tokens without both claims are rejected,
   and thread ownership is checked before list/get/resume/rename/delete,
   feedback, and download operations.
@@ -277,15 +303,67 @@ those server events for Copilot sessions, but the wildcard/browser-global code
 remains present in the third-party bundle. Reassess this limitation when
 upgrading Chainlit.
 
+## Accessibility and browser validation
+
+GPT-RAG does not implement the Copilot user interface. The floating button,
+popover, controls, keyboard behavior, focus handling, ARIA, styling, and
+responsive layout are inherited from pinned Chainlit 2.9.4. GPT-RAG adds
+server-side authentication, session, origin, ownership, and download controls
+only.
+
+Do not treat the embedded widget as accessibility certified. In Chainlit 2.9.4:
+
+- Basic button, dialog, focus, and Escape handling is present, but complete
+  keyboard order, initial focus, focus containment, and focus restoration have
+  not been validated in a portal.
+- The default launcher and expand or collapse control lack explicit accessible
+  names. Dialog naming, streaming-response announcements, reading order, and
+  error announcements remain unvalidated with screen readers.
+- Reflow at 200% zoom and Windows high-contrast or forced-colors modes has not
+  been validated. The bundle has no widget-specific forced-colors treatment.
+- The floating launcher is 64 by 64 CSS pixels, and the popover uses responsive
+  viewport sizing, but touch targets, mobile scrolling, safe areas, orientation
+  changes, and the on-screen keyboard remain unvalidated.
+- Portal styles outside the Shadow DOM cannot be assumed to fix widget content.
+  The example configuration does not load a `customCssUrl`.
+
+The portal owner is responsible for the accessibility of the combined portal
+and widget. This includes visible loading and failure states, accessible control
+names, logical focus before and after mount, unmount, expiry, and account
+switching, sufficient theme contrast, non-overlap with portal controls, and an
+accessible fallback such as a link to the standalone GPT-RAG UI.
+
+Before production release, validate the deployed widget inside the actual
+portal, not only the standalone UI. At minimum, validate:
+
+- Keyboard-only operation in current Edge and Chrome on Windows, including
+  opening, sending, new chat, expand or collapse, closing with Escape, and focus
+  return.
+- NVDA with Edge, plus other screen readers required by the organization.
+- Safari with VoiceOver when macOS or iOS is supported.
+- Chrome with TalkBack when Android is supported.
+- 200% browser zoom and Windows high-contrast mode.
+- Touch operation in portrait and landscape, including the software keyboard
+  and scrolling.
+- Bootstrap failure, session expiry, logout, and account switching in each
+  supported browser.
+
+Record results and approved exceptions. Repeat this validation after a Chainlit
+upgrade or changes to the portal shell, theme, widget configuration, or custom
+CSS.
+
 ## Deployment limitation
 
-The bounded Copilot session and Entra token state is process-local.
+The bounded Copilot session state and standalone OAuth credential state are
+process-local.
 
 - One UI replica is the supported safe default.
 - Multiple replicas require session affinity covering bootstrap, HTTP,
   Socket.IO polling, Socket.IO upgrade, and WebSocket traffic.
 - Restart, revision replacement, node loss, eviction, or affinity loss signs
   affected users out.
+- Each opaque session accepts at most four concurrent Socket.IO connections.
+  Additional connections are rejected; this limit is not configurable.
 - Affinity is not high availability. Resilient scale-out requires a shared,
   encrypted server-side session store in a future change.
 
@@ -320,9 +398,10 @@ an authenticated fetch that supplies its browser-managed `Origin`.
 
 ## Residual Chainlit 2.9.4 limitations
 
-- The standalone page continues to use Chainlit's built-in OAuth and session
-  mechanism. The bounded opaque-cookie store described here applies only to
-  Copilot sessions.
+- The standalone page continues to use Chainlit's built-in OAuth flow and signed
+  authentication cookie, but GPT-RAG keeps the resulting access and refresh
+  tokens in a bounded process-local store rather than in that cookie or the
+  persisted Chainlit user.
 - Socket and browser bridge guards patch pinned Chainlit 2.9.4 internals because
   that release has no supported policy hook for them. Revalidate all guards
   before upgrading Chainlit.

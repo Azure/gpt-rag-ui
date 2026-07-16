@@ -1,16 +1,18 @@
 import asyncio
 import logging
-from http.cookies import CookieError, SimpleCookie
+from http.cookies import SimpleCookie
 from urllib.parse import urlsplit
 
 from starlette.responses import PlainTextResponse
 
 from embed_auth import (
-    bind_request_copilot_session,
+    bind_copilot_session,
+    COPILOT_SCOPE_SESSION_KEY,
     COPILOT_SESSION_COOKIE,
+    CopilotSessionInvalidation,
     CopilotSessionStore,
+    current_copilot_session,
     is_valid_session_id,
-    reset_request_copilot_session,
 )
 from embed_config import EmbedSettings
 
@@ -21,13 +23,9 @@ _COPILOT_AUTH_PATHS = {
     "/copilot/auth/logout",
 }
 _DISABLED_CHAINLIT_AUTH_PATHS = {"/auth/jwt", "/auth/header"}
-_BLOCKED_BRIDGE_EVENTS = {"call_fn", "window_message"}
-_copilot_sio = None
 
 
 def canonical_origin(value: str) -> str:
-    if not value or value != value.strip() or any(ord(char) < 32 for char in value):
-        return ""
     try:
         parsed = urlsplit(value)
         port = parsed.port
@@ -41,7 +39,6 @@ def canonical_origin(value: str) -> str:
         or parsed.path not in {"", "/"}
         or parsed.query
         or parsed.fragment
-        or (port is not None and port <= 0)
     ):
         return ""
     default_port = 80 if parsed.scheme == "http" else 443
@@ -55,8 +52,6 @@ def canonical_origin(value: str) -> str:
 
 
 def origin_from_referer(value: str) -> str:
-    if not value or value != value.strip() or any(ord(char) < 32 for char in value):
-        return ""
     try:
         parsed = urlsplit(value)
         port = parsed.port
@@ -67,7 +62,6 @@ def origin_from_referer(value: str) -> str:
         or not parsed.hostname
         or parsed.username
         or parsed.password
-        or (port is not None and port <= 0)
     ):
         return ""
     default_port = 80 if parsed.scheme == "http" else 443
@@ -88,56 +82,47 @@ def _header_values(scope, name: bytes) -> list[str]:
     ]
 
 
-def _parsed_cookies(scope) -> dict[str, str] | None:
-    parsed: dict[str, str] = {}
-    for raw_cookie in _header_values(scope, b"cookie"):
-        segments = [segment.strip() for segment in raw_cookie.split(";")]
-        if any(not segment or "=" not in segment for segment in segments):
-            return None
-        names = [segment.partition("=")[0].strip() for segment in segments]
-        if any(not name or name in parsed for name in names):
-            return None
-        if len(names) != len(set(names)):
-            return None
-
+def _cookie_value(scope, name: str) -> str | None:
+    raw_cookie_headers = _header_values(scope, b"cookie")
+    occurrences = 0
+    cookie_value = None
+    for raw_cookie in raw_cookie_headers:
         cookie = SimpleCookie()
         try:
             cookie.load(raw_cookie)
-        except (CookieError, TypeError, ValueError):
+        except Exception:
             return None
         if raw_cookie.strip() and not cookie:
             return None
-        for name, morsel in cookie.items():
-            if name in parsed:
+        occurrences += sum(
+            1
+            for part in raw_cookie.split(";")
+            if part.partition("=")[0].strip() == name
+        )
+        if name in cookie:
+            if cookie_value is not None:
                 return None
-            parsed[name] = morsel.value
-    return parsed
-
-
-def _cookie_value(scope, name: str) -> str | None:
-    cookies = _parsed_cookies(scope)
-    if cookies is None:
+            cookie_value = cookie[name].value
+    if occurrences != 1:
         return None
-    return cookies.get(name)
+    return cookie_value
 
 
 def _inject_chainlit_cookie(scope, token: str) -> dict:
-    cookies = _parsed_cookies(scope)
-    existing = []
-    if cookies:
-        for name, value in cookies.items():
-            if name == "access_token" or name.startswith("access_token_"):
-                continue
-            cookie = SimpleCookie()
-            cookie[name] = value
-            existing.append(f"{name}={cookie[name].coded_value}")
+    headers = []
+    existing: list[str] = []
+    for key, value in scope.get("headers", []):
+        if key.lower() != b"cookie":
+            headers.append((key, value))
+            continue
+        cookie = SimpleCookie()
+        cookie.load(value.decode("latin-1"))
+        existing.extend(
+            f"{name}={morsel.value}"
+            for name, morsel in cookie.items()
+            if name != "access_token" and not name.startswith("access_token_")
+        )
     existing.append(f"access_token={token}")
-
-    headers = [
-        (key, value)
-        for key, value in scope.get("headers", [])
-        if key.lower() != b"cookie"
-    ]
     headers.append((b"cookie", "; ".join(existing).encode("latin-1")))
     updated = dict(scope)
     updated["headers"] = headers
@@ -158,7 +143,7 @@ class CopilotRequestMiddleware:
         self.portal_origins = set(settings.allowed_origins)
 
     @staticmethod
-    def _is_public_copilot_path(path: str) -> bool:
+    def _is_public(path: str) -> bool:
         return path == "/copilot" or path.startswith("/copilot/")
 
     async def _reject(self, scope, receive, send, status_code: int) -> None:
@@ -220,11 +205,7 @@ class CopilotRequestMiddleware:
             await self._reject(scope, receive, send, 403)
             return
         if is_portal and path in _DISABLED_CHAINLIT_AUTH_PATHS:
-            response = PlainTextResponse(
-                "Not found",
-                status_code=404,
-                headers={"Cache-Control": "no-store"},
-            )
+            response = PlainTextResponse("Not found", status_code=404)
             await response(scope, receive, send)
             return
 
@@ -232,30 +213,18 @@ class CopilotRequestMiddleware:
             scope["type"] == "http"
             and scope.get("method", "").upper() == "OPTIONS"
         )
-        request_session = None
-        if (
-            is_portal
-            and not self._is_public_copilot_path(path)
-            and not is_preflight
-        ):
-            request_session = await self.sessions.get(session_id)
-            if not request_session:
+        if is_portal and not self._is_public(path) and not is_preflight:
+            session = await self.sessions.get(session_id)
+            if not session:
                 await self._reject(scope, receive, send, 401)
                 return
-            scope = _inject_chainlit_cookie(
-                scope,
-                request_session.chainlit_token,
-            )
-
-        if not request_session:
-            await self.app(scope, receive, send)
+            scope = _inject_chainlit_cookie(scope, session.chainlit_token)
+            scope[COPILOT_SCOPE_SESSION_KEY] = session_id
+            with bind_copilot_session(session):
+                await self.app(scope, receive, send)
             return
 
-        context_token = bind_request_copilot_session(request_session)
-        try:
-            await self.app(scope, receive, send)
-        finally:
-            reset_request_copilot_session(context_token)
+        await self.app(scope, receive, send)
 
 
 def _is_copilot_socket(socket_id: str) -> bool:
@@ -288,25 +257,6 @@ def _socket_target(args, kwargs) -> str | None:
     return target if isinstance(target, str) and target else None
 
 
-def _target_has_copilot_sockets(sio, target: str | None) -> bool:
-    if not target:
-        return _has_copilot_sockets()
-    if _is_copilot_socket(target):
-        return True
-
-    try:
-        participants = sio.manager.get_participants("/", target)
-        for participant in participants:
-            socket_id = participant[0] if isinstance(participant, tuple) else participant
-            if isinstance(socket_id, str) and _is_copilot_socket(socket_id):
-                return True
-        return False
-    except Exception:
-        logger.exception("Could not resolve Socket.IO bridge recipients")
-        # Default deny only when a Copilot socket could receive the event.
-        return _has_copilot_sockets()
-
-
 def _existing_socket_session(session_id: str | None):
     if not session_id:
         return None
@@ -322,44 +272,74 @@ async def _authenticated_socket_user(environ):
     return user
 
 
-def _copilot_session_marker(user) -> str:
-    return str(
-        ((getattr(user, "metadata", None) or {}).get("copilot_session_id") or "")
+def _copilot_session_id_from_environ(environ) -> str:
+    current = current_copilot_session()
+    if current:
+        return current.session_id
+    scope = (environ or {}).get("asgi.scope") or {}
+    return str(scope.get(COPILOT_SCOPE_SESSION_KEY) or "")
+
+
+async def _terminate_chainlit_session(
+    sio,
+    *,
+    socket_id: str | None = None,
+    chainlit_session_id: str | None = None,
+) -> None:
+    from chainlit.session import WebsocketSession
+
+    session = (
+        WebsocketSession.get_by_id(chainlit_session_id)
+        if chainlit_session_id
+        else WebsocketSession.get(socket_id)
     )
+    if not session:
+        return
+
+    session.to_clear = True
+    task = session.current_task
+    if (
+        task
+        and task is not asyncio.current_task()
+        and not task.done()
+    ):
+        task.cancel()
+
+    active_socket_id = session.socket_id
+    try:
+        await sio.disconnect(active_socket_id, namespace="/")
+    except Exception:
+        logger.warning(
+            "Failed to disconnect invalidated Copilot socket",
+            exc_info=True,
+        )
+    finally:
+        if WebsocketSession.get_by_id(session.id) is session:
+            await session.delete()
 
 
-async def disconnect_copilot_session(session_id: str) -> int:
-    """Disconnect every live Chainlit socket bound to an opaque session."""
+async def _invalidate_chainlit_sessions(
+    sio,
+    invalidation: CopilotSessionInvalidation,
+) -> None:
+    from chainlit.session import WebsocketSession
 
-    if not _copilot_sio or not is_valid_session_id(session_id):
-        return 0
+    chainlit_session_ids = set(invalidation.chainlit_session_ids)
+    for socket_id in invalidation.socket_ids:
+        if session := WebsocketSession.get(socket_id):
+            chainlit_session_ids.add(session.id)
 
-    from chainlit.session import ws_sessions_sid
-
-    matches = [
-        session
-        for session in list(ws_sessions_sid.values())
-        if _copilot_session_marker(session.user) == session_id
-    ]
-    disconnected = 0
-    current_task = asyncio.current_task()
-    for session in matches:
-        session.to_clear = True
-        task = getattr(session, "current_task", None)
-        if task and task is not current_task and not task.done():
-            task.cancel()
-        try:
-            await _copilot_sio.disconnect(session.socket_id)
-            disconnected += 1
-        except Exception:
-            logger.exception("Failed to disconnect a Copilot socket")
-    return disconnected
+    for chainlit_session_id in chainlit_session_ids:
+        await _terminate_chainlit_session(
+            sio,
+            chainlit_session_id=chainlit_session_id,
+        )
 
 
-def configure_copilot_bridge_guards(sio) -> None:
-    global _copilot_sio
-    _copilot_sio = sio
-
+def configure_copilot_bridge_guards(
+    sio,
+    sessions: CopilotSessionStore,
+) -> None:
     if getattr(sio, "_gpt_rag_copilot_guards", False):
         return
 
@@ -367,72 +347,196 @@ def configure_copilot_bridge_guards(sio) -> None:
     original_call = sio.call
     handlers = sio.handlers.get("/", {})
     original_connect = handlers.get("connect")
+    original_disconnect = handlers.get("disconnect")
+
+    async def invalidate_session(
+        invalidation: CopilotSessionInvalidation,
+    ) -> None:
+        await _invalidate_chainlit_sessions(sio, invalidation)
+
+    sessions.set_invalidation_handler(invalidate_session)
 
     async def guarded_emit(event, *args, **kwargs):
         target = _socket_target(args, kwargs)
-        if event in _BLOCKED_BRIDGE_EVENTS and _target_has_copilot_sockets(
-            sio, target
-        ):
-            logger.warning("Blocked outbound %s for a Copilot session", event)
+        copilot_recipient = (
+            _is_copilot_socket(target)
+            if target
+            else _has_copilot_sockets()
+        )
+        if event == "window_message" and copilot_recipient:
+            logger.warning("Blocked window_message for a Copilot session")
             return None
         return await original_emit(event, *args, **kwargs)
 
     async def guarded_call(event, *args, **kwargs):
         target = _socket_target(args, kwargs)
-        if event in _BLOCKED_BRIDGE_EVENTS and _target_has_copilot_sockets(
-            sio, target
-        ):
-            raise PermissionError(
-                "Browser bridge calls are disabled for Copilot sessions."
-            )
+        if event == "call_fn" and target and _is_copilot_socket(target):
+            raise PermissionError("Browser function calls are disabled for Copilot sessions.")
         return await original_call(event, *args, **kwargs)
 
     sio.emit = guarded_emit
     sio.call = guarded_call
 
     if original_connect:
-
         async def guarded_connect(socket_id, environ, auth):
             existing = _existing_socket_session((auth or {}).get("sessionId"))
-            if existing and existing.user:
+            copilot_session_id = _copilot_session_id_from_environ(environ)
+            existing_owner = (
+                await sessions.chainlit_session_owner(existing.id)
+                if existing
+                else None
+            )
+            existing_is_copilot = bool(
+                existing and getattr(existing, "client_type", None) == "copilot"
+            )
+
+            if copilot_session_id:
+                active_session = await sessions.get(copilot_session_id)
+                if (
+                    not active_session
+                    or (auth or {}).get("clientType") != "copilot"
+                ):
+                    raise ConnectionRefusedError("authentication failed")
                 current_user = await _authenticated_socket_user(environ)
                 same_principal = bool(
                     current_user
-                    and current_user.identifier == existing.user.identifier
+                    and active_session
+                    and current_user.identifier == active_session.principal_id
                 )
-                same_copilot_session = (
-                    _copilot_session_marker(current_user)
-                    == _copilot_session_marker(existing.user)
+                if not same_principal:
+                    raise ConnectionRefusedError("authentication failed")
+
+                if existing and existing.user:
+                    same_principal = bool(
+                        current_user
+                        and current_user.identifier == existing.user.identifier
+                    )
+                    same_copilot_session = (
+                        existing_owner == copilot_session_id
+                    )
+                    if not same_principal or not same_copilot_session:
+                        logger.warning(
+                            "Blocked Socket.IO session restore across authenticated sessions"
+                        )
+                        raise ConnectionRefusedError("authentication failed")
+            elif existing_owner or existing_is_copilot:
+                logger.warning(
+                    "Blocked standalone restore of a Copilot Socket.IO session"
                 )
-                if not same_principal or not same_copilot_session:
-                    logger.warning(
-                        "Blocked Socket.IO session restore across authenticated sessions"
+                raise ConnectionRefusedError("authentication failed")
+
+            result = await original_connect(socket_id, environ, auth)
+            if copilot_session_id:
+                from chainlit.session import WebsocketSession
+
+                websocket_session = WebsocketSession.get(socket_id)
+                admitted = bool(
+                    websocket_session
+                    and await sessions.bind_connection(
+                        session_id=copilot_session_id,
+                        socket_id=socket_id,
+                        chainlit_session_id=websocket_session.id,
+                    )
+                )
+                if not admitted:
+                    await _terminate_chainlit_session(
+                        sio,
+                        socket_id=socket_id,
                     )
                     raise ConnectionRefusedError("authentication failed")
-            return await original_connect(socket_id, environ, auth)
+            return result
 
         sio.on("connect", handler=guarded_connect)
 
-    for event in ("call_fn", "window_message"):
-        original_handler = handlers.get(event)
+    if original_disconnect:
+        async def guarded_disconnect(socket_id, *args, **kwargs):
+            from chainlit.session import WebsocketSession
+
+            websocket_session = WebsocketSession.get(socket_id)
+            chainlit_session_id = (
+                websocket_session.id if websocket_session else None
+            )
+            try:
+                return await original_disconnect(
+                    socket_id,
+                    *args,
+                    **kwargs,
+                )
+            finally:
+                await sessions.unbind_socket(socket_id)
+                if (
+                    chainlit_session_id
+                    and not WebsocketSession.get_by_id(chainlit_session_id)
+                ):
+                    await sessions.release_chainlit_session(
+                        chainlit_session_id
+                    )
+
+        sio.on("disconnect", handler=guarded_disconnect)
+
+    guarded_active_events = (
+        "audio_chunk",
+        "audio_end",
+        "audio_start",
+        "chat_settings_change",
+        "clear_session",
+        "client_message",
+        "connection_successful",
+        "edit_message",
+        "stop",
+    )
+    for event_name in guarded_active_events:
+        original_handler = handlers.get(event_name)
         if not original_handler:
             continue
 
-        async def guarded_handler(
-            socket_id,
-            *args,
-            _event=event,
-            _handler=original_handler,
-            **kwargs,
-        ):
-            if _is_copilot_socket(socket_id):
-                logger.warning(
-                    "Blocked inbound %s for a Copilot session",
-                    _event,
-                )
-                return None
-            return await _handler(socket_id, *args, **kwargs)
+        def create_guarded_handler(event, handler):
+            async def guarded_handler(socket_id, *args, **kwargs):
+                if (
+                    _is_copilot_socket(socket_id)
+                    and not await sessions.socket_is_active(socket_id)
+                ):
+                    logger.warning(
+                        "Blocked %s for an invalidated Copilot session",
+                        event,
+                    )
+                    await _terminate_chainlit_session(
+                        sio,
+                        socket_id=socket_id,
+                    )
+                    return None
+                return await handler(socket_id, *args, **kwargs)
 
-        sio.on(event, handler=guarded_handler)
+            return guarded_handler
+
+        sio.on(
+            event_name,
+            handler=create_guarded_handler(
+                event_name,
+                original_handler,
+            ),
+        )
+
+    for event_name in ("call_fn", "window_message"):
+        original_handler = handlers.get(event_name)
+        if not original_handler:
+            continue
+
+        def create_bridge_handler(event, handler):
+            async def guarded_bridge_handler(socket_id, *args, **kwargs):
+                if _is_copilot_socket(socket_id):
+                    logger.warning(
+                        "Blocked inbound %s for a Copilot session",
+                        event,
+                    )
+                    return None
+                return await handler(socket_id, *args, **kwargs)
+
+            return guarded_bridge_handler
+
+        sio.on(
+            event_name,
+            handler=create_bridge_handler(event_name, original_handler),
+        )
 
     sio._gpt_rag_copilot_guards = True

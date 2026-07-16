@@ -20,6 +20,48 @@ def canonical_principal_id(tenant_id: str, object_id: str) -> str:
     return f"{tenant}:{principal}"
 
 
+def safe_profile_metadata(metadata: dict | None) -> dict:
+    """Return the non-secret identity fields that may be cached or serialized."""
+
+    metadata = metadata or {}
+    tenant_id = normalize_guid(metadata.get("tenant_id"), claim_name="tid")
+    object_id = normalize_guid(metadata.get("object_id"), claim_name="oid")
+    principal_id = canonical_principal_id(tenant_id, object_id)
+    declared_principal = str(
+        metadata.get("principal_id")
+        or metadata.get("client_principal_id")
+        or ""
+    ).strip().lower()
+    if declared_principal and declared_principal not in {principal_id, object_id}:
+        raise ValueError("The declared principal does not match tid and oid.")
+
+    raw_group_ids = metadata.get("client_group_names")
+    group_values = (
+        list(raw_group_ids)[:200]
+        if isinstance(raw_group_ids, (list, tuple, set))
+        else []
+    )
+    group_ids = []
+    for value in group_values:
+        try:
+            group_ids.append(normalize_guid(value, claim_name="group"))
+        except ValueError:
+            logger.warning("Ignoring a non-GUID group claim")
+
+    return {
+        "authorized": bool(metadata.get("authorized", True)),
+        "tenant_id": tenant_id,
+        "object_id": object_id,
+        "principal_id": principal_id,
+        "client_principal_id": object_id,
+        "client_principal_name": str(
+            metadata.get("client_principal_name") or ""
+        ).strip(),
+        "client_group_names": group_ids,
+        "user_name": principal_id,
+    }
+
+
 def _read_list(config: AppConfigClient, key: str) -> list[str]:
     value = config.get(key, "", str) or ""
     return [item.strip() for item in value.split(",") if item.strip()]
