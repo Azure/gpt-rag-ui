@@ -26,7 +26,7 @@ from starlette.responses import JSONResponse, Response
 from auth_common import canonical_principal_id, is_user_authorized
 from connectors.appconfig import AppConfigClient
 from embed_config import EmbedSettings
-from entra_token import EntraClientNotAllowedError, EntraTokenError
+from entra_token import EntraTokenError
 
 
 COPILOT_SESSION_COOKIE = "gpt_rag_copilot_session"
@@ -550,7 +550,6 @@ def _auth_error_response(
         clear_copilot_session_cookie(
             response,
             same_site=settings.cookie_samesite,
-            path=settings.cookie_path,
         )
     return response
 
@@ -574,7 +573,6 @@ def _session_response(
         response,
         session,
         same_site=settings.cookie_samesite,
-        path=settings.cookie_path,
     )
     return response
 
@@ -667,17 +665,6 @@ def register_copilot_auth_routes(
         try:
             assert validator is not None
             claims = await validator.validate(access_token)
-        except EntraClientNotAllowedError:
-            logger.warning(
-                "Copilot bootstrap denied an unauthorized portal client"
-            )
-            if previous_session:
-                await sessions.delete(previous_session.session_id)
-            return auth_error(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Portal client access denied",
-                clear_cookie=True,
-            )
         except EntraTokenError:
             logger.warning("Copilot bootstrap rejected an invalid Entra token")
             return auth_error(
@@ -755,7 +742,6 @@ def register_copilot_auth_routes(
         clear_copilot_session_cookie(
             response,
             same_site=settings.cookie_samesite,
-            path=settings.cookie_path,
         )
         return response
 

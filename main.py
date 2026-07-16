@@ -1,7 +1,5 @@
-import hashlib
 import logging
 import os
-import re
 import secrets
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -150,61 +148,6 @@ def _format_release_value(value: str | None, missing_message: str) -> str:
     if normalized:
         return normalized
     return missing_message
-
-
-class _CanonicalPublicRootMiddleware:
-    """Reject raw paths that only match the mount after URL decoding."""
-
-    def __init__(self, app, *, root_path: str):
-        self.app = app
-        self.root_path = root_path.encode("ascii")
-
-    async def __call__(self, scope, receive, send):
-        if scope["type"] not in {"http", "websocket"}:
-            await self.app(scope, receive, send)
-            return
-
-        raw_path = scope.get("raw_path")
-        if raw_path is None:
-            raw_path = str(scope.get("path") or "/").encode("utf-8")
-        canonical_prefix = self.root_path + b"/"
-        if raw_path != self.root_path and not raw_path.startswith(
-            canonical_prefix
-        ):
-            if scope["type"] == "websocket":
-                await send({"type": "websocket.close", "code": 1008})
-                return
-            await Response(
-                "Not found",
-                status_code=404,
-                media_type="text/plain",
-            )(scope, receive, send)
-            return
-
-        await self.app(scope, receive, send)
-
-
-def _mount_public_root(
-    host_app: FastAPI,
-    settings: EmbedSettings,
-) -> FastAPI:
-    """Mount the complete UI under its canonical external path."""
-
-    if not settings.enabled or not settings.root_path:
-        return host_app
-
-    public_app = FastAPI(
-        title="GPT-RAG UI public host",
-        openapi_url=None,
-        docs_url=None,
-        redoc_url=None,
-    )
-    public_app.mount(settings.root_path, host_app)
-    public_app.add_middleware(
-        _CanonicalPublicRootMiddleware,
-        root_path=settings.root_path,
-    )
-    return public_app
 
 
 def _want_chainlit_spontaneous_file_upload(auth_state: AuthState) -> bool:
@@ -671,163 +614,7 @@ def _configure_embed_environment(settings: EmbedSettings) -> None:
 
     os.environ["CHAINLIT_COPILOT_AUTH_MODE_EFFECTIVE"] = settings.auth_mode
     os.environ["CHAINLIT_COOKIE_SAMESITE"] = settings.cookie_samesite
-    os.environ["CHAINLIT_PUBLIC_URL"] = settings.public_url
-    os.environ["CHAINLIT_ROOT_PATH"] = settings.root_path
-    os.environ["CHAINLIT_AUTH_COOKIE_PATH"] = settings.cookie_path
-    os.environ["CHAINLIT_AUTH_COOKIE_NAME"] = (
-        settings.chainlit_auth_cookie_name
-    )
-
-
-def _scope_chainlit_cookies(
-    chainlit_server,
-    root_path: str,
-    auth_cookie_name: str | None = None,
-) -> None:
-    """Apply the validated public path to Chainlit 2.9.4 auth cookies."""
-
-    if not root_path:
-        return
-
-    from chainlit.auth import cookie as chainlit_cookie
-
-    # Chainlit 2.9.4 reads CHAINLIT_ROOT_PATH as an environment-variable
-    # name and omits Path on cookie writes. Keep this compatibility shim local
-    # to the pinned version until the upstream implementation is fixed.
-    chainlit_cookie._cookie_path = root_path
-    auth_cookie_name = auth_cookie_name or EmbedSettings(
-        root_path=root_path
-    ).chainlit_auth_cookie_name
-    chainlit_cookie._auth_cookie_name = auth_cookie_name
-    cookie_suffix = hashlib.sha256(root_path.encode("ascii")).hexdigest()[:12]
-    chainlit_cookie._state_cookie_name = (
-        f"gpt_rag_oauth_state_{cookie_suffix}"
-    )
-    path_bytes = root_path.encode("latin-1")
-    path_pattern = re.compile(rb"(;\s*path=)/(?=;|$)", re.IGNORECASE)
-
-    def rewrite_new_cookie_headers(response, start: int) -> None:
-        for index in range(start, len(response.raw_headers)):
-            name, value = response.raw_headers[index]
-            if name.lower() != b"set-cookie":
-                continue
-            response.raw_headers[index] = (
-                name,
-                path_pattern.sub(
-                    lambda match: match.group(1) + path_bytes,
-                    value,
-                ),
-            )
-
-    def signed_chainlit_cookie_names(request) -> tuple[str, ...]:
-        if request is None:
-            return ()
-        cookies = getattr(request, "cookies", {})
-        token = chainlit_cookie.get_token_from_cookies(cookies)
-        secret = os.environ.get("CHAINLIT_AUTH_SECRET")
-        if not token or not secret:
-            return ()
-        try:
-            import jwt
-
-            payload = jwt.decode(
-                token,
-                secret,
-                algorithms=["HS256"],
-                options={"verify_exp": False},
-            )
-        except jwt.PyJWTError:
-            return ()
-        if not isinstance(payload, dict) or not payload.get("identifier"):
-            return ()
-
-        auth_cookie_name = chainlit_cookie._auth_cookie_name
-        chunk_pattern = re.compile(
-            rf"^{re.escape(auth_cookie_name)}_\d+$"
-        )
-        return tuple(
-            name
-            for name in cookies
-            if name == auth_cookie_name or chunk_pattern.fullmatch(name)
-        )
-
-    def expire_legacy_auth_cookies(response, names: tuple[str, ...]) -> None:
-        for name in names:
-            response.delete_cookie(
-                key=name,
-                path="/",
-                secure=chainlit_cookie._cookie_secure,
-                httponly=True,
-                samesite=chainlit_cookie._cookie_samesite,
-            )
-
-    original_set_auth_cookie = getattr(
-        chainlit_server,
-        "_gpt_rag_original_set_auth_cookie",
-        chainlit_server.set_auth_cookie,
-    )
-    original_clear_auth_cookie = getattr(
-        chainlit_server,
-        "_gpt_rag_original_clear_auth_cookie",
-        chainlit_server.clear_auth_cookie,
-    )
-    original_set_oauth_state_cookie = getattr(
-        chainlit_server,
-        "_gpt_rag_original_set_oauth_state_cookie",
-        chainlit_server.set_oauth_state_cookie,
-    )
-    original_clear_oauth_state_cookie = getattr(
-        chainlit_server,
-        "_gpt_rag_original_clear_oauth_state_cookie",
-        chainlit_server.clear_oauth_state_cookie,
-    )
-    chainlit_server._gpt_rag_original_set_auth_cookie = original_set_auth_cookie
-    chainlit_server._gpt_rag_original_clear_auth_cookie = (
-        original_clear_auth_cookie
-    )
-    chainlit_server._gpt_rag_original_set_oauth_state_cookie = (
-        original_set_oauth_state_cookie
-    )
-    chainlit_server._gpt_rag_original_clear_oauth_state_cookie = (
-        original_clear_oauth_state_cookie
-    )
-
-    def set_auth_cookie(request, response, token):
-        legacy_names = signed_chainlit_cookie_names(request)
-        start = len(response.raw_headers)
-        result = original_set_auth_cookie(request, response, token)
-        rewrite_new_cookie_headers(response, start)
-        expire_legacy_auth_cookies(response, legacy_names)
-        return result
-
-    def clear_auth_cookie(request, response):
-        legacy_names = signed_chainlit_cookie_names(request)
-        start = len(response.raw_headers)
-        result = original_clear_auth_cookie(request, response)
-        rewrite_new_cookie_headers(response, start)
-        expire_legacy_auth_cookies(response, legacy_names)
-        return result
-
-    def set_oauth_state_cookie(response, token):
-        start = len(response.raw_headers)
-        result = original_set_oauth_state_cookie(response, token)
-        rewrite_new_cookie_headers(response, start)
-        return result
-
-    def clear_oauth_state_cookie(response):
-        start = len(response.raw_headers)
-        result = original_clear_oauth_state_cookie(response)
-        rewrite_new_cookie_headers(response, start)
-        return result
-
-    chainlit_cookie.set_auth_cookie = set_auth_cookie
-    chainlit_cookie.clear_auth_cookie = clear_auth_cookie
-    chainlit_cookie.set_oauth_state_cookie = set_oauth_state_cookie
-    chainlit_cookie.clear_oauth_state_cookie = clear_oauth_state_cookie
-    chainlit_server.set_auth_cookie = set_auth_cookie
-    chainlit_server.clear_auth_cookie = clear_auth_cookie
-    chainlit_server.set_oauth_state_cookie = set_oauth_state_cookie
-    chainlit_server.clear_oauth_state_cookie = clear_oauth_state_cookie
+    os.environ["CHAINLIT_PUBLIC_URL"] = settings.ui_origin
 
 
 def _configure_copilot_user_dependency(chainlit_app) -> None:
@@ -915,7 +702,7 @@ def _create_chainlit_app(
 
         download_tokens = configure_download_tokens(
             secret=os.environ["CHAINLIT_AUTH_SECRET"],
-            public_url=embed_settings.public_url,
+            public_url=embed_settings.ui_origin,
         )
 
     copilot_sessions = None
@@ -933,21 +720,12 @@ def _create_chainlit_app(
     # origins can be applied in memory without modifying the deployment files.
     from chainlit.config import config as chainlit_config
 
-    # This application uses an outer ASGI mount for the public path. Chainlit's
-    # CLI-only route prefix must remain empty to avoid applying the path twice.
-    if embed_settings.enabled:
-        chainlit_config.run.root_path = ""
     configure_chainlit_allowed_origins(embed_settings, chainlit_config)
     import chainlit.server as chainlit_server
 
     chainlit_app = chainlit_server.app
     sio = chainlit_server.sio
     if embed_settings.enabled:
-        _scope_chainlit_cookies(
-            chainlit_server,
-            embed_settings.cookie_path,
-            embed_settings.chainlit_auth_cookie_name,
-        )
         _configure_copilot_user_dependency(chainlit_app)
         _configure_copilot_upload_validation(chainlit_server)
     from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
@@ -1148,7 +926,7 @@ def _create_chainlit_app(
             "max_sessions=%s session_ttl_seconds=%s "
             "bootstrap_rate_limit_per_minute=%s",
             embed_settings.auth_mode,
-            embed_settings.public_url,
+            embed_settings.ui_origin,
             list(embed_settings.runtime_allowed_origins),
             embed_settings.cookie_samesite,
             embed_settings.max_sessions,
@@ -1190,7 +968,6 @@ def _create_chainlit_app(
                 tenant_id=embed_settings.entra_tenant_id,
                 audience=embed_settings.entra_audience,
                 required_scope=embed_settings.entra_required_scope,
-                allowed_client_ids=embed_settings.entra_allowed_client_ids,
             )
         register_copilot_auth_routes(
             host_app,
@@ -1244,16 +1021,9 @@ def _create_chainlit_app(
 
     logger.info("Mounted Chainlit app at / on host app")
 
-    public_app = _mount_public_root(host_app, embed_settings)
-    if public_app is not host_app:
-        logger.info(
-            "Mounted GPT-RAG UI at public root path %s",
-            embed_settings.root_path,
-        )
-
-    FastAPIInstrumentor.instrument_app(public_app)
+    FastAPIInstrumentor.instrument_app(host_app)
     HTTPXClientInstrumentor().instrument()
-    return public_app
+    return host_app
 
 
 def build_app() -> FastAPI:

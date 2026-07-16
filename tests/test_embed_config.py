@@ -10,7 +10,6 @@ from embed_config import (
 
 
 TENANT_ID = "11111111-2222-3333-4444-555555555555"
-PORTAL_CLIENT_ID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 
 
 class FakeConfig:
@@ -30,7 +29,6 @@ def enabled_env(**overrides):
         "CHAINLIT_ALLOWED_ORIGINS": "https://portal.example.com",
         "CHAINLIT_COPILOT_ENTRA_TENANT_ID": TENANT_ID,
         "CHAINLIT_COPILOT_ENTRA_AUDIENCE": "api://test",
-        "CHAINLIT_COPILOT_ENTRA_ALLOWED_CLIENT_IDS": PORTAL_CLIENT_ID,
     }
     values.update(overrides)
     return values
@@ -55,7 +53,6 @@ class EmbedConfigTests(unittest.TestCase):
             ),
         )
         self.assertTrue(settings.uses_entra)
-        self.assertEqual((PORTAL_CLIENT_ID,), settings.entra_allowed_client_ids)
         self.assertEqual(
             ("https://portal.example.com", "http://localhost:3000"),
             settings.allowed_origins,
@@ -75,7 +72,6 @@ class EmbedConfigTests(unittest.TestCase):
             "CHAINLIT_URL",
             "CHAINLIT_COPILOT_ENTRA_TENANT_ID",
             "CHAINLIT_COPILOT_ENTRA_AUDIENCE",
-            "CHAINLIT_COPILOT_ENTRA_ALLOWED_CLIENT_IDS",
         ):
             with self.subTest(key=key):
                 values = enabled_env()
@@ -137,8 +133,8 @@ class EmbedConfigTests(unittest.TestCase):
                 with self.assertRaises(EmbedConfigError):
                     load_embed_settings(FakeConfig(), enabled_env(**{key: value}))
 
-    def test_same_origin_requires_root_path(self):
-        with self.assertRaisesRegex(EmbedConfigError, "CHAINLIT_ROOT_PATH"):
+    def test_same_origin_is_rejected_to_isolate_standalone_auth(self):
+        with self.assertRaisesRegex(EmbedConfigError, "separate authentication"):
             load_embed_settings(
                 FakeConfig(),
                 enabled_env(
@@ -146,25 +142,12 @@ class EmbedConfigTests(unittest.TestCase):
                 ),
             )
 
-    def test_same_origin_accepts_canonical_root_path(self):
-        settings = load_embed_settings(
-            FakeConfig(),
-            enabled_env(
-                CHAINLIT_ALLOWED_ORIGINS="https://chat.example.com",
-                CHAINLIT_ROOT_PATH="/gpt-rag",
-            ),
-        )
-        self.assertEqual("/gpt-rag", settings.root_path)
-        self.assertEqual("https://chat.example.com/gpt-rag", settings.public_url)
-        self.assertEqual("/gpt-rag", settings.cookie_path)
-        self.assertRegex(
-            settings.chainlit_auth_cookie_name,
-            r"^gpt_rag_access_token_[0-9a-f]{12}$",
-        )
-        self.assertNotEqual(
-            settings.chainlit_auth_cookie_name,
-            EmbedSettings(root_path="/other").chainlit_auth_cookie_name,
-        )
+    def test_root_path_is_rejected_when_embedding_is_enabled(self):
+        with self.assertRaisesRegex(EmbedConfigError, "not supported"):
+            load_embed_settings(
+                FakeConfig(),
+                enabled_env(CHAINLIT_ROOT_PATH="/gpt-rag"),
+            )
 
     def test_auth_mode_is_required_and_explicit(self):
         for auth_mode in ("", "ANON", "oauth"):
@@ -181,13 +164,11 @@ class EmbedConfigTests(unittest.TestCase):
         for key in (
             "CHAINLIT_COPILOT_ENTRA_TENANT_ID",
             "CHAINLIT_COPILOT_ENTRA_AUDIENCE",
-            "CHAINLIT_COPILOT_ENTRA_ALLOWED_CLIENT_IDS",
         ):
             values.pop(key)
         settings = load_embed_settings(FakeConfig(), values)
         self.assertEqual("anonymous", settings.auth_mode)
         self.assertFalse(settings.uses_entra)
-        self.assertEqual((), settings.entra_allowed_client_ids)
 
     def test_rejects_path_in_chainlit_url(self):
         with self.assertRaisesRegex(EmbedConfigError, "CHAINLIT_URL"):
@@ -197,26 +178,6 @@ class EmbedConfigTests(unittest.TestCase):
                     CHAINLIT_URL="https://portal.example.com/gpt-rag",
                 ),
             )
-
-    def test_rejects_malformed_root_paths(self):
-        for root_path in (
-            "gpt-rag",
-            "/gpt-rag/",
-            "/gpt-rag//chat",
-            "/gpt-rag/../chat",
-            "/gpt%2Frag",
-            "/gpt-rag?mode=embed",
-            "/gpt-rag#embed",
-        ):
-            with self.subTest(root_path=root_path):
-                with self.assertRaisesRegex(
-                    EmbedConfigError,
-                    "CHAINLIT_ROOT_PATH",
-                ):
-                    load_embed_settings(
-                        FakeConfig(),
-                        enabled_env(CHAINLIT_ROOT_PATH=root_path),
-                    )
 
     def test_reads_bootstrap_rate_limit(self):
         settings = load_embed_settings(

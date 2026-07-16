@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import os
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
 from http.cookies import CookieError, SimpleCookie
@@ -23,16 +24,26 @@ from embed_config import EmbedSettings
 
 
 logger = logging.getLogger("gpt_rag_ui.embed_security")
-_COPILOT_AUTH_PATHS = {
+_ALWAYS_EMBEDDED_HTTP_PATHS = {
     "/copilot/auth/bootstrap",
     "/copilot/auth/logout",
 }
-_DISABLED_CHAINLIT_AUTH_PATHS = {"/auth/jwt", "/auth/header", "/logout"}
+_EMBEDDED_AUTH_PATHS = {
+    "/login",
+    "/logout",
+    "/set-session-cookie",
+    "/auth/jwt",
+    "/auth/header",
+}
 _COPILOT_ONLY_PATH_PREFIXES = ("/copilot",)
 _COPILOT_SCOPE_SESSION_KEY = "gpt_rag.copilot_session_id"
-_ANONYMOUS_DISABLED_PATH_PREFIXES = (
+_ANONYMOUS_DENIED_HTTP_PREFIXES = (
     "/feedback",
+    "/mcp",
+    "/project/action",
+    "/project/element",
     "/project/file",
+    "/project/share",
     "/project/thread",
     "/project/threads",
 )
@@ -586,24 +597,6 @@ def _has_cookie_name(scope, name: str) -> bool:
     )
 
 
-def _application_path(scope, configured_root_path: str) -> str:
-    """Return the path as seen by the mounted GPT-RAG UI application."""
-
-    path = str(scope.get("path") or "/")
-    candidates = (
-        str(scope.get("root_path") or "").rstrip("/"),
-        configured_root_path.rstrip("/"),
-    )
-    for prefix in candidates:
-        if not prefix:
-            continue
-        if path == prefix:
-            return "/"
-        if path.startswith(f"{prefix}/"):
-            return path[len(prefix) :]
-    return path
-
-
 def _inject_chainlit_cookie(
     scope,
     token: str,
@@ -688,6 +681,55 @@ def _copilot_project_settings_send(send, auth_mode: str):
     return send_response
 
 
+def _copilot_user_send(send):
+    """Remove the opaque session marker from browser-visible user metadata."""
+
+    pending_start = None
+
+    async def send_response(message):
+        nonlocal pending_start
+        if message["type"] == "http.response.start":
+            pending_start = dict(message)
+            return
+
+        if pending_start is not None:
+            if (
+                message["type"] == "http.response.body"
+                and not message.get("more_body", False)
+            ):
+                try:
+                    payload = json.loads(message.get("body", b""))
+                    metadata = payload.get("metadata")
+                    if isinstance(metadata, dict):
+                        metadata.pop("copilot_session_id", None)
+                    body = json.dumps(
+                        payload,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                    message = dict(message)
+                    message["body"] = body
+                    headers = [
+                        (name, value)
+                        for name, value in pending_start.get("headers", [])
+                        if name.lower() != b"content-length"
+                    ]
+                    headers.append(
+                        (b"content-length", str(len(body)).encode("ascii"))
+                    )
+                    pending_start["headers"] = headers
+                except (TypeError, ValueError, AttributeError):
+                    logger.exception(
+                        "Could not sanitize the Copilot user response"
+                    )
+
+            await send(pending_start)
+            pending_start = None
+
+        await send(message)
+
+    return send_response
+
+
 class CopilotRequestMiddleware:
     def __init__(
         self,
@@ -703,6 +745,10 @@ class CopilotRequestMiddleware:
         self.allowed_origins = set(settings.runtime_allowed_origins)
         self.portal_origins = set(settings.allowed_origins)
         self.standalone_available = standalone_available
+        self.chainlit_auth_cookie_name = os.environ.get(
+            "CHAINLIT_AUTH_COOKIE_NAME",
+            "access_token",
+        )
 
     @staticmethod
     def _is_public_copilot_path(path: str) -> bool:
@@ -720,11 +766,23 @@ class CopilotRequestMiddleware:
         return path == "/api/download" or path.startswith("/api/download/")
 
     @staticmethod
-    def _is_disabled_chainlit_auth_path(path: str) -> bool:
-        return (
-            path in _DISABLED_CHAINLIT_AUTH_PATHS
-            or path.startswith("/auth/oauth/")
+    def _is_embedded_auth_path(path: str) -> bool:
+        return path in _EMBEDDED_AUTH_PATHS or path.startswith(
+            "/auth/oauth/"
         )
+
+    def _is_copilot_http(
+        self,
+        *,
+        path: str,
+        origin: str,
+        has_copilot_cookie: bool,
+    ) -> bool:
+        if origin in self.portal_origins:
+            return True
+        if path in _ALWAYS_EMBEDDED_HTTP_PATHS:
+            return True
+        return self._is_download_path(path) and has_copilot_cookie
 
     async def _reject(self, scope, receive, send, status_code: int) -> None:
         if scope["type"] == "websocket":
@@ -747,7 +805,7 @@ class CopilotRequestMiddleware:
             await self.app(scope, receive, send)
             return
 
-        path = _application_path(scope, self.settings.root_path)
+        path = str(scope.get("path") or "/")
         raw_origins = _header_values(scope, b"origin")
         raw_origin = raw_origins[0] if len(raw_origins) == 1 else ""
         origin = canonical_origin(raw_origin) if raw_origin else ""
@@ -756,16 +814,15 @@ class CopilotRequestMiddleware:
             raw_session_id if is_valid_session_id(raw_session_id) else None
         )
         is_allowed_origin = origin in self.allowed_origins
-        is_distinct_portal = (
-            origin in self.portal_origins
-            and origin != self.settings.ui_origin
-        )
         has_copilot_cookie = _has_cookie_name(scope, COPILOT_SESSION_COOKIE)
-        is_copilot = (
-            self._is_explicit_copilot_path(path)
-            or is_distinct_portal
-            or has_copilot_cookie
-        )
+        if scope["type"] == "http":
+            is_copilot = self._is_copilot_http(
+                path=path,
+                origin=origin,
+                has_copilot_cookie=has_copilot_cookie,
+            )
+        else:
+            is_copilot = origin in self.portal_origins
 
         if len(raw_origins) > 1 or (
             raw_origins and not is_allowed_origin
@@ -775,10 +832,29 @@ class CopilotRequestMiddleware:
         if scope["type"] == "websocket" and not raw_origins:
             await self._reject(scope, receive, send, 403)
             return
-        if path in _COPILOT_AUTH_PATHS and not is_allowed_origin:
+        if (
+            path in _ALWAYS_EMBEDDED_HTTP_PATHS
+            and origin not in self.portal_origins
+        ):
             await self._reject(scope, receive, send, 403)
             return
-        if is_copilot and self._is_disabled_chainlit_auth_path(path):
+        if is_copilot and path == "/logout":
+            if session_id:
+                await self.sessions.delete(session_id)
+            response = PlainTextResponse(
+                "",
+                status_code=204,
+                headers={"Cache-Control": "no-store"},
+            )
+            response.delete_cookie(
+                COPILOT_SESSION_COOKIE,
+                secure=True,
+                httponly=True,
+                samesite=self.settings.cookie_samesite,
+            )
+            await response(scope, receive, send)
+            return
+        if is_copilot and self._is_embedded_auth_path(path):
             response = PlainTextResponse(
                 "Not found",
                 status_code=404,
@@ -807,7 +883,7 @@ class CopilotRequestMiddleware:
                     scope = _inject_chainlit_cookie(
                         scope,
                         request_session.chainlit_token,
-                        self.settings.chainlit_auth_cookie_name,
+                        self.chainlit_auth_cookie_name,
                     )
                 scope[_COPILOT_SCOPE_SESSION_KEY] = session_id
 
@@ -816,7 +892,7 @@ class CopilotRequestMiddleware:
                 and getattr(request_session, "auth_mode", "entra") == "anonymous"
                 and any(
                     path == prefix or path.startswith(f"{prefix}/")
-                    for prefix in _ANONYMOUS_DISABLED_PATH_PREFIXES
+                    for prefix in _ANONYMOUS_DENIED_HTTP_PREFIXES
                 )
             ):
                 response = PlainTextResponse(
@@ -848,17 +924,15 @@ class CopilotRequestMiddleware:
 
         context_token = bind_request_copilot_session(request_session)
         try:
-            downstream_send = (
-                _copilot_project_settings_send(
-                    send,
-                    request_session.auth_mode,
-                )
-                if (
-                    scope["type"] == "http"
-                    and path == "/project/settings"
-                )
-                else send
-            )
+            downstream_send = send
+            if scope["type"] == "http":
+                if path == "/project/settings":
+                    downstream_send = _copilot_project_settings_send(
+                        send,
+                        request_session.auth_mode,
+                    )
+                elif path == "/user":
+                    downstream_send = _copilot_user_send(send)
             await self.app(scope, receive, downstream_send)
         finally:
             reset_request_copilot_session(context_token)

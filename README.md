@@ -29,52 +29,38 @@ repository-specific security contract and portal integration steps for the
 opt-in Chainlit Copilot widget are documented in
 [Embed GPT-RAG with Chainlit Copilot](docs/copilot-embedding.md).
 
-Chainlit 2.9.4 floating Copilot mode uses an explicit
-`CHAINLIT_COPILOT_AUTH_MODE=anonymous|entra`; there is no default or
-authentication-failure fallback. Both modes issue only a bounded, opaque
-`Secure; HttpOnly` cookie to the browser. Entra mode additionally requires
-tenant, audience, scope, and `CHAINLIT_COPILOT_ENTRA_ALLOWED_CLIENT_IDS`;
-only v2 tokens whose `azp` is allow-listed are accepted.
+Chainlit 2.9.4 floating Copilot mode is opt-in and requires an explicit
+`CHAINLIT_COPILOT_AUTH_MODE=anonymous|entra`. There is no default mode and no
+fallback from failed Entra authentication to anonymous access.
 
-The preferred topology is a same-origin reverse-proxy path:
+Use distinct exact origins for the portal and GPT-RAG UI:
 
 ```text
 CHAINLIT_COPILOT_ENABLED=true
 CHAINLIT_COPILOT_AUTH_MODE=anonymous
-CHAINLIT_URL=https://portal.contoso.com
-CHAINLIT_ROOT_PATH=/gpt-rag
+CHAINLIT_URL=https://chat.contoso.com
 CHAINLIT_ALLOWED_ORIGINS=https://portal.contoso.com
 ```
 
-For Entra, set `CHAINLIT_COPILOT_AUTH_MODE=entra` and also configure
-`CHAINLIT_COPILOT_ENTRA_TENANT_ID`,
-`CHAINLIT_COPILOT_ENTRA_AUDIENCE`,
-`CHAINLIT_COPILOT_ENTRA_ALLOWED_CLIENT_IDS`, and optionally
-`CHAINLIT_COPILOT_ENTRA_REQUIRED_SCOPE` (default `user_impersonation`).
-`CHAINLIT_COOKIE_SAMESITE=none` is needed only for a cross-site portal.
-Session bounds use `CHAINLIT_COPILOT_SESSION_TTL_SECONDS`,
-`CHAINLIT_COPILOT_MAX_SESSIONS`, and
-`CHAINLIT_COPILOT_BOOTSTRAP_RATE_LIMIT_PER_MINUTE`.
-
-The proxy must preserve `/gpt-rag` for HTTP, static assets, downloads,
-Socket.IO polling/upgrades, and WebSockets. The public endpoints are beneath
-that base, including `/copilot/index.js`, `/copilot/auth/bootstrap`,
-`/copilot/auth/logout`, `/project/settings`, `/ws/socket.io`, and
-`/api/download/{grant_token}`. Sibling subdomains remain supported with exact
-CORS; unrelated cross-site embedding is best effort because third-party
-cookies may be blocked.
-
-`CHAINLIT_AUTH_SECRET` must be an operator-managed Key Vault secret of at least
-32 UTF-8 bytes. Entra and internal Chainlit tokens never become widget
-`accessToken` values. Citation grants are absolute, signed, short-lived, and
-rechecked against identity, conversation, container, and blob path. Anonymous
-mode intentionally has no durable thread recovery, user-bound uploads, or
-authenticated citation downloads.
-
-Process-local state requires one Uvicorn process, one active revision, and one
-replica. Restarts and revision switches sign users out. Standalone OAuth and
-`ALLOW_ANONYMOUS` remain independent, and standalone behavior is unchanged
+`CHAINLIT_ROOT_PATH` is not supported while embedding is enabled. Exact origin
+checks isolate embedded sessions from standalone OAuth and `ALLOW_ANONYMOUS`.
+Embedding remains disabled by default, and standalone behavior is unchanged
 when `CHAINLIT_COPILOT_ENABLED=false`.
+
+Both modes issue only a bounded opaque `Secure; HttpOnly` session cookie to the
+browser. Anonymous mode creates a unique ephemeral principal and deliberately
+disables durable thread recovery, user-bound uploads, and citation downloads.
+Entra mode validates a delegated v2 access token during bootstrap. The portal
+does not pass that token to `mountChainlitWidget`.
+
+Chainlit Copilot renders as a floating widget in an open Shadow DOM, not an
+iframe. For cross-site portals, `CHAINLIT_COOKIE_SAMESITE=none` is required and
+browser third-party-cookie policy can still block the session. Process-local
+session and socket state requires one Uvicorn process, one active revision, and
+one replica.
+
+See [Embed GPT-RAG with Chainlit Copilot](docs/copilot-embedding.md) for both
+mode examples, the security tradeoffs, lifecycle handling, and troubleshooting.
 
 ## Prerequisites
 

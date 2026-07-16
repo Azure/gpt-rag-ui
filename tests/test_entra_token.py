@@ -31,7 +31,6 @@ class EntraTokenValidatorTests(unittest.IsolatedAsyncioTestCase):
         self.validator = EntraTokenValidator(
             tenant_id=TENANT_ID,
             audience=AUDIENCE,
-            allowed_client_ids=(PORTAL_CLIENT_ID,),
             clock_skew_seconds=0,
             jwks_loader=load_jwks,
         )
@@ -133,7 +132,6 @@ class EntraTokenValidatorTests(unittest.IsolatedAsyncioTestCase):
         validator = EntraTokenValidator(
             tenant_id=TENANT_ID,
             audience=AUDIENCE,
-            allowed_client_ids=(PORTAL_CLIENT_ID,),
             jwks_loader=counted_loader,
         )
 
@@ -161,19 +159,6 @@ class EntraTokenValidatorTests(unittest.IsolatedAsyncioTestCase):
         )
         with self.assertRaisesRegex(EntraTokenError, "RS256"):
             await self.validator.validate(token)
-
-    async def test_rejects_missing_or_unlisted_authorized_party(self):
-        for claims in (
-            {"azp": None},
-            {"azp": "99999999-8888-7777-6666-555555555555"},
-            {"azp": None, "appid": PORTAL_CLIENT_ID},
-        ):
-            with self.subTest(claims=claims):
-                with self.assertRaisesRegex(
-                    EntraTokenError,
-                    "portal client",
-                ):
-                    await self.validator.validate(self.create_token(**claims))
 
     async def test_rejects_v1_token_even_with_appid(self):
         with self.assertRaisesRegex(EntraTokenError, "v2.0"):

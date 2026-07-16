@@ -32,9 +32,15 @@ SESSION_ID = "s" * 43
 class FakeSessions:
     def __init__(self, session=None):
         self.session = session
+        self.deleted_session_ids = []
 
     async def get(self, session_id):
         return self.session if session_id == SESSION_ID else None
+
+    async def delete(self, session_id):
+        self.deleted_session_ids.append(session_id)
+        if session_id == SESSION_ID:
+            self.session = None
 
 
 def create_app(session=None, *, upload_enabled=True):
@@ -72,6 +78,16 @@ def create_app(session=None, *, upload_enabled=True):
             "threadSharing": True,
             "features": {
                 "spontaneous_file_upload": {"enabled": upload_enabled},
+            },
+        }
+
+    @app.get("/user")
+    async def user():
+        return {
+            "identifier": "copilot-user",
+            "metadata": {
+                "auth_source": "copilot_session",
+                "copilot_session_id": SESSION_ID,
             },
         }
 
@@ -171,15 +187,21 @@ class EmbedSecurityTests(unittest.TestCase):
         self.assertEqual(200, response.status_code)
         self.assertEqual("internal-chainlit-jwt", response.json()["cookie"])
 
-    def test_copilot_cookie_classifies_same_origin_request(self):
-        session = SimpleNamespace(chainlit_token="internal-chainlit-jwt")
+    def test_cookie_without_origin_does_not_select_copilot_policy(self):
+        session = SimpleNamespace(
+            chainlit_token="internal-chainlit-jwt",
+            auth_mode="entra",
+        )
         with TestClient(create_app(session), base_url=CHAT) as client:
             response = client.get(
                 "/protected",
-                headers={"Cookie": f"{COPILOT_SESSION_COOKIE}={SESSION_ID}"},
+                headers={
+                    "Cookie": f"{COPILOT_SESSION_COOKIE}={SESSION_ID}",
+                },
             )
+
         self.assertEqual(200, response.status_code)
-        self.assertEqual("internal-chainlit-jwt", response.json()["cookie"])
+        self.assertIsNone(response.json()["cookie"])
 
     def test_referer_never_enables_copilot_auth(self):
         session = SimpleNamespace(chainlit_token="internal-chainlit-jwt")
@@ -242,6 +264,105 @@ class EmbedSecurityTests(unittest.TestCase):
             response = client.post("/auth/jwt", headers={"Origin": PORTAL})
         self.assertEqual(404, response.status_code)
 
+    def test_anonymous_denies_manual_identity_and_persistence_routes(self):
+        session = SimpleNamespace(
+            chainlit_token="internal-chainlit-jwt",
+            auth_mode="anonymous",
+        )
+        denied = (
+            "/feedback",
+            "/mcp",
+            "/project/action",
+            "/project/element",
+            "/project/file",
+            "/project/share",
+            "/project/thread",
+            "/project/threads",
+        )
+        with TestClient(create_app(session), base_url=CHAT) as client:
+            for route in denied:
+                with self.subTest(route=route):
+                    response = client.post(
+                        route,
+                        headers={
+                            "Origin": PORTAL,
+                            "Cookie": (
+                                f"{COPILOT_SESSION_COOKIE}={SESSION_ID}"
+                            ),
+                        },
+                    )
+                    self.assertEqual(403, response.status_code)
+
+    def test_embedded_auth_routes_are_not_available(self):
+        session = SimpleNamespace(
+            chainlit_token="internal-chainlit-jwt",
+            auth_mode="entra",
+        )
+        denied = (
+            "/login",
+            "/auth/jwt",
+            "/auth/header",
+            "/auth/oauth/azure-ad/callback",
+            "/set-session-cookie",
+        )
+        with TestClient(create_app(session), base_url=CHAT) as client:
+            for route in denied:
+                with self.subTest(route=route):
+                    response = client.get(
+                        route,
+                        headers={
+                            "Origin": PORTAL,
+                            "Cookie": (
+                                f"{COPILOT_SESSION_COOKIE}={SESSION_ID}"
+                            ),
+                        },
+                    )
+                    self.assertEqual(404, response.status_code)
+
+    def test_copilot_user_response_hides_opaque_session_id(self):
+        session = SimpleNamespace(
+            chainlit_token="internal-chainlit-jwt",
+            auth_mode="anonymous",
+        )
+        with TestClient(create_app(session), base_url=CHAT) as client:
+            response = client.get(
+                "/user",
+                headers={
+                    "Origin": PORTAL,
+                    "Cookie": f"{COPILOT_SESSION_COOKIE}={SESSION_ID}",
+                },
+            )
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual("copilot-user", response.json()["identifier"])
+        self.assertEqual(
+            {"auth_source": "copilot_session"},
+            response.json()["metadata"],
+        )
+
+    def test_native_embedded_logout_invalidates_session_and_cookie(self):
+        session = SimpleNamespace(
+            chainlit_token="internal-chainlit-jwt",
+            auth_mode="anonymous",
+        )
+        app = create_app(session)
+        sessions = app.user_middleware[0].kwargs["sessions"]
+        with TestClient(app, base_url=CHAT) as client:
+            response = client.get(
+                "/logout",
+                headers={
+                    "Origin": PORTAL,
+                    "Cookie": f"{COPILOT_SESSION_COOKIE}={SESSION_ID}",
+                },
+            )
+
+        self.assertEqual(204, response.status_code)
+        self.assertEqual([SESSION_ID], sessions.deleted_session_ids)
+        self.assertIn(
+            f"{COPILOT_SESSION_COOKIE}=",
+            response.headers["set-cookie"],
+        )
+
     def test_chainlit_oauth_is_disabled_only_for_copilot_session(self):
         session = SimpleNamespace(chainlit_token="internal-chainlit-jwt")
         with TestClient(create_app(session), base_url=CHAT) as client:
@@ -252,7 +373,7 @@ class EmbedSecurityTests(unittest.TestCase):
             copilot = client.get(
                 "/auth/oauth/azure-ad",
                 headers={
-                    "Origin": CHAT,
+                    "Origin": PORTAL,
                     "Cookie": f"{COPILOT_SESSION_COOKIE}={SESSION_ID}",
                 },
             )
@@ -299,64 +420,17 @@ class EmbedSecurityTests(unittest.TestCase):
             ) as websocket:
                 self.assertEqual("connected", websocket.receive_text())
 
-    def test_same_origin_mount_preserves_exact_path_separation(self):
+    def test_websocket_cookie_does_not_select_embedded_policy_from_ui_origin(self):
         session = SimpleNamespace(chainlit_token="internal-chainlit-jwt")
-        service = FastAPI()
-
-        @service.get("/protected")
-        async def protected(request: Request):
-            return {
-                "cookie": request.cookies.get(
-                    settings.chainlit_auth_cookie_name
-                )
-            }
-
-        @service.post("/copilot/auth/bootstrap")
-        async def bootstrap():
-            return {"ok": True}
-
-        settings = EmbedSettings(
-            enabled=True,
-            auth_mode="anonymous",
-            ui_origin=PORTAL,
-            root_path="/gpt-rag",
-            allowed_origins=(PORTAL,),
-        )
-        service.add_middleware(
-            CopilotRequestMiddleware,
-            settings=settings,
-            sessions=FakeSessions(session),
-        )
-        public = FastAPI()
-        public.mount("/gpt-rag", service)
-
-        with TestClient(public, base_url=PORTAL) as client:
-            bootstrap_response = client.post(
-                "/gpt-rag/copilot/auth/bootstrap",
-                headers={"Origin": PORTAL},
-            )
-            standalone = client.get(
-                "/gpt-rag/protected",
-                headers={"Origin": PORTAL},
-            )
-            copilot = client.get(
-                "/gpt-rag/protected",
+        with TestClient(create_app(session), base_url=CHAT) as client:
+            with client.websocket_connect(
+                "/ws/socket.io",
                 headers={
-                    "Origin": PORTAL,
+                    "Origin": CHAT,
                     "Cookie": f"{COPILOT_SESSION_COOKIE}={SESSION_ID}",
                 },
-            )
-            missing_prefix = client.get("/protected")
-            ambiguous_prefix = client.get("/gpt-rag-other/protected")
-
-        self.assertEqual(200, bootstrap_response.status_code)
-        self.assertIsNone(standalone.json()["cookie"])
-        self.assertEqual(
-            "internal-chainlit-jwt",
-            copilot.json()["cookie"],
-        )
-        self.assertEqual(404, missing_prefix.status_code)
-        self.assertEqual(404, ambiguous_prefix.status_code)
+            ) as websocket:
+                self.assertEqual("connected", websocket.receive_text())
 
     def test_anonymous_copilot_disables_identity_bound_routes(self):
         session = SimpleNamespace(

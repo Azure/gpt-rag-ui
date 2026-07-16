@@ -24,7 +24,7 @@ from embed_auth import (
     set_copilot_session_cookie,
 )
 from embed_security import CopilotRequestMiddleware
-from entra_token import EntraClientNotAllowedError, EntraTokenError
+from entra_token import EntraTokenError
 
 
 TENANT_ID = "11111111-2222-3333-4444-555555555555"
@@ -316,7 +316,6 @@ class EmbedAuthTests(unittest.IsolatedAsyncioTestCase):
             enabled=True,
             auth_mode="anonymous",
             ui_origin="https://portal.example.com",
-            root_path="/gpt-rag",
             allowed_origins=("https://portal.example.com",),
             session_ttl_seconds=120,
         )
@@ -343,7 +342,7 @@ class EmbedAuthTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(200, bootstrap.status_code)
         self.assertEqual("anonymous", bootstrap.json()["authMode"])
-        self.assertIn("Path=/gpt-rag", bootstrap.headers["set-cookie"])
+        self.assertIn("Path=/", bootstrap.headers["set-cookie"])
         session = await sessions.get(session_id)
         self.assertEqual("anonymous", session.auth_mode)
         self.assertIsNone(session.access_token)
@@ -640,14 +639,6 @@ class EmbedAuthTests(unittest.IsolatedAsyncioTestCase):
             headers={"Authorization": "Bearer invalid"},
         )
         self.assertEqual(401, invalid.status_code)
-
-        unauthorized_client = await run_request(
-            AsyncMock(
-                side_effect=EntraClientNotAllowedError("not allowed")
-            ),
-            headers={"Authorization": "Bearer token"},
-        )
-        self.assertEqual(403, unauthorized_client.status_code)
 
         unavailable = await run_request(
             AsyncMock(
