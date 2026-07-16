@@ -12,6 +12,19 @@ with (
 
 
 class AppCitationTests(unittest.TestCase):
+    def test_oauth_configuration_detects_environment_only_settings(self):
+        oauth_environment = {
+            "OAUTH_AZURE_AD_CLIENT_ID": " client-id ",
+            "OAUTH_AZURE_AD_CLIENT_SECRET": " client-secret ",
+            "OAUTH_AZURE_AD_TENANT_ID": " tenant-id ",
+        }
+        with (
+            patch.dict(os.environ, oauth_environment, clear=True),
+            patch.object(app, "config") as config,
+        ):
+            config.get.return_value = ""
+            self.assertTrue(app._oauth_is_configured())
+
     def test_copilot_citation_is_absolute_signed_and_principal_bound(self):
         manager = Mock(public_url="https://chat.example.com")
         manager.issue.return_value = (

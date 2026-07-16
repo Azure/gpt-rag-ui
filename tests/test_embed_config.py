@@ -113,6 +113,13 @@ class EmbedConfigTests(unittest.TestCase):
                 ),
             )
 
+    def test_rejects_http_chainlit_url_even_on_localhost(self):
+        with self.assertRaisesRegex(EmbedConfigError, "CHAINLIT_URL must use HTTPS"):
+            load_embed_settings(
+                FakeConfig(),
+                enabled_env(CHAINLIT_URL="http://localhost:8000"),
+            )
+
     def test_rejects_unbounded_session_settings(self):
         for key, value in (
             ("CHAINLIT_COPILOT_SESSION_TTL_SECONDS", "59"),

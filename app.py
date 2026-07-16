@@ -43,9 +43,20 @@ _is_running_in_azure_host = bool(
 def _oauth_is_configured() -> bool:
     # Consider OAuth configured only when the required AAD fields exist.
     # If OAuth isn't configured, we treat requests as anonymous (do not block).
-    client_id = config.get("OAUTH_AZURE_AD_CLIENT_ID", "", str) or config.get("CLIENT_ID", "", str)
-    client_secret = config.get("OAUTH_AZURE_AD_CLIENT_SECRET", "", str) or config.get("authClientSecret", "", str)
-    tenant_id = config.get("OAUTH_AZURE_AD_TENANT_ID", "", str)
+    client_id = (
+        (os.environ.get("OAUTH_AZURE_AD_CLIENT_ID") or "").strip()
+        or str(config.get("OAUTH_AZURE_AD_CLIENT_ID", "", str) or "").strip()
+        or str(config.get("CLIENT_ID", "", str) or "").strip()
+    )
+    client_secret = (
+        (os.environ.get("OAUTH_AZURE_AD_CLIENT_SECRET") or "").strip()
+        or str(config.get("OAUTH_AZURE_AD_CLIENT_SECRET", "", str) or "").strip()
+        or str(config.get("authClientSecret", "", str) or "").strip()
+    )
+    tenant_id = (
+        (os.environ.get("OAUTH_AZURE_AD_TENANT_ID") or "").strip()
+        or str(config.get("OAUTH_AZURE_AD_TENANT_ID", "", str) or "").strip()
+    )
     return bool(client_id and client_secret and tenant_id)
 
 
