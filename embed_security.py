@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 import os
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Collection
 from contextvars import ContextVar
 from http.cookies import CookieError, SimpleCookie
 from urllib.parse import urlsplit
@@ -1025,6 +1025,28 @@ def _copilot_session_id_from_environ(environ) -> str | None:
     return session_id if is_valid_session_id(session_id) else None
 
 
+def _has_verified_portal_origin(
+    environ,
+    portal_origins: Collection[str],
+) -> bool:
+    if not isinstance(environ, dict):
+        return False
+
+    scope = environ.get("asgi.scope")
+    if isinstance(scope, dict):
+        raw_origins = _header_values(scope, b"origin")
+        if len(raw_origins) != 1:
+            return False
+        raw_origin = raw_origins[0]
+    else:
+        raw_origin = environ.get("HTTP_ORIGIN")
+        if not isinstance(raw_origin, str):
+            return False
+
+    origin = canonical_origin(raw_origin)
+    return bool(origin and origin in portal_origins)
+
+
 def _copilot_session_marker(user) -> str:
     return str(
         ((getattr(user, "metadata", None) or {}).get("copilot_session_id") or "")
@@ -1166,6 +1188,7 @@ def configure_copilot_bridge_guards(
     sio,
     *,
     sessions: CopilotSessionStore,
+    portal_origins: Collection[str],
 ) -> None:
     global _copilot_disconnect_socket, _copilot_sio, _copilot_socket_registry
     _copilot_sio = sio
@@ -1173,6 +1196,7 @@ def configure_copilot_bridge_guards(
     if getattr(sio, "_gpt_rag_copilot_guards", False):
         return
 
+    configured_portal_origins = frozenset(portal_origins)
     registry = CopilotSocketRegistry()
     _copilot_socket_registry = registry
     original_emit = sio.emit
@@ -1258,17 +1282,24 @@ def configure_copilot_bridge_guards(
             engineio_admission_enabled = True
 
             async def guarded_engineio_connect(engineio_sid, environ):
-                session_id = _copilot_session_id_from_environ(environ)
-                reserved = False
-                if session_id:
-                    if not await sessions.get(session_id):
-                        return False
-                    reserved = await registry.reserve_engineio_transport(
-                        session_id,
+                if not _has_verified_portal_origin(
+                    environ,
+                    configured_portal_origins,
+                ):
+                    return await original_engineio_connect(
                         engineio_sid,
+                        environ,
                     )
-                    if not reserved:
-                        return False
+
+                session_id = _copilot_session_id_from_environ(environ)
+                if not session_id or not await sessions.get(session_id):
+                    return False
+                reserved = await registry.reserve_engineio_transport(
+                    session_id,
+                    engineio_sid,
+                )
+                if not reserved:
+                    return False
                 try:
                     result = await original_engineio_connect(
                         engineio_sid,
@@ -1296,6 +1327,12 @@ def configure_copilot_bridge_guards(
                 *args,
                 **kwargs,
             ):
+                if not await registry.engineio_session(engineio_sid):
+                    return await original_engineio_disconnect(
+                        engineio_sid,
+                        *args,
+                        **kwargs,
+                    )
                 try:
                     result = await original_engineio_disconnect(
                         engineio_sid,
@@ -1376,6 +1413,22 @@ def configure_copilot_bridge_guards(
 
         async def guarded_connect(socket_id, environ, auth):
             auth_payload = auth if isinstance(auth, dict) else {}
+            requested_copilot = auth_payload.get("clientType") == "copilot"
+            if not _has_verified_portal_origin(
+                environ,
+                configured_portal_origins,
+            ):
+                if requested_copilot:
+                    logger.warning(
+                        "Blocked Copilot Socket.IO connection from an "
+                        "unverified portal origin"
+                    )
+                    await close_rejected_socket(socket_id)
+                    raise SocketIOConnectionRefusedError(
+                        "authentication failed"
+                    )
+                return await original_connect(socket_id, environ, auth)
+
             current_user = await _authenticated_socket_user(environ)
             metadata = (
                 (getattr(current_user, "metadata", None) or {})
@@ -1386,8 +1439,7 @@ def configure_copilot_bridge_guards(
             is_copilot_identity = (
                 metadata.get("auth_source") == "copilot_session"
             )
-            requested_copilot = auth_payload.get("clientType") == "copilot"
-            if requested_copilot != is_copilot_identity:
+            if not requested_copilot or not is_copilot_identity:
                 logger.warning(
                     "Blocked Socket.IO connection with mismatched Copilot "
                     "client type and authenticated identity"
@@ -1423,16 +1475,6 @@ def configure_copilot_bridge_guards(
                     raise SocketIOConnectionRefusedError(
                         "authentication failed"
                     )
-
-            if not is_copilot_identity:
-                return await original_connect(socket_id, environ, auth)
-            if auth_payload.get("clientType") != "copilot":
-                logger.warning(
-                    "Blocked Socket.IO connection with invalid Copilot "
-                    "client state"
-                )
-                await close_rejected_socket(socket_id)
-                raise SocketIOConnectionRefusedError("authentication failed")
 
             active_session = await sessions.get(copilot_session_id)
             engineio_sid = _engineio_sid_for_socket(sio, socket_id)
@@ -1602,6 +1644,10 @@ def configure_copilot_bridge_guards(
     if original_disconnect:
 
         async def guarded_disconnect(socket_id, *args, **kwargs):
+            binding = await registry.socket_binding(socket_id)
+            if not binding:
+                return await original_disconnect(socket_id)
+
             if existing_completion := disconnect_handler_completions.get(
                 socket_id
             ):
@@ -1621,7 +1667,6 @@ def configure_copilot_bridge_guards(
                 socket_id
             ] = handler_completion
             engineio_sid = _engineio_sid_for_socket(sio, socket_id)
-            binding = await registry.socket_binding(socket_id)
             captured_tasks: list[asyncio.Task] = []
             _ensure_copilot_task_factory()
             collector_token = _copilot_task_collector.set(

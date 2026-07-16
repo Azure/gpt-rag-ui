@@ -919,6 +919,7 @@ def _create_chainlit_app(
         configure_copilot_bridge_guards(
             sio,
             sessions=copilot_sessions,
+            portal_origins=embed_settings.allowed_origins,
         )
         logger.info(
             "Chainlit Copilot enabled: auth_mode=%s public_url=%s "
