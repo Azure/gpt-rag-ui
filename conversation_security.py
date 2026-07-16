@@ -1,6 +1,18 @@
+from uuid import UUID
+
 from auth_common import canonical_principal_id
 from embed_auth import resolve_access_token
 from orchestrator_client import call_orchestrator_get_conversation
+
+
+def canonical_conversation_id(value: str) -> str:
+    raw_value = str(value or "").strip()
+    try:
+        parsed = UUID(raw_value)
+    except (AttributeError, TypeError, ValueError):
+        return ""
+    canonical_id = str(parsed)
+    return canonical_id if raw_value.lower() == canonical_id else ""
 
 
 def principal_id_from_metadata(metadata: dict | None) -> str:
@@ -68,6 +80,9 @@ async def get_owned_conversation(
     conversation_id: str,
     metadata: dict | None,
 ) -> dict | None:
+    conversation_id = canonical_conversation_id(conversation_id)
+    if not conversation_id:
+        return None
     access_token = await resolve_access_token(metadata)
     if not access_token:
         return None

@@ -34,6 +34,7 @@ def _configure_logging() -> None:
 
 _configure_logging()
 logger = logging.getLogger("gpt_rag_ui.main")
+_MIN_COPILOT_AUTH_SECRET_BYTES = 32
 
 
 def _mask(value: str, *, keep_end: int = 6) -> str:
@@ -254,32 +255,59 @@ def _configure_chainlit_prereqs(
     # Chainlit requires env var CHAINLIT_AUTH_SECRET to sign its session JWT.
     # Prefer storing it in App Configuration (key `CHAINLIT_AUTH_SECRET`) backed by Key Vault.
     # If missing, generate a temporary secret (sessions will be invalidated on restart).
-    if not os.environ.get("CHAINLIT_AUTH_SECRET"):
+    chainlit_secret = (
+        os.environ.get("CHAINLIT_AUTH_SECRET") or ""
+    ).strip()
+    loaded_from_config = False
+    if not chainlit_secret:
         chainlit_secret = _get_str_config(config, "CHAINLIT_AUTH_SECRET")
-        if chainlit_secret:
-            os.environ["CHAINLIT_AUTH_SECRET"] = chainlit_secret
-            logger.info("Configured CHAINLIT_AUTH_SECRET from App Configuration key 'CHAINLIT_AUTH_SECRET'")
-        elif require_persistent_auth_secret:
+        loaded_from_config = bool(chainlit_secret)
+
+    if chainlit_secret:
+        if (
+            require_persistent_auth_secret
+            and len(chainlit_secret.encode("utf-8"))
+            < _MIN_COPILOT_AUTH_SECRET_BYTES
+        ):
+            os.environ.pop("CHAINLIT_AUTH_SECRET", None)
             raise EmbedConfigError(
-                "Chainlit Copilot requires a persistent CHAINLIT_AUTH_SECRET. "
-                "Configure one through an environment variable or a Key "
-                "Vault-backed Azure App Configuration entry."
+                "Chainlit Copilot requires CHAINLIT_AUTH_SECRET to contain "
+                f"at least {_MIN_COPILOT_AUTH_SECRET_BYTES} UTF-8 bytes."
             )
-        else:
-            os.environ["CHAINLIT_AUTH_SECRET"] = secrets.token_urlsafe(48)
-            logger.warning(
-                "App Configuration key 'CHAINLIT_AUTH_SECRET' is not set; using a temporary secret. "
-                "Set 'CHAINLIT_AUTH_SECRET' (ideally Key Vault-backed) to avoid session resets on restart."
+        os.environ["CHAINLIT_AUTH_SECRET"] = chainlit_secret
+        if loaded_from_config:
+            logger.info(
+                "Configured CHAINLIT_AUTH_SECRET from App Configuration key "
+                "'CHAINLIT_AUTH_SECRET'"
             )
+    elif require_persistent_auth_secret:
+        os.environ.pop("CHAINLIT_AUTH_SECRET", None)
+        raise EmbedConfigError(
+            "Chainlit Copilot requires a persistent CHAINLIT_AUTH_SECRET. "
+            "Configure one through an environment variable or a Key "
+            "Vault-backed Azure App Configuration entry."
+        )
+    else:
+        os.environ["CHAINLIT_AUTH_SECRET"] = secrets.token_urlsafe(48)
+        logger.warning(
+            "App Configuration key 'CHAINLIT_AUTH_SECRET' is not set; using a temporary secret. "
+            "Set 'CHAINLIT_AUTH_SECRET' (ideally Key Vault-backed) to avoid session resets on restart."
+        )
 
     # Chainlit OAuth providers (including Azure AD) require configuration via environment variables.
     # To keep everything in App Configuration (+ Key Vault references), mirror relevant keys into
     # process environment before importing Chainlit.
-    if not os.environ.get("CHAINLIT_URL"):
+    chainlit_url = (os.environ.get("CHAINLIT_URL") or "").strip()
+    loaded_url_from_config = False
+    if not chainlit_url:
         chainlit_url = _get_str_config(config, "CHAINLIT_URL", "chainlitUrl")
-        if chainlit_url:
-            os.environ["CHAINLIT_URL"] = chainlit_url.rstrip("/")
+        loaded_url_from_config = bool(chainlit_url)
+    if chainlit_url:
+        os.environ["CHAINLIT_URL"] = chainlit_url.rstrip("/")
+        if loaded_url_from_config:
             logger.info("Configured CHAINLIT_URL from App Configuration")
+    else:
+        os.environ.pop("CHAINLIT_URL", None)
 
 
 def _evaluate_auth_state(
@@ -410,24 +438,21 @@ def _configure_auth_environment(config: AppConfigClient, auth_state: AuthState |
     allow_anonymous = auth_state.allow_anonymous
 
     if oauth_configured:
-        if not os.environ.get("OAUTH_AZURE_AD_CLIENT_ID") and client_id_value:
-            os.environ["OAUTH_AZURE_AD_CLIENT_ID"] = client_id_value
-            logger.info("Configured OAUTH_AZURE_AD_CLIENT_ID")
-
-        if not os.environ.get("OAUTH_AZURE_AD_TENANT_ID") and tenant_id_value:
-            os.environ["OAUTH_AZURE_AD_TENANT_ID"] = tenant_id_value
-            logger.info("Configured OAUTH_AZURE_AD_TENANT_ID")
-
-        if not os.environ.get("OAUTH_AZURE_AD_CLIENT_SECRET") and client_secret_value:
-            os.environ["OAUTH_AZURE_AD_CLIENT_SECRET"] = client_secret_value
-            logger.info("Configured OAUTH_AZURE_AD_CLIENT_SECRET")
+        os.environ["OAUTH_AZURE_AD_CLIENT_ID"] = client_id_value
+        os.environ["OAUTH_AZURE_AD_TENANT_ID"] = tenant_id_value
+        os.environ["OAUTH_AZURE_AD_CLIENT_SECRET"] = client_secret_value
 
         # Scopes for Chainlit Azure AD provider.
         # Important: if this is not set, Chainlit/MSAL may fall back to Microsoft Graph defaults (e.g. User.Read),
         # which produces access_tokens with aud=00000003-... and the orchestrator correctly rejects them.
         #
         # Default to the orchestrator API scope to keep the system in "single token" mode.
-        if not os.environ.get("OAUTH_AZURE_AD_SCOPES"):
+        scopes_from_environment = (
+            os.environ.get("OAUTH_AZURE_AD_SCOPES") or ""
+        ).strip()
+        if scopes_from_environment:
+            os.environ["OAUTH_AZURE_AD_SCOPES"] = scopes_from_environment
+        else:
             scopes_value = _get_str_config(config, "OAUTH_AZURE_AD_SCOPES")
             if str(scopes_value or "").strip():
                 os.environ["OAUTH_AZURE_AD_SCOPES"] = str(scopes_value)
@@ -441,18 +466,19 @@ def _configure_auth_environment(config: AppConfigClient, auth_state: AuthState |
         # Single-tenant toggle.
         # Default to true (most deployments use a tenant-specific app registration).
         # Allow explicitly forcing false for multi-tenant scenarios.
-        if not os.environ.get("OAUTH_AZURE_AD_ENABLE_SINGLE_TENANT"):
-            enable_single_tenant = _get_str_config(config, "OAUTH_AZURE_AD_ENABLE_SINGLE_TENANT")
-            normalized = str(enable_single_tenant or "").strip().lower()
-            if normalized in {"0", "false", "no", "n", "off"}:
-                os.environ["OAUTH_AZURE_AD_ENABLE_SINGLE_TENANT"] = "false"
-                logger.info("Configured OAUTH_AZURE_AD_ENABLE_SINGLE_TENANT=false")
-            elif normalized in {"1", "true", "yes", "y", "on"}:
-                os.environ["OAUTH_AZURE_AD_ENABLE_SINGLE_TENANT"] = "true"
-                logger.info("Configured OAUTH_AZURE_AD_ENABLE_SINGLE_TENANT=true")
-            else:
-                os.environ["OAUTH_AZURE_AD_ENABLE_SINGLE_TENANT"] = "true"
-                logger.info("Defaulted OAUTH_AZURE_AD_ENABLE_SINGLE_TENANT=true (not provided)")
+        enable_single_tenant = (
+            os.environ.get("OAUTH_AZURE_AD_ENABLE_SINGLE_TENANT") or ""
+        ).strip()
+        if not enable_single_tenant:
+            enable_single_tenant = _get_str_config(
+                config,
+                "OAUTH_AZURE_AD_ENABLE_SINGLE_TENANT",
+            )
+        normalized = str(enable_single_tenant or "").strip().lower()
+        if normalized in {"0", "false", "no", "n", "off"}:
+            os.environ["OAUTH_AZURE_AD_ENABLE_SINGLE_TENANT"] = "false"
+        else:
+            os.environ["OAUTH_AZURE_AD_ENABLE_SINGLE_TENANT"] = "true"
     else:
         cleared = _clear_oauth_env_vars()
 
@@ -642,12 +668,17 @@ def _create_chainlit_app(
         config,
         "CONVERSATION_DOCUMENTS_STORAGE_CONTAINER",
     )
-    shared_download_containers = {
-        container.strip().strip("/")
-        for container in _get_str_config(
+    shared_download_container_value = (
+        os.environ.get("CITATION_SHARED_DOWNLOAD_CONTAINERS") or ""
+    ).strip()
+    if not shared_download_container_value:
+        shared_download_container_value = _get_str_config(
             config,
             "CITATION_SHARED_DOWNLOAD_CONTAINERS",
-        ).split(",")
+        )
+    shared_download_containers = {
+        container.strip().strip("/")
+        for container in shared_download_container_value.split(",")
         if container.strip().strip("/")
     }
 
@@ -807,7 +838,10 @@ def _create_chainlit_app(
             allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
             allow_headers=["Authorization", "Content-Type"],
         )
-        configure_copilot_bridge_guards(sio)
+        configure_copilot_bridge_guards(
+            sio,
+            sessions=copilot_sessions,
+        )
         logger.info(
             "Chainlit Copilot enabled: origins=%s cookie_samesite=%s "
             "max_sessions=%s session_ttl_seconds=%s "
@@ -826,9 +860,25 @@ def _create_chainlit_app(
         )
 
     if embed_settings.enabled:
-        from download_security import register_secure_download_route
+        from download_security import DownloadStream, register_secure_download_route
         from embed_auth import register_copilot_auth_routes
         from entra_token import EntraTokenValidator
+
+        def stream_from_blob(file_name: str) -> DownloadStream:
+            logger.info("Preparing blob download stream for '%s'", file_name)
+            blob_url = (
+                f"https://{account_name}.blob.core.windows.net/{file_name}"
+            )
+            try:
+                blob_client = BlobClient(blob_url=blob_url)
+                chunks, size = blob_client.download_blob_chunks()
+                return DownloadStream(chunks=chunks, size=size)
+            except Exception:
+                logger.exception(
+                    "Error opening blob download stream for '%s'",
+                    file_name,
+                )
+                raise
 
         validator = EntraTokenValidator(
             tenant_id=embed_settings.entra_tenant_id,
@@ -845,7 +895,7 @@ def _create_chainlit_app(
         register_secure_download_route(
             host_app,
             manager=download_tokens,
-            download_blob=download_from_blob,
+            download_blob=stream_from_blob,
             allowed_containers={
                 container
                 for container in (

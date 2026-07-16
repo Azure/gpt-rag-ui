@@ -4,7 +4,11 @@ from unittest.mock import Mock, patch
 
 os.environ.setdefault("CHAINLIT_AUTH_SECRET", "test-secret")
 
-import app
+with (
+    patch("telemetry.Telemetry.configure_monitoring"),
+    patch("telemetry.Telemetry.get_tracer", return_value=Mock()),
+):
+    import app
 
 
 class AppCitationTests(unittest.TestCase):

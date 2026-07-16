@@ -46,8 +46,13 @@ Configure the UI with:
 - `CHAINLIT_COPILOT_BOOTSTRAP_RATE_LIMIT_PER_MINUTE`
 - `CITATION_SHARED_DOWNLOAD_CONTAINERS`
 
+The shared citation setting can mark only the configured document or image
+container as uniformly readable; it cannot add an arbitrary storage container,
+and the conversation-upload container always remains conversation-bound.
+
 When Copilot mode is enabled, `CHAINLIT_AUTH_SECRET` must be a persistent,
-operator-managed secret shared by every replica. The public integration
+operator-managed value of at least 32 UTF-8 bytes, generated with at least 256
+bits of entropy and shared by every replica. Store it in Key Vault. The public integration
 endpoints are `POST /copilot/auth/bootstrap`,
 `POST /copilot/auth/logout`, and `GET /api/download/{grant_token}`.
 
@@ -55,14 +60,18 @@ The browser receives only a Secure, HttpOnly opaque identity cookie. Entra and
 internal Chainlit tokens remain in bounded process memory, and the session
 expires at the earlier of the Entra token expiry and the configured TTL.
 Replacement, logout, expiry, and eviction invalidate associated sockets and
-active work. Exact configured portal origins are enforced; `Referer` is never
+active work. At most 20 exact portal origins can be configured, and they must be
+distinct from the UI origin. `Referer` is never
 used for authentication or authorization. Citation and download URLs are
 absolute, signed, principal-bound, conversation-authorized, and container/path
-checked before streaming.
+checked before chunked streaming. Grants expire after one hour, and rotating the
+signing secret invalidates existing sessions and grants.
 
-Process-local session state requires a single replica or verified end-to-end
+Process-local session state requires one Uvicorn process in a single active
+Container Apps revision with `minReplicas=maxReplicas=1`, or verified end-to-end
 affinity across bootstrap, HTTP, Socket.IO polling/upgrades, and WebSockets.
-Restarts and affinity loss sign users out. Bootstrap throttling is local defense
+Do not split traffic across revisions. Restarts, revision switches, and affinity
+loss sign users out. Bootstrap throttling is local defense
 in depth; configure authoritative limits at the trusted ingress. Browsers that
 block the required third-party cookie cannot use the floating integration, and
 there is no token-in-browser fallback. Standalone Chainlit behavior is unchanged
@@ -172,4 +181,3 @@ We appreciate contributions! See [CONTRIBUTING](https://github.com/Azure/gpt-rag
 
 
 This project may contain trademarks or logos. Authorized use of Microsoft trademarks or logos must follow [Microsoft’s Trademark & Brand Guidelines](https://www.microsoft.com/en-us/legal/intellectualproperty/trademarks/usage/general). Modified versions must not imply sponsorship or cause confusion. Third-party trademarks are subject to their own policies.
-

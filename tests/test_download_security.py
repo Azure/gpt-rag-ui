@@ -12,6 +12,7 @@ from itsdangerous import URLSafeTimedSerializer
 
 from conversation_security import conversation_belongs_to, get_owned_conversation
 from download_security import (
+    DownloadStream,
     DownloadTokenManager,
     is_download_target_allowed,
     register_secure_download_route,
@@ -25,7 +26,12 @@ PRINCIPAL = (
     "11111111-2222-3333-4444-555555555555:"
     "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 )
+OTHER_PRINCIPAL = (
+    "99999999-8888-7777-6666-555555555555:"
+    "bbbbbbbb-cccc-dddd-eeee-ffffffffffff"
+)
 SESSION_ID = "s" * 43
+CONVERSATION_ID = "12345678-1234-4abc-8def-1234567890ab"
 METADATA = {
     "principal_id": PRINCIPAL,
     "tenant_id": "11111111-2222-3333-4444-555555555555",
@@ -42,7 +48,7 @@ class DownloadSecurityTests(unittest.IsolatedAsyncioTestCase):
         )
         url = manager.issue(
             principal_id=PRINCIPAL,
-            conversation_id="conversation",
+            conversation_id=CONVERSATION_ID,
             container="documents",
             blob_name="folder/file.pdf",
         )
@@ -65,7 +71,7 @@ class DownloadSecurityTests(unittest.IsolatedAsyncioTestCase):
             {
                 "v": 1,
                 "p": PRINCIPAL,
-                "c": "conversation",
+                "c": CONVERSATION_ID,
                 "n": "documents",
                 "b": "folder/file.pdf",
             }
@@ -78,9 +84,16 @@ class DownloadSecurityTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             manager.issue(
                 principal_id=PRINCIPAL,
-                conversation_id="conversation",
+                conversation_id=CONVERSATION_ID,
                 container="documents",
                 blob_name="../secret.pdf",
+            )
+        with self.assertRaises(ValueError):
+            manager.issue(
+                principal_id=PRINCIPAL,
+                conversation_id="../conversations/other",
+                container="documents",
+                blob_name="file.pdf",
             )
 
     def test_download_target_policy_is_default_deny_and_conversation_bound(self):
@@ -187,7 +200,7 @@ class DownloadSecurityTests(unittest.IsolatedAsyncioTestCase):
             ),
         ):
             self.assertIsNone(
-                await get_owned_conversation("conversation", METADATA)
+                await get_owned_conversation(CONVERSATION_ID, METADATA)
             )
 
     async def test_secure_download_route_authorizes_top_level_navigation(self):
@@ -197,9 +210,9 @@ class DownloadSecurityTests(unittest.IsolatedAsyncioTestCase):
         )
         url = manager.issue(
             principal_id=PRINCIPAL,
-            conversation_id="conversation",
+            conversation_id=CONVERSATION_ID,
             container="conversation-documents",
-            blob_name="conversations/conversation/file.pdf",
+            blob_name=f"conversations/{CONVERSATION_ID}/file.pdf",
         )
         grant_token = urlsplit(url).path.rsplit("/", 1)[-1]
         session = SimpleNamespace(
@@ -217,8 +230,13 @@ class DownloadSecurityTests(unittest.IsolatedAsyncioTestCase):
                 return session if session_id == SESSION_ID else None
 
         app = FastAPI()
-        resolver = AsyncMock(return_value={"id": "conversation"})
-        downloader = Mock(return_value=b"pdf-data")
+        resolver = AsyncMock(return_value={"id": CONVERSATION_ID})
+        downloader = Mock(
+            return_value=DownloadStream(
+                chunks=iter((b"pdf-", b"data")),
+                size=8,
+            )
+        )
         register_secure_download_route(
             app,
             manager=manager,
@@ -260,14 +278,15 @@ class DownloadSecurityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(403, wrong_origin.status_code)
         self.assertEqual(401, standalone_origin.status_code)
         self.assertEqual(b"pdf-data", response.content)
+        self.assertEqual("8", response.headers["content-length"])
         self.assertEqual("private, no-store", response.headers["cache-control"])
         self.assertIn("file.pdf", response.headers["content-disposition"])
         resolver.assert_awaited_once_with(
-            "conversation",
+            CONVERSATION_ID,
             session.user_metadata(),
         )
         downloader.assert_called_once_with(
-            "conversation-documents/conversations/conversation/file.pdf"
+            f"conversation-documents/conversations/{CONVERSATION_ID}/file.pdf"
         )
 
     async def test_secure_download_route_fails_closed(self):
@@ -277,11 +296,18 @@ class DownloadSecurityTests(unittest.IsolatedAsyncioTestCase):
         )
         valid_url = manager.issue(
             principal_id=PRINCIPAL,
-            conversation_id="conversation",
+            conversation_id=CONVERSATION_ID,
             container="documents",
             blob_name="file.pdf",
         )
         token = urlsplit(valid_url).path.rsplit("/", 1)[-1]
+        other_url = manager.issue(
+            principal_id=OTHER_PRINCIPAL,
+            conversation_id=CONVERSATION_ID,
+            container="documents",
+            blob_name="file.pdf",
+        )
+        other_token = urlsplit(other_url).path.rsplit("/", 1)[-1]
         session = SimpleNamespace(
             principal_id=PRINCIPAL,
             chainlit_token="internal-chainlit-token",
@@ -378,7 +404,16 @@ class DownloadSecurityTests(unittest.IsolatedAsyncioTestCase):
             (
                 await request(
                     grant_token="tampered",
-                    resolver_result={"id": "conversation"},
+                    resolver_result={"id": CONVERSATION_ID},
+                )
+            ).status_code,
+        )
+        self.assertEqual(
+            404,
+            (
+                await request(
+                    grant_token=other_token,
+                    resolver_result={"id": CONVERSATION_ID},
                 )
             ).status_code,
         )
@@ -390,7 +425,7 @@ class DownloadSecurityTests(unittest.IsolatedAsyncioTestCase):
             404,
             (
                 await request(
-                    resolver_result={"id": "conversation"},
+                    resolver_result={"id": CONVERSATION_ID},
                     shared_containers=set(),
                 )
             ).status_code,
@@ -399,13 +434,13 @@ class DownloadSecurityTests(unittest.IsolatedAsyncioTestCase):
             404,
             (
                 await request(
-                    resolver_result={"id": "conversation"},
+                    resolver_result={"id": CONVERSATION_ID},
                     download_result=ResourceNotFoundError("missing"),
                 )
             ).status_code,
         )
         backend_failure = await request(
-            resolver_result={"id": "conversation"},
+            resolver_result={"id": CONVERSATION_ID},
             download_result=RuntimeError("backend-secret"),
         )
         self.assertEqual(500, backend_failure.status_code)
@@ -418,7 +453,7 @@ class DownloadSecurityTests(unittest.IsolatedAsyncioTestCase):
         )
         url = manager.issue(
             principal_id=PRINCIPAL,
-            conversation_id="conversation",
+            conversation_id=CONVERSATION_ID,
             container="documents",
             blob_name="file.pdf",
         )
@@ -435,7 +470,9 @@ class DownloadSecurityTests(unittest.IsolatedAsyncioTestCase):
             sessions=SimpleNamespace(
                 get=AsyncMock(return_value=None),
             ),
-            conversation_resolver=AsyncMock(return_value={"id": "conversation"}),
+            conversation_resolver=AsyncMock(
+                return_value={"id": CONVERSATION_ID}
+            ),
         )
         oauth_user = User(
             identifier=PRINCIPAL,
@@ -462,6 +499,135 @@ class DownloadSecurityTests(unittest.IsolatedAsyncioTestCase):
             ) as client:
                 response = await client.get(f"/api/download/{token}")
         self.assertEqual(200, response.status_code)
+
+    async def test_grant_principal_selects_standalone_cookie_over_other_opaque_cookie(
+        self,
+    ):
+        manager = DownloadTokenManager(
+            secret="secret",
+            public_url="https://chat.example.com",
+        )
+        url = manager.issue(
+            principal_id=PRINCIPAL,
+            conversation_id=CONVERSATION_ID,
+            container="documents",
+            blob_name="file.pdf",
+        )
+        token = urlsplit(url).path.rsplit("/", 1)[-1]
+        stale_session = SimpleNamespace(
+            principal_id=OTHER_PRINCIPAL,
+            user_metadata=lambda: {},
+        )
+        sessions = SimpleNamespace(
+            get=AsyncMock(return_value=stale_session),
+        )
+        app = FastAPI()
+        register_secure_download_route(
+            app,
+            manager=manager,
+            download_blob=Mock(return_value=b"data"),
+            allowed_containers={"documents"},
+            conversation_container="conversation-documents",
+            shared_containers={"documents"},
+            sessions=sessions,
+            conversation_resolver=AsyncMock(
+                return_value={"id": CONVERSATION_ID}
+            ),
+        )
+        oauth_user = User(
+            identifier=PRINCIPAL,
+            metadata={
+                **METADATA,
+                "auth_source": "oauth",
+                "authorized": True,
+            },
+        )
+        transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+        with (
+            patch(
+                "download_security.get_token_from_cookies",
+                return_value="chainlit-token",
+            ),
+            patch(
+                "download_security.authenticate_user",
+                AsyncMock(return_value=oauth_user),
+            ),
+        ):
+            async with httpx.AsyncClient(
+                transport=transport,
+                base_url="https://chat.example.com",
+                cookies={COPILOT_SESSION_COOKIE: SESSION_ID},
+            ) as client:
+                response = await client.get(f"/api/download/{token}")
+
+        self.assertEqual(200, response.status_code)
+        sessions.get.assert_awaited_once_with(SESSION_ID)
+
+    async def test_bound_copilot_session_is_rechecked_before_download(self):
+        manager = DownloadTokenManager(
+            secret="secret",
+            public_url="https://chat.example.com",
+        )
+        url = manager.issue(
+            principal_id=PRINCIPAL,
+            conversation_id=CONVERSATION_ID,
+            container="documents",
+            blob_name="file.pdf",
+        )
+        token = urlsplit(url).path.rsplit("/", 1)[-1]
+        session = SimpleNamespace(
+            session_id=SESSION_ID,
+            principal_id=PRINCIPAL,
+            chainlit_token="internal-chainlit-token",
+            user_metadata=lambda: METADATA,
+        )
+
+        class RevokedDuringRequestSessions:
+            def __init__(self):
+                self.calls = 0
+
+            async def get(self, session_id):
+                self.calls += 1
+                return session if self.calls == 1 else None
+
+        sessions = RevokedDuringRequestSessions()
+        downloader = Mock(return_value=b"data")
+        app = FastAPI()
+        register_secure_download_route(
+            app,
+            manager=manager,
+            download_blob=downloader,
+            allowed_containers={"documents"},
+            conversation_container="conversation-documents",
+            shared_containers={"documents"},
+            sessions=sessions,
+            conversation_resolver=AsyncMock(
+                return_value={"id": CONVERSATION_ID}
+            ),
+        )
+        app.add_middleware(
+            CopilotRequestMiddleware,
+            settings=EmbedSettings(
+                enabled=True,
+                ui_origin="https://chat.example.com",
+                allowed_origins=("https://portal.example.com",),
+            ),
+            sessions=sessions,
+        )
+        transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="https://chat.example.com",
+            cookies={COPILOT_SESSION_COOKIE: SESSION_ID},
+        ) as client:
+            response = await client.get(
+                f"/api/download/{token}",
+                headers={"Origin": "https://portal.example.com"},
+            )
+
+        self.assertEqual(401, response.status_code)
+        self.assertEqual(2, sessions.calls)
+        downloader.assert_not_called()
 
 
 if __name__ == "__main__":

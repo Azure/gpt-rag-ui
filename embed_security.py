@@ -168,11 +168,11 @@ class CopilotRequestMiddleware:
         is_standalone = origin == self.settings.ui_origin
 
         if len(raw_origins) > 1 or (
-            raw_origin and not (is_portal or is_standalone)
+            raw_origins and not (is_portal or is_standalone)
         ):
             await self._reject(scope, receive, send, 403)
             return
-        if scope["type"] == "websocket" and not raw_origin:
+        if scope["type"] == "websocket" and not raw_origins:
             await self._reject(scope, receive, send, 403)
             return
         if path in _COPILOT_AUTH_PATHS and not is_portal:
@@ -315,7 +315,11 @@ async def disconnect_copilot_session(session_id: str) -> int:
     return disconnected
 
 
-def configure_copilot_bridge_guards(sio) -> None:
+def configure_copilot_bridge_guards(
+    sio,
+    *,
+    sessions: CopilotSessionStore,
+) -> None:
     global _copilot_sio
     _copilot_sio = sio
 
@@ -352,9 +356,32 @@ def configure_copilot_bridge_guards(sio) -> None:
     if original_connect:
 
         async def guarded_connect(socket_id, environ, auth):
-            existing = _existing_socket_session((auth or {}).get("sessionId"))
+            auth_payload = auth if isinstance(auth, dict) else {}
+            current_user = await _authenticated_socket_user(environ)
+            metadata = (
+                (getattr(current_user, "metadata", None) or {})
+                if current_user
+                else {}
+            )
+            copilot_session_id = _copilot_session_marker(current_user)
+            is_copilot_identity = (
+                metadata.get("auth_source") == "copilot_session"
+            )
+            if is_copilot_identity:
+                active_session = await sessions.get(copilot_session_id)
+                if (
+                    not active_session
+                    or active_session.principal_id != current_user.identifier
+                    or auth_payload.get("clientType") != "copilot"
+                ):
+                    logger.warning(
+                        "Blocked Socket.IO connection for an inactive or "
+                        "invalid Copilot session"
+                    )
+                    raise ConnectionRefusedError("authentication failed")
+
+            existing = _existing_socket_session(auth_payload.get("sessionId"))
             if existing and existing.user:
-                current_user = await _authenticated_socket_user(environ)
                 same_principal = bool(
                     current_user
                     and current_user.identifier == existing.user.identifier

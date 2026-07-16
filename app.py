@@ -83,11 +83,14 @@ IMAGES_CONTAINER = _normalize_container_name(
 CONVERSATION_DOCUMENTS_CONTAINER = _normalize_container_name(
     config.get("CONVERSATION_DOCUMENTS_STORAGE_CONTAINER", "", str)
 )
+_SHARED_DOWNLOAD_CONTAINER_VALUE = (
+    os.environ.get("CITATION_SHARED_DOWNLOAD_CONTAINERS") or ""
+).strip() or str(
+    config.get("CITATION_SHARED_DOWNLOAD_CONTAINERS", "", str) or ""
+)
 SHARED_DOWNLOAD_CONTAINERS = {
     _normalize_container_name(container)
-    for container in str(
-        config.get("CITATION_SHARED_DOWNLOAD_CONTAINERS", "", str) or ""
-    ).split(",")
+    for container in _SHARED_DOWNLOAD_CONTAINER_VALUE.split(",")
     if _normalize_container_name(container)
 }
 IMAGE_EXTENSIONS = {"bmp", "jpeg", "jpg", "png", "tiff"}
@@ -831,10 +834,11 @@ async def handle_message(message: cl.Message):
                 if chunk_refs:
                     references.update(chunk_refs)
                     logger.info(
-                        "Streaming response references detected: conversation=%s question_id=%s refs=%s",
+                        "Streaming response references detected: conversation=%s "
+                        "question_id=%s reference_count=%s",
                         conversation_id or "pending",
                         message.id,
-                        sorted(chunk_refs),
+                        len(chunk_refs),
                     )
 
                 buffer += cleaned_chunk
@@ -922,10 +926,11 @@ async def handle_message(message: cl.Message):
         cl.user_session.set("conversation_id", conversation_id)
         if references:
             logger.info(
-                "Aggregated response references: conversation=%s question_id=%s refs=%s",
+                "Aggregated response references: conversation=%s question_id=%s "
+                "reference_count=%s",
                 conversation_id,
                 message.id,
-                sorted(references),
+                len(references),
             )
         if ENABLE_FEEDBACK and (message.content or "").strip():
             response_msg.actions = create_feedback_actions(

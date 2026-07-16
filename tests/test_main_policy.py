@@ -20,6 +20,9 @@ import main  # noqa: E402
 from embed_config import EmbedConfigError  # noqa: E402
 
 
+STRONG_SECRET = "a-secure-test-secret-with-at-least-32-bytes"
+
+
 class MainPolicyTests(unittest.TestCase):
     def test_copilot_requires_persistent_chainlit_auth_secret(self):
         with patch.dict(os.environ, {}, clear=True):
@@ -37,7 +40,7 @@ class MainPolicyTests(unittest.TestCase):
     def test_copilot_accepts_environment_chainlit_auth_secret(self):
         with patch.dict(
             os.environ,
-            {"CHAINLIT_AUTH_SECRET": "persistent-environment-secret"},
+            {"CHAINLIT_AUTH_SECRET": f"  {STRONG_SECRET}  "},
             clear=True,
         ):
             main._configure_chainlit_prereqs(
@@ -46,13 +49,13 @@ class MainPolicyTests(unittest.TestCase):
             )
 
             self.assertEqual(
-                "persistent-environment-secret",
+                STRONG_SECRET,
                 os.environ["CHAINLIT_AUTH_SECRET"],
             )
 
     def test_copilot_loads_chainlit_auth_secret_from_app_configuration(self):
         config = FakeConfig(
-            {"CHAINLIT_AUTH_SECRET": "persistent-config-secret"}
+            {"CHAINLIT_AUTH_SECRET": STRONG_SECRET}
         )
         with patch.dict(os.environ, {}, clear=True):
             main._configure_chainlit_prereqs(
@@ -61,8 +64,93 @@ class MainPolicyTests(unittest.TestCase):
             )
 
             self.assertEqual(
-                "persistent-config-secret",
+                STRONG_SECRET,
                 os.environ["CHAINLIT_AUTH_SECRET"],
+            )
+
+    def test_copilot_rejects_whitespace_or_short_auth_secrets(self):
+        for value in ("   ", "too-short"):
+            with self.subTest(value=value):
+                with patch.dict(
+                    os.environ,
+                    {"CHAINLIT_AUTH_SECRET": value},
+                    clear=True,
+                ):
+                    with self.assertRaises(EmbedConfigError):
+                        main._configure_chainlit_prereqs(
+                            FakeConfig(),
+                            require_persistent_auth_secret=True,
+                        )
+                    self.assertNotIn("CHAINLIT_AUTH_SECRET", os.environ)
+
+    def test_whitespace_chainlit_url_falls_back_to_app_configuration(self):
+        config = FakeConfig(
+            {
+                "CHAINLIT_AUTH_SECRET": STRONG_SECRET,
+                "CHAINLIT_URL": " https://chat.example.com/ ",
+            }
+        )
+        with patch.dict(
+            os.environ,
+            {"CHAINLIT_URL": "   "},
+            clear=True,
+        ):
+            main._configure_chainlit_prereqs(
+                config,
+                require_persistent_auth_secret=True,
+            )
+            self.assertEqual(
+                "https://chat.example.com",
+                os.environ["CHAINLIT_URL"],
+            )
+
+    def test_whitespace_oauth_environment_values_use_normalized_config(self):
+        config = FakeConfig(
+            {
+                "CHAINLIT_AUTH_SECRET": STRONG_SECRET,
+                "OAUTH_AZURE_AD_CLIENT_ID": " config-client ",
+                "OAUTH_AZURE_AD_TENANT_ID": " config-tenant ",
+                "OAUTH_AZURE_AD_CLIENT_SECRET": " config-secret ",
+                "OAUTH_AZURE_AD_SCOPES": " api://scope/.default ",
+                "OAUTH_AZURE_AD_ENABLE_SINGLE_TENANT": " false ",
+            }
+        )
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "OAUTH_AZURE_AD_CLIENT_ID": " ",
+                    "OAUTH_AZURE_AD_TENANT_ID": " ",
+                    "OAUTH_AZURE_AD_CLIENT_SECRET": " ",
+                    "OAUTH_AZURE_AD_SCOPES": " ",
+                    "OAUTH_AZURE_AD_ENABLE_SINGLE_TENANT": " ",
+                },
+                clear=True,
+            ),
+            patch("main._is_running_in_azure_host", return_value=True),
+        ):
+            auth_state = main._evaluate_auth_state(config)
+            main._configure_auth_environment(config, auth_state)
+
+            self.assertEqual(
+                "config-client",
+                os.environ["OAUTH_AZURE_AD_CLIENT_ID"],
+            )
+            self.assertEqual(
+                "config-tenant",
+                os.environ["OAUTH_AZURE_AD_TENANT_ID"],
+            )
+            self.assertEqual(
+                "config-secret",
+                os.environ["OAUTH_AZURE_AD_CLIENT_SECRET"],
+            )
+            self.assertEqual(
+                "api://scope/.default",
+                os.environ["OAUTH_AZURE_AD_SCOPES"],
+            )
+            self.assertEqual(
+                "false",
+                os.environ["OAUTH_AZURE_AD_ENABLE_SINGLE_TENANT"],
             )
 
     def test_standalone_keeps_temporary_secret_fallback(self):
