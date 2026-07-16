@@ -105,6 +105,21 @@ class FakeSessions:
             self.session = None
 
 
+class RealChainlitSio:
+    def __init__(self, connect_handler):
+        self.emit = AsyncMock()
+        self.call = AsyncMock()
+        self.disconnect = AsyncMock()
+        self.manager = SimpleNamespace(
+            eio_sid_from_sid=lambda socket_id, namespace: f"engine-{socket_id}"
+        )
+        self.eio = SimpleNamespace(disconnect=AsyncMock())
+        self.handlers = {"/": {"connect": connect_handler}}
+
+    def on(self, event, handler):
+        self.handlers["/"][event] = handler
+
+
 def create_app(session=None, *, upload_enabled=True):
     app = FastAPI()
 
@@ -581,6 +596,350 @@ class EmbedSecurityTests(unittest.TestCase):
         self.assertTrue(
             settings["features"]["spontaneous_file_upload"]["enabled"]
         )
+
+
+class RealChainlitBridgeGuardTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        import chainlit
+        from chainlit.config import config
+
+        self.assertEqual("2.9.4", chainlit.__version__)
+        self.auth_patches = [
+            patch.object(config.code, "oauth_callback", None),
+            patch.object(config.code, "password_auth_callback", None),
+            patch.object(config.code, "header_auth_callback", None),
+            patch.dict("os.environ", {"CHAINLIT_CUSTOM_AUTH": ""}),
+            patch("chainlit.session.ws_sessions_id", {}),
+            patch("chainlit.session.ws_sessions_sid", {}),
+        ]
+        for auth_patch in self.auth_patches:
+            auth_patch.start()
+            self.addCleanup(auth_patch.stop)
+
+    @staticmethod
+    def copilot_user(
+        *,
+        principal_id: str,
+        session_id: str,
+        auth_mode: str,
+    ):
+        from chainlit.user import User
+
+        tenant_id, object_id = principal_id.split(":", 1)
+        return User(
+            identifier=principal_id,
+            display_name="Copilot user",
+            metadata={
+                "auth_source": "copilot_session",
+                "copilot_auth_mode": auth_mode,
+                "copilot_session_id": session_id,
+                "tenant_id": tenant_id,
+                "object_id": object_id,
+                "principal_id": principal_id,
+            },
+        )
+
+    @staticmethod
+    def active_sessions(sessions_by_id):
+        async def get(session_id):
+            return sessions_by_id.get(session_id)
+
+        return SimpleNamespace(get=get)
+
+    async def connect_with_real_handler(
+        self,
+        *,
+        user,
+        auth_mode: str,
+        socket_id: str,
+        chainlit_session_id: str,
+    ):
+        from chainlit.session import WebsocketSession
+        from chainlit.socket import connect
+
+        sio = RealChainlitSio(connect)
+        active_session = SimpleNamespace(
+            principal_id=user.identifier,
+            auth_mode=auth_mode,
+        )
+        configure_copilot_bridge_guards(
+            sio,
+            sessions=self.active_sessions(
+                {user.metadata["copilot_session_id"]: active_session}
+            ),
+        )
+
+        with patch(
+            "embed_security._authenticated_socket_user",
+            AsyncMock(return_value=user),
+        ):
+            result = await sio.handlers["/"]["connect"](
+                socket_id,
+                transport_environ(
+                    session_id=user.metadata["copilot_session_id"]
+                ),
+                {
+                    "clientType": "copilot",
+                    "sessionId": chainlit_session_id,
+                    "userEnv": "{}",
+                },
+            )
+
+        return result, WebsocketSession.get(socket_id)
+
+    async def test_real_chainlit_connect_binds_canonical_entra_user(self):
+        tenant_id = "11111111-1111-1111-1111-111111111111"
+        object_id = "22222222-2222-2222-2222-222222222222"
+        principal_id = f"{tenant_id}:{object_id}"
+        user = self.copilot_user(
+            principal_id=principal_id,
+            session_id=SESSION_ID,
+            auth_mode="entra",
+        )
+
+        result, websocket_session = await self.connect_with_real_handler(
+            user=user,
+            auth_mode="entra",
+            socket_id="entra-socket",
+            chainlit_session_id="entra-chainlit-session",
+        )
+
+        self.assertTrue(result)
+        self.assertIsNotNone(websocket_session)
+        self.assertIs(user, websocket_session.user)
+        self.assertEqual(principal_id, websocket_session.user.identifier)
+
+    async def test_real_chainlit_connect_binds_opaque_anonymous_user(self):
+        principal_id = (
+            "00000000-0000-0000-0000-000000000000:"
+            "33333333-3333-3333-3333-333333333333"
+        )
+        user = self.copilot_user(
+            principal_id=principal_id,
+            session_id=SESSION_ID,
+            auth_mode="anonymous",
+        )
+
+        result, websocket_session = await self.connect_with_real_handler(
+            user=user,
+            auth_mode="anonymous",
+            socket_id="anonymous-socket",
+            chainlit_session_id="anonymous-chainlit-session",
+        )
+
+        self.assertTrue(result)
+        self.assertIsNotNone(websocket_session)
+        self.assertIs(user, websocket_session.user)
+        self.assertEqual(principal_id, websocket_session.user.identifier)
+        self.assertNotEqual("anonymous", websocket_session.user.identifier)
+
+    async def test_real_chainlit_standalone_no_auth_remains_unbound(self):
+        from chainlit.session import WebsocketSession
+        from chainlit.socket import connect
+
+        sio = RealChainlitSio(connect)
+        configure_copilot_bridge_guards(
+            sio,
+            sessions=self.active_sessions({}),
+        )
+        authenticate = AsyncMock(
+            side_effect=AssertionError(
+                "standalone must not use Copilot authentication"
+            )
+        )
+
+        with patch(
+            "embed_security._authenticated_socket_user",
+            authenticate,
+        ):
+            result = await sio.handlers["/"]["connect"](
+                "standalone-socket",
+                transport_environ(origins=(CHAT,), session_id=None),
+                {
+                    "clientType": "webapp",
+                    "sessionId": "standalone-chainlit-session",
+                    "userEnv": "{}",
+                },
+            )
+
+        self.assertTrue(result)
+        authenticate.assert_not_awaited()
+        websocket_session = WebsocketSession.get("standalone-socket")
+        self.assertIsNotNone(websocket_session)
+        self.assertIsNone(websocket_session.user)
+
+    async def test_real_chainlit_connect_keeps_admission_rejections(self):
+        from chainlit.session import WebsocketSession
+        from chainlit.socket import connect
+
+        user = self.copilot_user(
+            principal_id=(
+                "11111111-1111-1111-1111-111111111111:"
+                "22222222-2222-2222-2222-222222222222"
+            ),
+            session_id=SESSION_ID,
+            auth_mode="entra",
+        )
+        cases = {
+            "mismatched": (
+                (PORTAL,),
+                SimpleNamespace(principal_id="other:principal"),
+            ),
+            "expired": ((PORTAL,), None),
+            "stale": ((PORTAL,), None),
+            "unlisted": (("https://attacker.example.com",), None),
+            "no-origin": ((), None),
+        }
+
+        for name, (origins, active_session) in cases.items():
+            with self.subTest(name=name):
+                sio = RealChainlitSio(connect)
+                configure_copilot_bridge_guards(
+                    sio,
+                    sessions=self.active_sessions(
+                        {SESSION_ID: active_session}
+                        if active_session
+                        else {}
+                    ),
+                )
+                with (
+                    patch(
+                        "embed_security._authenticated_socket_user",
+                        AsyncMock(return_value=user),
+                    ),
+                    self.assertRaises(SocketIOConnectionRefusedError),
+                ):
+                    await sio.handlers["/"]["connect"](
+                        f"{name}-socket",
+                        transport_environ(
+                            origins=origins,
+                            session_id=SESSION_ID,
+                        ),
+                        {
+                            "clientType": "copilot",
+                            "sessionId": f"{name}-chainlit-session",
+                            "userEnv": "{}",
+                        },
+                    )
+
+                self.assertIsNone(WebsocketSession.get(f"{name}-socket"))
+
+    async def test_concurrent_real_connects_do_not_cross_bind_principals(self):
+        from chainlit.session import WebsocketSession
+        from chainlit.socket import connect
+
+        session_ids = ("a" * 43, "b" * 43)
+        users = {
+            session_ids[0]: self.copilot_user(
+                principal_id=(
+                    "11111111-1111-1111-1111-111111111111:"
+                    "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+                ),
+                session_id=session_ids[0],
+                auth_mode="entra",
+            ),
+            session_ids[1]: self.copilot_user(
+                principal_id=(
+                    "22222222-2222-2222-2222-222222222222:"
+                    "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+                ),
+                session_id=session_ids[1],
+                auth_mode="entra",
+            ),
+        }
+        arrived = 0
+        both_arrived = asyncio.Event()
+        release = asyncio.Event()
+        created_by = None
+        created_session = None
+
+        async def synchronized_connect(socket_id, environ, auth):
+            nonlocal arrived, created_by, created_session
+            arrived += 1
+            if arrived == 2:
+                both_arrived.set()
+            await release.wait()
+            result = await connect(socket_id, environ, auth)
+            websocket_session = WebsocketSession.get(socket_id)
+            if websocket_session and not websocket_session.restored:
+                created_by = socket_id
+                created_session = websocket_session
+            return result
+
+        sio = RealChainlitSio(synchronized_connect)
+        configure_copilot_bridge_guards(
+            sio,
+            sessions=self.active_sessions(
+                {
+                    session_id: SimpleNamespace(
+                        principal_id=user.identifier,
+                        auth_mode="entra",
+                    )
+                    for session_id, user in users.items()
+                }
+            ),
+        )
+
+        async def authenticate(environ):
+            session_id = embed_security._copilot_session_id_from_environ(
+                environ
+            )
+            return users[session_id]
+
+        async def attempt(socket_id, session_id):
+            try:
+                result = await sio.handlers["/"]["connect"](
+                    socket_id,
+                    transport_environ(session_id=session_id),
+                    {
+                        "clientType": "copilot",
+                        "sessionId": "shared-chainlit-session",
+                        "userEnv": "{}",
+                    },
+                )
+                websocket_session = WebsocketSession.get(socket_id)
+                return (
+                    result,
+                    (
+                        websocket_session.user.identifier
+                        if websocket_session and websocket_session.user
+                        else None
+                    ),
+                )
+            except SocketIOConnectionRefusedError:
+                return False, None
+
+        with patch(
+            "embed_security._authenticated_socket_user",
+            side_effect=authenticate,
+        ):
+            tasks = [
+                asyncio.create_task(
+                    attempt(f"socket-{index}", session_id)
+                )
+                for index, session_id in enumerate(session_ids)
+            ]
+            await asyncio.wait_for(both_arrived.wait(), timeout=1)
+            release.set()
+            outcomes = await asyncio.gather(*tasks)
+
+        expected_by_socket = {
+            f"socket-{index}": users[session_id]
+            for index, session_id in enumerate(session_ids)
+        }
+        self.assertIsNotNone(created_by)
+        self.assertIsNotNone(created_session)
+        self.assertIs(
+            expected_by_socket[created_by],
+            created_session.user,
+        )
+        self.assertIn((False, None), outcomes)
+        for index, (connected, principal_id) in enumerate(outcomes):
+            if connected:
+                self.assertEqual(
+                    users[session_ids[index]].identifier,
+                    principal_id,
+                )
 
 
 class BridgeGuardTests(unittest.IsolatedAsyncioTestCase):

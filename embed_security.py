@@ -1497,9 +1497,11 @@ def configure_copilot_bridge_guards(
                 await close_rejected_socket(socket_id)
                 raise SocketIOConnectionRefusedError("authentication failed")
 
+            # Chainlit requires a sessionId for new sockets. It is a recovery
+            # request only when that logical session already exists.
             if (
                 getattr(active_session, "auth_mode", "entra") == "anonymous"
-                and (chainlit_session_id or auth_payload.get("threadId"))
+                and (existing or auth_payload.get("threadId"))
             ):
                 logger.warning(
                     "Blocked thread recovery for an anonymous Copilot session"
@@ -1576,6 +1578,13 @@ def configure_copilot_bridge_guards(
                 from chainlit.session import WebsocketSession
 
                 websocket_session = WebsocketSession.get(socket_id)
+                if (
+                    existing is None
+                    and websocket_session
+                    and websocket_session.user is None
+                    and not getattr(websocket_session, "restored", False)
+                ):
+                    websocket_session.user = current_user
                 restored_chainlit_session_id = getattr(
                     websocket_session,
                     "id",
