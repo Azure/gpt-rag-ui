@@ -13,16 +13,6 @@ import msal
 from auth_common import (
     canonical_principal_id,
     is_user_authorized,
-    safe_profile_metadata,
-)
-from auth_session import (
-    OAUTH_SESSION_ID_KEY,
-    OAUTH_SESSION_SOURCE,
-    current_oauth_credential,
-    current_user_metadata,
-    delete_current_oauth_credential,
-    get_oauth_credential_store,
-    oauth_session_id_from_metadata,
 )
 from dependencies import get_config
 
@@ -189,69 +179,49 @@ async def ensure_fresh_user_access_token(user: cl.User, *, min_ttl_seconds: int 
     """
 
     metadata = user.metadata or {}
-    session_id = oauth_session_id_from_metadata(metadata)
-    credential = await current_oauth_credential(metadata)
-    if not session_id or not credential:
+    access_token = str(metadata.get("access_token") or "").strip()
+    refresh_token_value = str(metadata.get("refresh_token") or "").strip()
+
+    if not access_token or not refresh_token_value:
         return False
 
-    store = get_oauth_credential_store()
-    async with store.refresh_lock(session_id):
-        credential = await current_oauth_credential(metadata)
-        if not credential:
-            return False
-        if not _is_access_token_expiring(
-            credential.access_token,
-            min_ttl_seconds=min_ttl_seconds,
-        ):
-            return False
+    if not _is_access_token_expiring(access_token, min_ttl_seconds=min_ttl_seconds):
+        return False
 
-        ttl = _access_token_ttl_seconds(credential.access_token)
-        logger.info(
-            "Refreshing user access token (near expiry): ttl_seconds=%s user=%s",
-            ttl if ttl is not None else "unknown",
-            (
-                metadata.get("client_principal_name")
-                or metadata.get("client_principal_id")
-                or user.identifier
-                or "<unknown>"
-            ),
+    ttl = _access_token_ttl_seconds(access_token)
+    logger.info(
+        "Refreshing user access token (near expiry): ttl_seconds=%s user=%s",
+        ttl if ttl is not None else "unknown",
+        (metadata.get("client_principal_name") or metadata.get("client_principal_id") or user.identifier or "<unknown>"),
+    )
+
+    result = await refresh_access_token(refresh_token_value)
+    if "error" in result:
+        error_desc = result.get("error_description", "Unknown error")
+        logger.warning("User token refresh failed: %s", error_desc)
+        raise RuntimeError(f"token refresh failed: {error_desc}")
+
+    new_access_token = result.get("access_token")
+    new_refresh_token = result.get("refresh_token") or refresh_token_value
+    if not new_access_token:
+        raise RuntimeError("token refresh failed: missing access_token")
+
+    metadata["access_token"] = new_access_token
+    metadata["refresh_token"] = new_refresh_token
+    metadata["access_token_acquired_at"] = int(time.time())
+    exp = _jwt_exp_unverified(new_access_token)
+    if exp:
+        metadata["access_token_expires_at"] = int(exp)
+
+    user.metadata = metadata
+
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(
+            "Refreshed access token claims (unverified): %s",
+            _access_token_debug_summary(new_access_token),
         )
-
-        result = await refresh_access_token(credential.refresh_token)
-        if "error" in result:
-            error_desc = result.get("error_description", "Unknown error")
-            logger.warning("User token refresh failed: %s", error_desc)
-            raise RuntimeError(f"token refresh failed: {error_desc}")
-
-        new_access_token = result.get("access_token")
-        new_refresh_token = (
-            result.get("refresh_token") or credential.refresh_token
-        )
-        if not new_access_token:
-            raise RuntimeError("token refresh failed: missing access_token")
-
-        updated = await store.update(
-            session_id,
-            principal_id=credential.principal_id,
-            access_token=new_access_token,
-            refresh_token=new_refresh_token,
-        )
-        if not updated:
-            raise RuntimeError("OAuth session expired during token refresh")
-
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug(
-                "Refreshed access token claims (unverified): %s",
-                _access_token_debug_summary(new_access_token),
-            )
 
     return True
-
-
-@cl.on_logout
-async def clear_oauth_credentials_on_logout(request, response):
-    await delete_current_oauth_credential()
-    return {"success": True}
 
 
 def _looks_like_graph_scope(scope: str) -> bool:
@@ -432,19 +402,28 @@ async def oauth_callback(
 
     tenant_id_claim = str(id_token.get("tid") or "").strip()
     object_id = str(id_token.get("oid") or "").strip()
-    if not tenant_id_claim or not object_id:
-        raise RuntimeError(
-            "OAuth identity is missing the required tid or oid claim."
-        )
-    principal_id = canonical_principal_id(tenant_id_claim, object_id)
-    user_name = str(id_token.get("name") or "").strip() or principal_id
     principal_name = str(id_token.get("preferred_username") or "").strip()
+    try:
+        principal_id = canonical_principal_id(
+            tenant_id_claim,
+            object_id,
+        )
+    except ValueError as exc:
+        raise RuntimeError(
+            "OAuth identity is missing valid tid or oid claims."
+        ) from exc
+    tenant_id_claim, object_id = principal_id.split(":", 1)
+    user_name = str(id_token.get("name") or "").strip() or principal_id
 
     # "Single token" mode: do not call Microsoft Graph from the client.
     # If you need group-based auth, it will require a second token (Graph audience).
     groups: List[str] = []
 
-    authorized = is_user_authorized(config, principal_name, principal_id)
+    authorized = is_user_authorized(
+        config,
+        principal_name,
+        principal_id,
+    )
 
     logger.info(
         "User authenticated: name='%s' principal='%s' authorized=%s",
@@ -455,36 +434,24 @@ async def oauth_callback(
     if not authorized:
         return None
 
-    from chainlit.config import config as chainlit_config
-
-    previous_session_id = oauth_session_id_from_metadata(
-        current_user_metadata()
-    )
-    credential = await get_oauth_credential_store().replace(
-        previous_session_id=previous_session_id,
-        principal_id=principal_id,
-        access_token=access_token,
-        refresh_token=refresh_token,
-        ttl_seconds=chainlit_config.project.user_session_timeout,
-    )
-    profile = safe_profile_metadata(
-        {
-            "authorized": authorized,
-            "tenant_id": tenant_id_claim,
-            "object_id": object_id,
-            "principal_id": principal_id,
-            "client_principal_name": principal_name,
-        }
-    )
-    profile.update(
-        {
-            "auth_source": OAUTH_SESSION_SOURCE,
-            OAUTH_SESSION_ID_KEY: credential.session_id,
-        }
-    )
+    metadata = {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "access_token_acquired_at": int(time.time()),
+        "access_token_expires_at": _jwt_exp_unverified(access_token),
+        "authorized": authorized,
+        "auth_source": "oauth",
+        "user_name": principal_id,
+        "client_principal_id": object_id,
+        "client_principal_name": principal_name,
+        "client_group_names": groups,
+        "principal_id": principal_id,
+        "tenant_id": tenant_id_claim,
+        "object_id": object_id,
+    }
 
     return cl.User(
         identifier=principal_id,
         display_name=user_name,
-        metadata=profile,
+        metadata=metadata,
     )

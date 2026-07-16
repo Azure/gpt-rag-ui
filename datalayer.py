@@ -7,7 +7,6 @@ User identity is resolved from the Chainlit session context (populated by OAuth)
 
 import logging
 import uuid
-from collections import OrderedDict
 from contextvars import ContextVar
 from datetime import datetime
 from typing import Optional
@@ -32,16 +31,19 @@ from orchestrator_client import (
 from conversation_security import (
     get_owned_conversation,
     principal_id_from_metadata,
+    thread_owner_id_from_metadata,
 )
-from auth_common import safe_profile_metadata
-from auth_session import current_user_metadata
-from embed_auth import resolve_access_token
+from embed_auth import (
+    get_request_copilot_session,
+    is_copilot_session_active,
+    resolve_access_token,
+)
 
 logger = logging.getLogger("gpt_rag_ui.datalayer")
 
-# Bounded canonical profile cache. Credentials and session markers are never stored here.
-_MAX_CACHED_USERS = 1000
-_users: OrderedDict[str, PersistedUser] = OrderedDict()
+# In-memory user store: identifier -> PersistedUser
+# Populated on login, lost on restart (acceptable: users re-auth via OAuth each session).
+_users: dict[str, PersistedUser] = {}
 _request_user_metadata: ContextVar[Optional[dict]] = ContextVar(
     "request_user_metadata",
     default=None,
@@ -54,13 +56,6 @@ def _get_current_timestamp() -> str:
 
 def _get_session_metadata() -> Optional[dict]:
     """Safely retrieve user metadata from the current Chainlit session context."""
-    if metadata := current_user_metadata():
-        logger.debug(
-            "_get_session_metadata: found via signed session (keys=%s)",
-            sorted(metadata.keys()),
-        )
-        return metadata
-
     # Primary: Chainlit internal context
     try:
         from chainlit.context import context
@@ -84,8 +79,9 @@ def _get_session_metadata() -> Optional[dict]:
         logger.debug("_get_session_metadata: cl.user_session not available: %s", e)
 
     if metadata := _request_user_metadata.get():
+        _request_user_metadata.set(None)
         logger.debug(
-            "_get_session_metadata: found via authenticated request context (keys=%s)",
+            "_get_session_metadata: consumed authenticated request context (keys=%s)",
             sorted(metadata.keys()),
         )
         return metadata
@@ -106,39 +102,58 @@ class OrchestratorDataLayer(BaseDataLayer):
     # ── User management (in-memory) ──────────────────────────────────────
 
     async def get_user(self, identifier: str) -> Optional[PersistedUser]:
-        normalized_identifier = str(identifier or "").strip().lower()
-        user = _users.get(normalized_identifier)
+        request_session = get_request_copilot_session()
+        if request_session:
+            if not await is_copilot_session_active(
+                request_session.user_metadata()
+            ):
+                logger.warning(
+                    "Rejected persisted-user lookup for an expired Copilot session"
+                )
+                return None
+            if request_session.principal_id != identifier:
+                logger.warning(
+                    "Rejected persisted-user lookup across Copilot principals"
+                )
+                return None
+            user = PersistedUser(
+                id=identifier,
+                identifier=identifier,
+                display_name=request_session.display_name,
+                createdAt=_get_current_timestamp(),
+                metadata=request_session.user_metadata(),
+            )
+            _users[identifier] = user
+            _request_user_metadata.set(user.metadata)
+            return user
+
+        user = _users.get(identifier)
         if user and user.metadata:
-            _users.move_to_end(normalized_identifier)
             _request_user_metadata.set(user.metadata)
         return user
 
     async def create_user(self, user: User) -> Optional[PersistedUser]:
-        try:
-            profile = safe_profile_metadata(user.metadata)
-        except ValueError:
-            logger.warning(
-                "Refusing user with missing or inconsistent canonical identity"
-            )
+        if not await is_copilot_session_active(user.metadata):
+            logger.warning("Rejected user creation for an expired Copilot session")
             return None
-
-        principal_id = profile["principal_id"]
-        if not principal_id or user.identifier.lower() != principal_id:
+        principal_id = principal_id_from_metadata(user.metadata)
+        if not principal_id:
+            logger.warning("No principal_id in user metadata for %s", user.identifier)
+            return None
+        if user.identifier.lower() != principal_id:
             logger.warning(
                 "Refusing user with missing or inconsistent canonical identity"
             )
             return None
 
         persisted = PersistedUser(
-            id=principal_id,
-            identifier=principal_id,
+            id=user.identifier,
+            identifier=user.identifier,
+            display_name=user.display_name,
             createdAt=_get_current_timestamp(),
-            metadata=profile,
+            metadata=user.metadata or {},
         )
-        _users[principal_id] = persisted
-        _users.move_to_end(principal_id)
-        while len(_users) > _MAX_CACHED_USERS:
-            _users.popitem(last=False)
+        _users[user.identifier] = persisted
         _request_user_metadata.set(persisted.metadata)
         return persisted
 
@@ -160,14 +175,17 @@ class OrchestratorDataLayer(BaseDataLayer):
         logger.info("list_threads called: pagination=%s filters=%s", pagination, filters)
 
         metadata = _get_session_metadata()
-        if not metadata:
-            logger.warning("list_threads: no session metadata; returning empty")
+        if not metadata or not await is_copilot_session_active(metadata):
+            logger.warning(
+                "list_threads: no active session metadata; returning empty"
+            )
             return empty
 
         principal_id = principal_id_from_metadata(metadata)
+        user_identifier = thread_owner_id_from_metadata(metadata)
         if not principal_id:
             logger.warning(
-                "list_threads: canonical tid:oid identity is missing; returning empty"
+                "list_threads: principal identity is missing; returning empty"
             )
             return empty
 
@@ -218,7 +236,7 @@ class OrchestratorDataLayer(BaseDataLayer):
                     name=conv.get("name", ""),
                     createdAt=conv.get("lastUpdated"),
                     userId=principal_id,
-                    userIdentifier=principal_id,
+                    userIdentifier=user_identifier,
                     tags=[],
                     metadata={},
                     steps=[],
@@ -236,9 +254,9 @@ class OrchestratorDataLayer(BaseDataLayer):
 
     async def get_thread(self, thread_id: str) -> Optional[ThreadDict]:
         metadata = _get_session_metadata()
-        if not metadata:
+        if not metadata or not await is_copilot_session_active(metadata):
             logger.warning(
-                "get_thread: no session metadata; returning None for thread=%s",
+                "get_thread: no active session metadata; returning None for thread=%s",
                 thread_id,
             )
             return None
@@ -254,6 +272,8 @@ class OrchestratorDataLayer(BaseDataLayer):
         messages = conv.get("messages", [])
         principal_id = principal_id_from_metadata(metadata)
         steps = self._messages_to_steps(messages, thread_id, principal_id)
+        thread_user_id = principal_id
+        user_identifier = principal_id
 
         ts_value = conv.get("_ts")
         created_at = None
@@ -270,8 +290,8 @@ class OrchestratorDataLayer(BaseDataLayer):
             id=conv["id"],
             name=conv.get("name", ""),
             createdAt=created_at,
-            userId=principal_id,
-            userIdentifier=principal_id,
+            userId=thread_user_id,
+            userIdentifier=user_identifier,
             tags=[],
             metadata={},
             steps=steps,
@@ -285,9 +305,9 @@ class OrchestratorDataLayer(BaseDataLayer):
 
     async def update_thread(self, thread_id: str, **kwargs) -> None:
         metadata = _get_session_metadata()
-        if not metadata:
+        if not metadata or not await is_copilot_session_active(metadata):
             logger.warning(
-                "update_thread: no session metadata; cannot rename thread=%s",
+                "update_thread: no active session metadata; cannot rename thread=%s",
                 thread_id,
             )
             return
@@ -323,9 +343,9 @@ class OrchestratorDataLayer(BaseDataLayer):
 
     async def delete_thread(self, thread_id: str) -> bool:
         metadata = _get_session_metadata()
-        if not metadata:
+        if not metadata or not await is_copilot_session_active(metadata):
             logger.warning(
-                "delete_thread: no session metadata; cannot delete thread=%s",
+                "delete_thread: no active session metadata; cannot delete thread=%s",
                 thread_id,
             )
             return False
@@ -370,7 +390,6 @@ class OrchestratorDataLayer(BaseDataLayer):
         return True
 
     async def delete_user_session(self, id: str) -> bool:
-        _users.pop(str(id or "").strip().lower(), None)
         return True
 
     async def build_debug_url(self) -> str:

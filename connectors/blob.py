@@ -1,3 +1,4 @@
+from collections.abc import Iterator
 from azure.storage.blob import ContainerClient, BlobServiceClient, generate_blob_sas, BlobSasPermissions
 from azure.identity import ManagedIdentityCredential, AzureCliCredential, ChainedTokenCredential
 from azure.core.exceptions import ResourceNotFoundError, AzureError
@@ -90,6 +91,36 @@ class BlobClient:
         except Exception as e:
             logging.error(f"[blob][{self.blob_name}] Failed to download blob: {e}")
             raise Exception(f"Blob client error when reading from blob storage: {e}")
+
+    def download_blob_chunks(self) -> tuple[Iterator[bytes], int]:
+        """Open the blob as a lazy chunk iterator without buffering it."""
+
+        blob_client = self.blob_service_client.get_blob_client(
+            container=self.container_name,
+            blob=self.blob_name,
+        )
+        try:
+            downloader = blob_client.download_blob()
+            logging.info(
+                "[blob][%s] Blob download stream opened successfully.",
+                self.blob_name,
+            )
+            return downloader.chunks(), downloader.size
+        except ResourceNotFoundError:
+            logging.info(
+                "[blob][%s] Blob was not found during stream setup.",
+                self.blob_name,
+            )
+            raise
+        except Exception as exc:
+            logging.error(
+                "[blob][%s] Failed to open blob download stream: %s",
+                self.blob_name,
+                exc,
+            )
+            raise RuntimeError(
+                "Blob client error when streaming from blob storage."
+            ) from exc
 
     def exists(self) -> bool:
         """Check whether the target blob exists."""

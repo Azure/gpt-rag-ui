@@ -1,7 +1,7 @@
 import logging
 import os
 import secrets
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from io import BytesIO
@@ -34,6 +34,7 @@ def _configure_logging() -> None:
 
 _configure_logging()
 logger = logging.getLogger("gpt_rag_ui.main")
+_MIN_COPILOT_AUTH_SECRET_BYTES = 32
 
 
 def _mask(value: str, *, keep_end: int = 6) -> str:
@@ -254,32 +255,59 @@ def _configure_chainlit_prereqs(
     # Chainlit requires env var CHAINLIT_AUTH_SECRET to sign its session JWT.
     # Prefer storing it in App Configuration (key `CHAINLIT_AUTH_SECRET`) backed by Key Vault.
     # If missing, generate a temporary secret (sessions will be invalidated on restart).
-    if not os.environ.get("CHAINLIT_AUTH_SECRET"):
+    chainlit_secret = (
+        os.environ.get("CHAINLIT_AUTH_SECRET") or ""
+    ).strip()
+    loaded_from_config = False
+    if not chainlit_secret:
         chainlit_secret = _get_str_config(config, "CHAINLIT_AUTH_SECRET")
-        if chainlit_secret:
-            os.environ["CHAINLIT_AUTH_SECRET"] = chainlit_secret
-            logger.info("Configured CHAINLIT_AUTH_SECRET from App Configuration key 'CHAINLIT_AUTH_SECRET'")
-        elif require_persistent_auth_secret:
+        loaded_from_config = bool(chainlit_secret)
+
+    if chainlit_secret:
+        if (
+            require_persistent_auth_secret
+            and len(chainlit_secret.encode("utf-8"))
+            < _MIN_COPILOT_AUTH_SECRET_BYTES
+        ):
+            os.environ.pop("CHAINLIT_AUTH_SECRET", None)
             raise EmbedConfigError(
-                "Chainlit Copilot requires a persistent CHAINLIT_AUTH_SECRET. "
-                "Configure one through an environment variable or a Key "
-                "Vault-backed Azure App Configuration entry."
+                "Chainlit Copilot requires CHAINLIT_AUTH_SECRET to contain "
+                f"at least {_MIN_COPILOT_AUTH_SECRET_BYTES} UTF-8 bytes."
             )
-        else:
-            os.environ["CHAINLIT_AUTH_SECRET"] = secrets.token_urlsafe(48)
-            logger.warning(
-                "App Configuration key 'CHAINLIT_AUTH_SECRET' is not set; using a temporary secret. "
-                "Set 'CHAINLIT_AUTH_SECRET' (ideally Key Vault-backed) to avoid session resets on restart."
+        os.environ["CHAINLIT_AUTH_SECRET"] = chainlit_secret
+        if loaded_from_config:
+            logger.info(
+                "Configured CHAINLIT_AUTH_SECRET from App Configuration key "
+                "'CHAINLIT_AUTH_SECRET'"
             )
+    elif require_persistent_auth_secret:
+        os.environ.pop("CHAINLIT_AUTH_SECRET", None)
+        raise EmbedConfigError(
+            "Chainlit Copilot requires a persistent CHAINLIT_AUTH_SECRET. "
+            "Configure one through an environment variable or a Key "
+            "Vault-backed Azure App Configuration entry."
+        )
+    else:
+        os.environ["CHAINLIT_AUTH_SECRET"] = secrets.token_urlsafe(48)
+        logger.warning(
+            "App Configuration key 'CHAINLIT_AUTH_SECRET' is not set; using a temporary secret. "
+            "Set 'CHAINLIT_AUTH_SECRET' (ideally Key Vault-backed) to avoid session resets on restart."
+        )
 
     # Chainlit OAuth providers (including Azure AD) require configuration via environment variables.
     # To keep everything in App Configuration (+ Key Vault references), mirror relevant keys into
     # process environment before importing Chainlit.
-    if not os.environ.get("CHAINLIT_URL"):
+    chainlit_url = (os.environ.get("CHAINLIT_URL") or "").strip()
+    loaded_url_from_config = False
+    if not chainlit_url:
         chainlit_url = _get_str_config(config, "CHAINLIT_URL", "chainlitUrl")
-        if chainlit_url:
-            os.environ["CHAINLIT_URL"] = chainlit_url.rstrip("/")
+        loaded_url_from_config = bool(chainlit_url)
+    if chainlit_url:
+        os.environ["CHAINLIT_URL"] = chainlit_url.rstrip("/")
+        if loaded_url_from_config:
             logger.info("Configured CHAINLIT_URL from App Configuration")
+    else:
+        os.environ.pop("CHAINLIT_URL", None)
 
 
 def _evaluate_auth_state(
@@ -311,7 +339,7 @@ def _evaluate_auth_state(
     default_allow_anonymous = (
         False
         if embed_settings.enabled
-        else (not running_in_azure_host) or (not oauth_configured)
+        else ((not running_in_azure_host) or (not oauth_configured))
     )
 
     allow_anonymous_source = "default"
@@ -410,24 +438,21 @@ def _configure_auth_environment(config: AppConfigClient, auth_state: AuthState |
     allow_anonymous = auth_state.allow_anonymous
 
     if oauth_configured:
-        if not os.environ.get("OAUTH_AZURE_AD_CLIENT_ID") and client_id_value:
-            os.environ["OAUTH_AZURE_AD_CLIENT_ID"] = client_id_value
-            logger.info("Configured OAUTH_AZURE_AD_CLIENT_ID")
-
-        if not os.environ.get("OAUTH_AZURE_AD_TENANT_ID") and tenant_id_value:
-            os.environ["OAUTH_AZURE_AD_TENANT_ID"] = tenant_id_value
-            logger.info("Configured OAUTH_AZURE_AD_TENANT_ID")
-
-        if not os.environ.get("OAUTH_AZURE_AD_CLIENT_SECRET") and client_secret_value:
-            os.environ["OAUTH_AZURE_AD_CLIENT_SECRET"] = client_secret_value
-            logger.info("Configured OAUTH_AZURE_AD_CLIENT_SECRET")
+        os.environ["OAUTH_AZURE_AD_CLIENT_ID"] = client_id_value
+        os.environ["OAUTH_AZURE_AD_TENANT_ID"] = tenant_id_value
+        os.environ["OAUTH_AZURE_AD_CLIENT_SECRET"] = client_secret_value
 
         # Scopes for Chainlit Azure AD provider.
         # Important: if this is not set, Chainlit/MSAL may fall back to Microsoft Graph defaults (e.g. User.Read),
         # which produces access_tokens with aud=00000003-... and the orchestrator correctly rejects them.
         #
         # Default to the orchestrator API scope to keep the system in "single token" mode.
-        if not os.environ.get("OAUTH_AZURE_AD_SCOPES"):
+        scopes_from_environment = (
+            os.environ.get("OAUTH_AZURE_AD_SCOPES") or ""
+        ).strip()
+        if scopes_from_environment:
+            os.environ["OAUTH_AZURE_AD_SCOPES"] = scopes_from_environment
+        else:
             scopes_value = _get_str_config(config, "OAUTH_AZURE_AD_SCOPES")
             if str(scopes_value or "").strip():
                 os.environ["OAUTH_AZURE_AD_SCOPES"] = str(scopes_value)
@@ -441,18 +466,19 @@ def _configure_auth_environment(config: AppConfigClient, auth_state: AuthState |
         # Single-tenant toggle.
         # Default to true (most deployments use a tenant-specific app registration).
         # Allow explicitly forcing false for multi-tenant scenarios.
-        if not os.environ.get("OAUTH_AZURE_AD_ENABLE_SINGLE_TENANT"):
-            enable_single_tenant = _get_str_config(config, "OAUTH_AZURE_AD_ENABLE_SINGLE_TENANT")
-            normalized = str(enable_single_tenant or "").strip().lower()
-            if normalized in {"0", "false", "no", "n", "off"}:
-                os.environ["OAUTH_AZURE_AD_ENABLE_SINGLE_TENANT"] = "false"
-                logger.info("Configured OAUTH_AZURE_AD_ENABLE_SINGLE_TENANT=false")
-            elif normalized in {"1", "true", "yes", "y", "on"}:
-                os.environ["OAUTH_AZURE_AD_ENABLE_SINGLE_TENANT"] = "true"
-                logger.info("Configured OAUTH_AZURE_AD_ENABLE_SINGLE_TENANT=true")
-            else:
-                os.environ["OAUTH_AZURE_AD_ENABLE_SINGLE_TENANT"] = "true"
-                logger.info("Defaulted OAUTH_AZURE_AD_ENABLE_SINGLE_TENANT=true (not provided)")
+        enable_single_tenant = (
+            os.environ.get("OAUTH_AZURE_AD_ENABLE_SINGLE_TENANT") or ""
+        ).strip()
+        if not enable_single_tenant:
+            enable_single_tenant = _get_str_config(
+                config,
+                "OAUTH_AZURE_AD_ENABLE_SINGLE_TENANT",
+            )
+        normalized = str(enable_single_tenant or "").strip().lower()
+        if normalized in {"0", "false", "no", "n", "off"}:
+            os.environ["OAUTH_AZURE_AD_ENABLE_SINGLE_TENANT"] = "false"
+        else:
+            os.environ["OAUTH_AZURE_AD_ENABLE_SINGLE_TENANT"] = "true"
     else:
         cleared = _clear_oauth_env_vars()
 
@@ -589,102 +615,6 @@ def _configure_embed_environment(settings: EmbedSettings) -> None:
     os.environ["CHAINLIT_PUBLIC_URL"] = settings.ui_origin
 
 
-def _create_legacy_download_app(
-    *,
-    download_from_blob: Callable[[str], bytes],
-    documents_container: str,
-    images_container: str,
-    copilot_sessions=None,
-) -> FastAPI:
-    """Build the pre-Copilot standalone download route unchanged."""
-
-    def handle_file_download(file_path: str):
-        try:
-            file_bytes = download_from_blob(file_path)
-            if not file_bytes:
-                return Response(
-                    "File not found or empty.",
-                    status_code=404,
-                    media_type="text/plain",
-                )
-        except Exception as exc:
-            error_message = str(exc)
-            status_code = 404 if "BlobNotFound" in error_message else 500
-            logger.exception("Download error for '%s'", file_path)
-            return Response(
-                (
-                    "Blob not found"
-                    if status_code == 404
-                    else "Internal server error"
-                )
-                + f": {error_message}.",
-                status_code=status_code,
-                media_type="text/plain",
-            )
-
-        actual_file_name = os.path.basename(file_path)
-        return StreamingResponse(
-            BytesIO(file_bytes),
-            media_type="application/octet-stream",
-            headers={
-                "Content-Disposition": (
-                    f'attachment; filename="{actual_file_name}"'
-                )
-            },
-        )
-
-    download_app = FastAPI()
-
-    @download_app.get("/{container_name}/{file_path:path}")
-    async def download_blob_file(
-        container_name: str,
-        file_path: str,
-    ):
-        from auth_session import current_oauth_credential
-        from embed_auth import current_copilot_session
-
-        if copilot_sessions:
-            standalone_credential = await current_oauth_credential()
-            if current_copilot_session() or not standalone_credential:
-                return Response(
-                    "Container not found",
-                    status_code=404,
-                    media_type="text/plain",
-                )
-
-        logger.info(
-            "Download request received: container=%s file=%s",
-            container_name,
-            file_path,
-        )
-        normalized = container_name.strip().strip("/")
-        target_container = None
-        if normalized == documents_container:
-            target_container = documents_container
-        elif normalized == images_container:
-            target_container = images_container
-
-        if not target_container:
-            logger.warning(
-                "Rejected download for unknown container '%s'",
-                container_name,
-            )
-            return Response(
-                "Container not found",
-                status_code=404,
-                media_type="text/plain",
-            )
-
-        return handle_file_download(f"{target_container}/{file_path}")
-
-    if copilot_sessions:
-        from auth_session import ChainlitAuthContextMiddleware
-
-        download_app.add_middleware(ChainlitAuthContextMiddleware)
-
-    return download_app
-
-
 def _create_chainlit_app(
     config: AppConfigClient,
     auth_state: AuthState | None = None,
@@ -696,9 +626,9 @@ def _create_chainlit_app(
     """
 
     embed_settings = embed_settings or EmbedSettings()
-    effective_auth = auth_state or _evaluate_auth_state(config, embed_settings)
     _configure_embed_environment(embed_settings)
-    _configure_auth_environment(config, effective_auth)
+    _configure_auth_environment(config, auth_state)
+    effective_auth = auth_state or _evaluate_auth_state(config, embed_settings)
     _sync_chainlit_spontaneous_file_upload(effective_auth)
 
     download_tokens = None
@@ -713,10 +643,12 @@ def _create_chainlit_app(
     copilot_sessions = None
     if embed_settings.enabled:
         from embed_auth import configure_session_store
+        from embed_security import disconnect_copilot_session
 
         copilot_sessions = configure_session_store(
             max_sessions=embed_settings.max_sessions,
             ttl_seconds=embed_settings.session_ttl_seconds,
+            on_invalidate=disconnect_copilot_session,
         )
 
     # Importing chainlit.config does not create the server app, so enabled
@@ -725,18 +657,9 @@ def _create_chainlit_app(
 
     configure_chainlit_allowed_origins(embed_settings, chainlit_config)
     from chainlit.server import app as chainlit_app, sio
-    from auth_session import ChainlitAuthContextMiddleware
     from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
     from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
     from starlette.middleware.cors import CORSMiddleware
-
-    if not getattr(
-        chainlit_app.state,
-        "gpt_rag_auth_context_middleware",
-        False,
-    ):
-        chainlit_app.add_middleware(ChainlitAuthContextMiddleware)
-        chainlit_app.state.gpt_rag_auth_context_middleware = True
 
     account_name = _get_str_config(config, "STORAGE_ACCOUNT_NAME")
     documents_container = _get_str_config(config, "DOCUMENTS_STORAGE_CONTAINER")
@@ -745,12 +668,17 @@ def _create_chainlit_app(
         config,
         "CONVERSATION_DOCUMENTS_STORAGE_CONTAINER",
     )
-    shared_download_containers = {
-        container.strip().strip("/")
-        for container in _get_str_config(
+    shared_download_container_value = (
+        os.environ.get("CITATION_SHARED_DOWNLOAD_CONTAINERS") or ""
+    ).strip()
+    if not shared_download_container_value:
+        shared_download_container_value = _get_str_config(
             config,
             "CITATION_SHARED_DOWNLOAD_CONTAINERS",
-        ).split(",")
+        )
+    shared_download_containers = {
+        container.strip().strip("/")
+        for container in shared_download_container_value.split(",")
         if container.strip().strip("/")
     }
 
@@ -768,12 +696,70 @@ def _create_chainlit_app(
             logger.exception("Error downloading blob '%s'", file_name)
             raise
 
-    legacy_download_app = _create_legacy_download_app(
-        download_from_blob=download_from_blob,
-        documents_container=documents_container,
-        images_container=images_container,
-        copilot_sessions=copilot_sessions,
-    )
+    blob_download_app = None
+    if not embed_settings.enabled:
+        # Preserve the existing standalone route and response contract. Copilot
+        # mode registers a different, authenticated grant route on host_app.
+        blob_download_app = FastAPI()
+
+        def handle_file_download(file_path: str):
+            try:
+                file_bytes = download_from_blob(file_path)
+                if not file_bytes:
+                    return Response(
+                        "File not found or empty.",
+                        status_code=404,
+                        media_type="text/plain",
+                    )
+            except Exception as exc:
+                error_message = str(exc)
+                status_code = 404 if "BlobNotFound" in error_message else 500
+                logger.exception("Download error for '%s'", file_path)
+                return Response(
+                    (
+                        "Blob not found"
+                        if status_code == 404
+                        else "Internal server error"
+                    )
+                    + f": {error_message}.",
+                    status_code=status_code,
+                    media_type="text/plain",
+                )
+
+            actual_file_name = os.path.basename(file_path)
+            return StreamingResponse(
+                BytesIO(file_bytes),
+                media_type="application/octet-stream",
+                headers={
+                    "Content-Disposition": (
+                        f'attachment; filename="{actual_file_name}"'
+                    )
+                },
+            )
+
+        @blob_download_app.get("/{container_name}/{file_path:path}")
+        async def download_standalone_blob(
+            container_name: str,
+            file_path: str,
+        ):
+            logger.info(
+                "Download request received: container=%s file=%s",
+                container_name,
+                file_path,
+            )
+            normalized = container_name.strip().strip("/")
+            target_container = None
+            if normalized == documents_container:
+                target_container = documents_container
+            elif normalized == images_container:
+                target_container = images_container
+            if not target_container:
+                return Response(
+                    "Container not found",
+                    status_code=404,
+                    media_type="text/plain",
+                )
+            return handle_file_download(f"{target_container}/{file_path}")
 
     # One-time runtime auth-mode log (useful when operators attach to logs after startup).
     _auth_mode_logged = False
@@ -833,13 +819,11 @@ def _create_chainlit_app(
 
     host_app = FastAPI(title="GPT-RAG UI host")
     if embed_settings.enabled:
-        from auth_session import ChainlitAuthContextMiddleware
         from embed_security import (
             configure_copilot_bridge_guards,
             CopilotRequestMiddleware,
         )
 
-        host_app.add_middleware(ChainlitAuthContextMiddleware)
         host_app.add_middleware(
             CopilotRequestMiddleware,
             settings=embed_settings,
@@ -854,13 +838,19 @@ def _create_chainlit_app(
             allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
             allow_headers=["Authorization", "Content-Type"],
         )
-        configure_copilot_bridge_guards(sio, copilot_sessions)
+        configure_copilot_bridge_guards(
+            sio,
+            sessions=copilot_sessions,
+        )
         logger.info(
-            "Chainlit Copilot enabled: origins=%s cookie_samesite=%s max_sessions=%s session_ttl_seconds=%s",
+            "Chainlit Copilot enabled: origins=%s cookie_samesite=%s "
+            "max_sessions=%s session_ttl_seconds=%s "
+            "bootstrap_rate_limit_per_minute=%s",
             list(embed_settings.allowed_origins),
             embed_settings.cookie_samesite,
             embed_settings.max_sessions,
             embed_settings.session_ttl_seconds,
+            embed_settings.bootstrap_rate_limit_per_minute,
         )
         logger.warning(
             "Chainlit Copilot stores session and Entra token state in this "
@@ -870,9 +860,25 @@ def _create_chainlit_app(
         )
 
     if embed_settings.enabled:
-        from download_security import register_secure_download_route
+        from download_security import DownloadStream, register_secure_download_route
         from embed_auth import register_copilot_auth_routes
         from entra_token import EntraTokenValidator
+
+        def stream_from_blob(file_name: str) -> DownloadStream:
+            logger.info("Preparing blob download stream for '%s'", file_name)
+            blob_url = (
+                f"https://{account_name}.blob.core.windows.net/{file_name}"
+            )
+            try:
+                blob_client = BlobClient(blob_url=blob_url)
+                chunks, size = blob_client.download_blob_chunks()
+                return DownloadStream(chunks=chunks, size=size)
+            except Exception:
+                logger.exception(
+                    "Error opening blob download stream for '%s'",
+                    file_name,
+                )
+                raise
 
         validator = EntraTokenValidator(
             tenant_id=embed_settings.entra_tenant_id,
@@ -889,7 +895,7 @@ def _create_chainlit_app(
         register_secure_download_route(
             host_app,
             manager=download_tokens,
-            download_blob=download_from_blob,
+            download_blob=stream_from_blob,
             allowed_containers={
                 container
                 for container in (
@@ -901,6 +907,7 @@ def _create_chainlit_app(
             },
             conversation_container=conversation_documents_container,
             shared_containers=shared_download_containers,
+            sessions=copilot_sessions,
         )
 
     @host_app.get("/version-footer")
@@ -922,10 +929,12 @@ def _create_chainlit_app(
         }
         return JSONResponse(payload)
 
-    host_app.mount("/api/download", legacy_download_app)
+    if blob_download_app is not None:
+        host_app.mount("/api/download", blob_download_app)
+        logger.info("Mounted standalone blob downloads at /api/download")
+
     host_app.mount("/", chainlit_app)
 
-    logger.info("Mounted legacy blob download app at /api/download")
     logger.info("Mounted Chainlit app at / on host app")
 
     FastAPIInstrumentor.instrument_app(host_app)

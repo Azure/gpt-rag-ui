@@ -4,9 +4,8 @@ import logging
 import mimetypes
 import os
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
-from io import BytesIO
 from urllib.parse import quote, urlsplit
 
 from azure.core.exceptions import ResourceNotFoundError
@@ -16,11 +15,15 @@ from fastapi.responses import StreamingResponse
 from itsdangerous import BadData, URLSafeTimedSerializer
 
 from conversation_security import (
+    canonical_conversation_id,
     get_owned_conversation,
     principal_id_from_metadata,
 )
-from auth_session import current_user_metadata
-from embed_auth import current_copilot_session
+from embed_auth import (
+    CopilotSessionStore,
+    get_request_copilot_session,
+    session_id_from_request,
+)
 
 
 _CONTAINER_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])?$")
@@ -39,6 +42,12 @@ class DownloadGrant:
 class DownloadPrincipal:
     principal_id: str
     metadata: dict
+
+
+@dataclass(frozen=True)
+class DownloadStream:
+    chunks: Iterable[bytes]
+    size: int
 
 
 class DownloadTokenManager:
@@ -91,7 +100,7 @@ class DownloadTokenManager:
         normalized_blob = blob_name.replace("\\", "/")
         return bool(
             principal_id
-            and conversation_id
+            and canonical_conversation_id(conversation_id) == conversation_id
             and _CONTAINER_PATTERN.fullmatch(container)
             and normalized_blob
             and len(normalized_blob) <= 1024
@@ -178,45 +187,65 @@ def is_download_target_allowed(
 
 async def resolve_download_principal(
     request: Request,
+    sessions: CopilotSessionStore,
+    *,
+    expected_principal_id: str | None = None,
 ) -> DownloadPrincipal | None:
-    opaque_session = current_copilot_session()
-    if opaque_session:
+    request_session = get_request_copilot_session()
+    if request_session:
+        opaque_session = await sessions.get(
+            getattr(request_session, "session_id", None)
+            or session_id_from_request(request)
+        )
+        if (
+            not opaque_session
+            or opaque_session.principal_id != request_session.principal_id
+        ):
+            return None
         return DownloadPrincipal(
             principal_id=opaque_session.principal_id,
             metadata=opaque_session.user_metadata(),
         )
 
+    mismatched_principal = None
+    if not request.headers.getlist("Origin"):
+        opaque_session = await sessions.get(session_id_from_request(request))
+        if opaque_session:
+            mismatched_principal = DownloadPrincipal(
+                principal_id=opaque_session.principal_id,
+                metadata=opaque_session.user_metadata(),
+            )
+            if (
+                not expected_principal_id
+                or opaque_session.principal_id == expected_principal_id
+            ):
+                return mismatched_principal
+
     chainlit_token = get_token_from_cookies(request.cookies)
     if not chainlit_token:
-        return None
+        return mismatched_principal
     try:
         user = await authenticate_user(chainlit_token)
     except HTTPException:
-        return None
+        return mismatched_principal
     if not user or not (user.metadata or {}).get("authorized", True):
-        return None
+        return mismatched_principal
 
-    persisted_metadata = dict(user.metadata or {})
-    principal_id = principal_id_from_metadata(persisted_metadata)
+    metadata = dict(user.metadata or {})
+    principal_id = principal_id_from_metadata(metadata)
     if not principal_id or principal_id != user.identifier:
-        return None
-
-    runtime_metadata = current_user_metadata() or {}
-    if runtime_metadata:
-        runtime_principal = principal_id_from_metadata(runtime_metadata)
-        if runtime_principal != principal_id:
-            return None
-        metadata = runtime_metadata
-    else:
-        metadata = persisted_metadata
-    return DownloadPrincipal(
+        return mismatched_principal
+    standalone_principal = DownloadPrincipal(
         principal_id=principal_id,
         metadata=metadata,
     )
+    if expected_principal_id and principal_id != expected_principal_id:
+        return mismatched_principal or standalone_principal
+    return standalone_principal
 
 
 ConversationResolver = Callable[[str, dict | None], Awaitable[dict | None]]
-BlobDownloader = Callable[[str], bytes]
+BlobDownloader = Callable[[str], bytes | DownloadStream]
 
 
 def register_secure_download_route(
@@ -227,11 +256,24 @@ def register_secure_download_route(
     allowed_containers: set[str],
     conversation_container: str,
     shared_containers: set[str],
+    sessions: CopilotSessionStore,
     conversation_resolver: ConversationResolver = get_owned_conversation,
 ) -> None:
     @app.get("/api/download/{grant_token}")
     async def download_blob_file(grant_token: str, request: Request):
-        principal = await resolve_download_principal(request)
+        grant = manager.verify(grant_token)
+        if not grant:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Not found",
+                headers={"Cache-Control": "no-store"},
+            )
+
+        principal = await resolve_download_principal(
+            request,
+            sessions,
+            expected_principal_id=grant.principal_id,
+        )
         if not principal:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -239,11 +281,11 @@ def register_secure_download_route(
                 headers={"Cache-Control": "no-store"},
             )
 
-        grant = manager.verify(grant_token)
-        if not grant or grant.principal_id != principal.principal_id:
+        if grant.principal_id != principal.principal_id:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Not found",
+                headers={"Cache-Control": "no-store"},
             )
         if not await conversation_resolver(
             grant.conversation_id,
@@ -252,11 +294,13 @@ def register_secure_download_route(
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Not found",
+                headers={"Cache-Control": "no-store"},
             )
         if grant.container not in allowed_containers:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Not found",
+                headers={"Cache-Control": "no-store"},
             )
         if not is_download_target_allowed(
             conversation_id=grant.conversation_id,
@@ -268,10 +312,11 @@ def register_secure_download_route(
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Not found",
+                headers={"Cache-Control": "no-store"},
             )
 
         try:
-            file_bytes = await asyncio.to_thread(
+            download = await asyncio.to_thread(
                 download_blob,
                 f"{grant.container}/{grant.blob_name}",
             )
@@ -279,6 +324,7 @@ def register_secure_download_route(
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Not found",
+                headers={"Cache-Control": "no-store"},
             ) from exc
         except Exception as exc:
             logger.exception(
@@ -289,11 +335,26 @@ def register_secure_download_route(
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Download failed",
+                headers={"Cache-Control": "no-store"},
             ) from exc
-        if not file_bytes:
+
+        if isinstance(download, DownloadStream):
+            if download.size <= 0:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Not found",
+                    headers={"Cache-Control": "no-store"},
+                )
+            response_body = download.chunks
+            content_length = download.size
+        elif download:
+            response_body = iter((download,))
+            content_length = len(download)
+        else:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Not found",
+                headers={"Cache-Control": "no-store"},
             )
 
         file_name = os.path.basename(grant.blob_name)
@@ -302,7 +363,7 @@ def register_secure_download_route(
             or "application/octet-stream"
         )
         return StreamingResponse(
-            BytesIO(file_bytes),
+            response_body,
             media_type=content_type,
             headers={
                 "Content-Disposition": (
@@ -311,6 +372,7 @@ def register_secure_download_route(
                 ),
                 "Cache-Control": "private, no-store",
                 "X-Content-Type-Options": "nosniff",
+                "Content-Length": str(content_length),
             },
         )
 
