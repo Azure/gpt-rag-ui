@@ -1,8 +1,14 @@
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
+from contextvars import ContextVar
 from http.cookies import CookieError, SimpleCookie
 from urllib.parse import urlsplit
+from weakref import WeakValueDictionary
 
+from socketio.exceptions import (
+    ConnectionRefusedError as SocketIOConnectionRefusedError,
+)
 from starlette.responses import PlainTextResponse
 
 from embed_auth import (
@@ -22,7 +28,475 @@ _COPILOT_AUTH_PATHS = {
 }
 _DISABLED_CHAINLIT_AUTH_PATHS = {"/auth/jwt", "/auth/header"}
 _BLOCKED_BRIDGE_EVENTS = {"call_fn", "window_message"}
+DEFAULT_MAX_CONNECTIONS_PER_SESSION = 4
 _copilot_sio = None
+_copilot_socket_registry = None
+_copilot_disconnect_socket = None
+_copilot_task_context: ContextVar[tuple | None] = ContextVar(
+    "copilot_task_context",
+    default=None,
+)
+_copilot_task_collector: ContextVar[list[asyncio.Task] | None] = ContextVar(
+    "copilot_task_collector",
+    default=None,
+)
+
+SocketDisconnect = Callable[[str], Awaitable[None]]
+
+
+class CopilotSocketRegistry:
+    """Track admitted physical Socket.IO connections for Copilot sessions."""
+
+    def __init__(
+        self,
+        *,
+        max_connections_per_session: int = DEFAULT_MAX_CONNECTIONS_PER_SESSION,
+    ):
+        if max_connections_per_session < 1:
+            raise ValueError("The Copilot socket connection bound must be positive.")
+        self.max_connections_per_session = max_connections_per_session
+        self._session_engineio_sids: dict[str, set[str]] = {}
+        self._engineio_sessions: dict[str, str] = {}
+        self._session_sockets: dict[str, set[str]] = {}
+        self._socket_sessions: dict[str, str] = {}
+        self._socket_chainlit_sessions: dict[str, str] = {}
+        self._session_tasks: dict[str, set[asyncio.Task]] = {}
+        self._restore_cleanup_tasks: dict[
+            tuple[str, str],
+            set[asyncio.Task],
+        ] = {}
+        self._invalidating_sockets: set[str] = set()
+        self._invalidating_sessions: set[str] = set()
+        self._admitting_sessions: set[str] = set()
+        self._lock = asyncio.Lock()
+
+    def _remove_socket_locked(self, socket_id: str) -> None:
+        session_id = self._socket_sessions.pop(socket_id, None)
+        self._socket_chainlit_sessions.pop(socket_id, None)
+        self._invalidating_sockets.discard(socket_id)
+        if not session_id:
+            return
+        session_sockets = self._session_sockets.get(session_id)
+        if session_sockets is None:
+            return
+        session_sockets.discard(socket_id)
+        if not session_sockets:
+            self._session_sockets.pop(session_id, None)
+        self._clear_completed_invalidation(session_id)
+
+    def _clear_completed_invalidation(self, session_id: str) -> None:
+        if (
+            session_id not in self._session_engineio_sids
+            and session_id not in self._session_sockets
+            and session_id not in self._session_tasks
+            and session_id not in self._admitting_sessions
+        ):
+            self._invalidating_sessions.discard(session_id)
+
+    async def reserve_engineio_transport(
+        self,
+        session_id: str,
+        engineio_sid: str,
+    ) -> bool:
+        async with self._lock:
+            if session_id in self._invalidating_sessions:
+                return False
+            existing_session_id = self._engineio_sessions.get(engineio_sid)
+            if existing_session_id:
+                return existing_session_id == session_id
+            engineio_sids = self._session_engineio_sids.setdefault(
+                session_id,
+                set(),
+            )
+            if len(engineio_sids) >= self.max_connections_per_session:
+                return False
+            engineio_sids.add(engineio_sid)
+            self._engineio_sessions[engineio_sid] = session_id
+            return True
+
+    async def release_engineio_transport(self, engineio_sid: str) -> None:
+        async with self._lock:
+            session_id = self._engineio_sessions.pop(
+                engineio_sid,
+                None,
+            )
+            if not session_id:
+                return
+            engineio_sids = self._session_engineio_sids.get(session_id)
+            if engineio_sids:
+                engineio_sids.discard(engineio_sid)
+                if not engineio_sids:
+                    self._session_engineio_sids.pop(session_id, None)
+            self._clear_completed_invalidation(session_id)
+
+    async def engineio_session(
+        self,
+        engineio_sid: str,
+    ) -> str | None:
+        async with self._lock:
+            return self._engineio_sessions.get(engineio_sid)
+
+    def register_spawned_task(
+        self,
+        session_id: str,
+        task: asyncio.Task,
+    ) -> None:
+        if session_id in self._invalidating_sessions:
+            task.cancel()
+            return
+        self._session_tasks.setdefault(session_id, set()).add(task)
+
+        def remove_completed_task(completed_task: asyncio.Task) -> None:
+            tasks = self._session_tasks.get(session_id)
+            if tasks:
+                tasks.discard(completed_task)
+                if not tasks:
+                    self._session_tasks.pop(session_id, None)
+            self._clear_completed_invalidation(session_id)
+
+        task.add_done_callback(remove_completed_task)
+
+    def register_restore_cleanup_tasks(
+        self,
+        session_id: str,
+        chainlit_session_id: str,
+        tasks: list[asyncio.Task],
+    ) -> None:
+        cleanup_tasks = [
+            task
+            for task in tasks
+            if "clear_on_timeout"
+            in getattr(task.get_coro(), "__qualname__", "")
+        ]
+        if not cleanup_tasks:
+            return
+        if session_id in self._invalidating_sessions:
+            for task in cleanup_tasks:
+                task.cancel()
+            return
+        cleanup_key = (session_id, chainlit_session_id)
+        tracked_tasks = self._restore_cleanup_tasks.setdefault(
+            cleanup_key,
+            set(),
+        )
+        tracked_tasks.update(cleanup_tasks)
+
+        def remove_completed_task(completed_task: asyncio.Task) -> None:
+            current_tasks = self._restore_cleanup_tasks.get(
+                cleanup_key
+            )
+            if not current_tasks:
+                return
+            current_tasks.discard(completed_task)
+            if not current_tasks:
+                self._restore_cleanup_tasks.pop(
+                    cleanup_key,
+                    None,
+                )
+
+        for task in cleanup_tasks:
+            task.add_done_callback(remove_completed_task)
+
+    async def cancel_restore_cleanup_tasks(
+        self,
+        session_id: str,
+        chainlit_session_id: str,
+    ) -> int:
+        async with self._lock:
+            tasks = tuple(
+                self._restore_cleanup_tasks.pop(
+                    (session_id, chainlit_session_id),
+                    set(),
+                )
+            )
+        cancelled = 0
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+                cancelled += 1
+        return cancelled
+
+    async def bind_connection(
+        self,
+        *,
+        session_id: str,
+        socket_id: str,
+        chainlit_session_id: str | None,
+        disconnect: SocketDisconnect,
+        engineio_sid: str | None = None,
+    ) -> bool:
+        async with self._lock:
+            if (
+                session_id in self._invalidating_sessions
+                or session_id in self._admitting_sessions
+            ):
+                return False
+            if (
+                engineio_sid
+                and self._engineio_sessions.get(engineio_sid)
+                != session_id
+            ):
+                return False
+            if (
+                self._socket_sessions.get(socket_id) == session_id
+                and self._socket_chainlit_sessions.get(socket_id)
+                == chainlit_session_id
+                and socket_id not in self._invalidating_sockets
+            ):
+                return True
+            if (
+                socket_id in self._socket_sessions
+                or socket_id in self._socket_chainlit_sessions
+            ):
+                return False
+
+            session_sockets = self._session_sockets.get(session_id, set())
+            replaced_socket_ids = tuple(
+                sorted(
+                    admitted_socket_id
+                    for admitted_socket_id in session_sockets
+                    if chainlit_session_id
+                    and self._socket_chainlit_sessions.get(
+                        admitted_socket_id
+                    )
+                    == chainlit_session_id
+                )
+            )
+            if (
+                not replaced_socket_ids
+                and len(session_sockets)
+                >= self.max_connections_per_session
+            ):
+                return False
+            self._admitting_sessions.add(session_id)
+            self._invalidating_sockets.update(replaced_socket_ids)
+
+        try:
+            try:
+                for replaced_socket_id in replaced_socket_ids:
+                    await disconnect(replaced_socket_id)
+            except Exception:
+                logger.exception(
+                    "Failed to disconnect a superseded Copilot socket"
+                )
+                return False
+
+            async with self._lock:
+                for replaced_socket_id in replaced_socket_ids:
+                    self._remove_socket_locked(replaced_socket_id)
+                if session_id in self._invalidating_sessions:
+                    return False
+                if (
+                    socket_id in self._socket_sessions
+                    or socket_id in self._socket_chainlit_sessions
+                ):
+                    return False
+                session_sockets = self._session_sockets.setdefault(
+                    session_id,
+                    set(),
+                )
+                if len(session_sockets) >= self.max_connections_per_session:
+                    return False
+                session_sockets.add(socket_id)
+                self._socket_sessions[socket_id] = session_id
+                if chainlit_session_id:
+                    self._socket_chainlit_sessions[
+                        socket_id
+                    ] = chainlit_session_id
+                return True
+        finally:
+            async with self._lock:
+                self._admitting_sessions.discard(session_id)
+                self._clear_completed_invalidation(session_id)
+
+    async def associate_chainlit_session(
+        self,
+        *,
+        socket_id: str,
+        chainlit_session_id: str,
+    ) -> None:
+        async with self._lock:
+            if socket_id in self._socket_sessions:
+                self._socket_chainlit_sessions[
+                    socket_id
+                ] = chainlit_session_id
+
+    async def unbind_socket(self, socket_id: str) -> None:
+        async with self._lock:
+            self._remove_socket_locked(socket_id)
+
+    async def socket_is_active(self, socket_id: str) -> bool:
+        async with self._lock:
+            return bool(
+                socket_id in self._socket_sessions
+                and socket_id not in self._invalidating_sockets
+            )
+
+    async def socket_is_tracked(self, socket_id: str) -> bool:
+        async with self._lock:
+            return socket_id in self._socket_sessions
+
+    async def socket_binding(
+        self,
+        socket_id: str,
+    ) -> tuple[str, str | None] | None:
+        async with self._lock:
+            session_id = self._socket_sessions.get(socket_id)
+            if not session_id:
+                return None
+            return (
+                session_id,
+                self._socket_chainlit_sessions.get(socket_id),
+            )
+
+    async def invalidate_socket(self, socket_id: str) -> None:
+        async with self._lock:
+            if socket_id in self._socket_sessions:
+                self._invalidating_sockets.add(socket_id)
+
+    async def track_task(
+        self,
+        socket_id: str,
+        task: asyncio.Task,
+    ) -> str | None:
+        async with self._lock:
+            session_id = self._socket_sessions.get(socket_id)
+            if (
+                not session_id
+                or socket_id in self._invalidating_sockets
+            ):
+                return None
+            self._session_tasks.setdefault(session_id, set()).add(task)
+            return session_id
+
+    async def untrack_task(
+        self,
+        session_id: str,
+        task: asyncio.Task,
+    ) -> None:
+        async with self._lock:
+            tasks = self._session_tasks.get(session_id)
+            if not tasks:
+                return
+            tasks.discard(task)
+            if not tasks:
+                self._session_tasks.pop(session_id, None)
+            self._clear_completed_invalidation(session_id)
+
+    async def session_resources(
+        self,
+        session_id: str,
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        async with self._lock:
+            socket_ids = tuple(
+                sorted(self._session_sockets.get(session_id, set()))
+            )
+            chainlit_session_ids = tuple(
+                dict.fromkeys(
+                    self._socket_chainlit_sessions[socket_id]
+                    for socket_id in socket_ids
+                    if socket_id in self._socket_chainlit_sessions
+                )
+            )
+            return socket_ids, chainlit_session_ids
+
+    async def session_engineio_sids(
+        self,
+        session_id: str,
+    ) -> tuple[str, ...]:
+        async with self._lock:
+            return tuple(
+                sorted(
+                    self._session_engineio_sids.get(
+                        session_id,
+                        set(),
+                    )
+                )
+            )
+
+    async def disconnect_session(
+        self,
+        *,
+        session_id: str,
+        additional_socket_ids: set[str],
+        disconnect: SocketDisconnect,
+    ) -> int:
+        async with self._lock:
+            tracked_socket_ids = set(
+                self._session_sockets.get(session_id, set())
+            )
+            self._invalidating_sessions.add(session_id)
+            self._invalidating_sockets.update(tracked_socket_ids)
+            tasks = tuple(self._session_tasks.get(session_id, set()))
+            restore_cleanup_tasks = tuple(
+                task
+                for cleanup_key, cleanup_tasks in tuple(
+                    self._restore_cleanup_tasks.items()
+                )
+                if cleanup_key[0] == session_id
+                for task in self._restore_cleanup_tasks.pop(
+                    cleanup_key,
+                    cleanup_tasks,
+                )
+            )
+            socket_ids = tuple(
+                sorted(tracked_socket_ids | additional_socket_ids)
+            )
+
+        current_task = asyncio.current_task()
+        for task in tasks:
+            if task is not current_task and not task.done():
+                task.cancel()
+        for task in restore_cleanup_tasks:
+            if not task.done():
+                task.cancel()
+
+        disconnected_socket_ids = []
+        for socket_id in socket_ids:
+            try:
+                await disconnect(socket_id)
+                disconnected_socket_ids.append(socket_id)
+            except Exception:
+                logger.exception("Failed to disconnect a Copilot socket")
+
+        async with self._lock:
+            for socket_id in disconnected_socket_ids:
+                self._remove_socket_locked(socket_id)
+            self._clear_completed_invalidation(session_id)
+        return len(disconnected_socket_ids)
+
+
+def _ensure_copilot_task_factory() -> None:
+    loop = asyncio.get_running_loop()
+    existing_factory = loop.get_task_factory()
+    if getattr(existing_factory, "_gpt_rag_copilot_tasks", False):
+        return
+
+    def copilot_task_factory(loop, coroutine, **kwargs):
+        if existing_factory:
+            task = existing_factory(loop, coroutine, **kwargs)
+        else:
+            task = asyncio.Task(coroutine, loop=loop, **kwargs)
+        context = kwargs.get("context")
+        marker = (
+            context.get(_copilot_task_context)
+            if context is not None
+            else _copilot_task_context.get()
+        )
+        collector = (
+            context.get(_copilot_task_collector)
+            if context is not None
+            else _copilot_task_collector.get()
+        )
+        if collector is not None:
+            collector.append(task)
+        if marker:
+            registry, session_id = marker
+            registry.register_spawned_task(session_id, task)
+        return task
+
+    copilot_task_factory._gpt_rag_copilot_tasks = True
+    loop.set_task_factory(copilot_task_factory)
 
 
 def canonical_origin(value: str) -> str:
@@ -281,38 +755,161 @@ async def _authenticated_socket_user(environ):
     return user
 
 
+def _copilot_session_id_from_environ(environ) -> str | None:
+    scope = environ.get("asgi.scope") if isinstance(environ, dict) else None
+    if isinstance(scope, dict):
+        session_id = _cookie_value(scope, COPILOT_SESSION_COOKIE)
+        return session_id if is_valid_session_id(session_id) else None
+    raw_cookie = (
+        environ.get("HTTP_COOKIE", "")
+        if isinstance(environ, dict)
+        else ""
+    )
+    cookie = SimpleCookie()
+    try:
+        cookie.load(raw_cookie)
+    except (CookieError, TypeError, ValueError):
+        return None
+    morsel = cookie.get(COPILOT_SESSION_COOKIE)
+    session_id = morsel.value if morsel else None
+    return session_id if is_valid_session_id(session_id) else None
+
+
 def _copilot_session_marker(user) -> str:
     return str(
         ((getattr(user, "metadata", None) or {}).get("copilot_session_id") or "")
     )
 
 
+def _engineio_sid_for_socket(sio, socket_id: str) -> str | None:
+    manager = getattr(sio, "manager", None)
+    resolve = getattr(manager, "eio_sid_from_sid", None)
+    if not callable(resolve):
+        return None
+    return resolve(socket_id, "/")
+
+
+async def _close_engineio_transport(sio, engineio_sid: str | None) -> None:
+    engineio_server = getattr(sio, "eio", None)
+    if engineio_sid and engineio_server:
+        await engineio_server.disconnect(engineio_sid)
+
+
 async def disconnect_copilot_session(session_id: str) -> int:
     """Disconnect every live Chainlit socket bound to an opaque session."""
 
-    if not _copilot_sio or not is_valid_session_id(session_id):
+    if not is_valid_session_id(session_id):
         return 0
 
-    from chainlit.session import ws_sessions_sid
+    from chainlit.session import WebsocketSession, ws_sessions_sid
 
-    matches = [
-        session
+    tracked_socket_ids: tuple[str, ...] = ()
+    tracked_chainlit_session_ids: tuple[str, ...] = ()
+    if _copilot_socket_registry:
+        (
+            tracked_socket_ids,
+            tracked_chainlit_session_ids,
+        ) = await _copilot_socket_registry.session_resources(session_id)
+
+    matches = {
+        id(session): session
         for session in list(ws_sessions_sid.values())
         if _copilot_session_marker(session.user) == session_id
-    ]
-    disconnected = 0
+    }
+    for chainlit_session_id in tracked_chainlit_session_ids:
+        if session := WebsocketSession.get_by_id(chainlit_session_id):
+            matches[id(session)] = session
+
     current_task = asyncio.current_task()
-    for session in matches:
+    for session in matches.values():
         session.to_clear = True
         task = getattr(session, "current_task", None)
         if task and task is not current_task and not task.done():
             task.cancel()
+
+    socket_ids = set(tracked_socket_ids)
+    socket_ids.update(
+        session.socket_id
+        for session in matches.values()
+        if getattr(session, "socket_id", None)
+    )
+    if not _copilot_sio:
+        return 0
+
+    async def disconnect(socket_id: str) -> None:
+        if _copilot_disconnect_socket:
+            await _copilot_disconnect_socket(socket_id)
+        else:
+            await _copilot_sio.disconnect(socket_id)
+
+    if _copilot_socket_registry:
+        disconnected = await _copilot_socket_registry.disconnect_session(
+            session_id=session_id,
+            additional_socket_ids=socket_ids,
+            disconnect=disconnect,
+        )
+        for engineio_sid in (
+            await _copilot_socket_registry.session_engineio_sids(
+                session_id
+            )
+        ):
+            try:
+                await _close_engineio_transport(
+                    _copilot_sio,
+                    engineio_sid,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to disconnect a Copilot Engine.IO transport"
+                )
+        return disconnected
+
+    disconnected = 0
+    for socket_id in sorted(socket_ids):
         try:
-            await _copilot_sio.disconnect(session.socket_id)
+            await disconnect(socket_id)
             disconnected += 1
         except Exception:
             logger.exception("Failed to disconnect a Copilot socket")
     return disconnected
+
+
+async def _terminate_socket(
+    sio,
+    registry: CopilotSocketRegistry,
+    socket_id: str,
+    disconnect: SocketDisconnect | None = None,
+) -> bool:
+    from chainlit.session import WebsocketSession
+
+    session = WebsocketSession.get(socket_id)
+    if session:
+        session.to_clear = True
+        task = getattr(session, "current_task", None)
+        if (
+            task
+            and task is not asyncio.current_task()
+            and not task.done()
+        ):
+            task.cancel()
+    await registry.invalidate_socket(socket_id)
+    try:
+        await (disconnect or sio.disconnect)(socket_id)
+    except Exception:
+        logger.exception("Failed to terminate an invalid Copilot socket")
+        return False
+    try:
+        if (
+            session
+            and WebsocketSession.get(socket_id) is session
+            and callable(delete_session := getattr(session, "delete", None))
+        ):
+            await delete_session()
+    except Exception:
+        logger.exception("Failed to delete an invalid Chainlit session")
+    finally:
+        await registry.unbind_socket(socket_id)
+    return True
 
 
 def configure_copilot_bridge_guards(
@@ -320,16 +917,188 @@ def configure_copilot_bridge_guards(
     *,
     sessions: CopilotSessionStore,
 ) -> None:
-    global _copilot_sio
+    global _copilot_disconnect_socket, _copilot_sio, _copilot_socket_registry
     _copilot_sio = sio
 
     if getattr(sio, "_gpt_rag_copilot_guards", False):
         return
 
+    registry = CopilotSocketRegistry()
+    _copilot_socket_registry = registry
     original_emit = sio.emit
     original_call = sio.call
     handlers = sio.handlers.get("/", {})
     original_connect = handlers.get("connect")
+    original_disconnect = handlers.get("disconnect")
+    teardown_locks: WeakValueDictionary[
+        str,
+        asyncio.Lock,
+    ] = WeakValueDictionary()
+    teardown_waiters: dict[str, asyncio.Future[None]] = {}
+    disconnect_handler_completions: dict[
+        str,
+        asyncio.Future,
+    ] = {}
+
+    def teardown_lock(socket_id: str) -> asyncio.Lock:
+        lock = teardown_locks.get(socket_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            teardown_locks[socket_id] = lock
+        return lock
+
+    async def disconnect_socket(
+        socket_id: str,
+        capture_tasks: list[asyncio.Task] | None = None,
+    ) -> None:
+        async with teardown_lock(socket_id):
+            _ensure_copilot_task_factory()
+            engineio_sid = _engineio_sid_for_socket(sio, socket_id)
+            completion = asyncio.get_running_loop().create_future()
+            teardown_waiters[socket_id] = completion
+            collector_token = _copilot_task_collector.set(capture_tasks)
+            try:
+                try:
+                    await sio.disconnect(socket_id)
+                except Exception:
+                    await _close_engineio_transport(sio, engineio_sid)
+                    raise
+                if completion.done():
+                    completion.result()
+                elif handler_completion := (
+                    disconnect_handler_completions.get(socket_id)
+                ):
+                    await asyncio.shield(handler_completion)
+                elif original_disconnect:
+                    await original_disconnect(socket_id)
+                    if manager := getattr(sio, "manager", None):
+                        await manager.disconnect(
+                            socket_id,
+                            namespace="/",
+                            ignore_queue=True,
+                        )
+                await _close_engineio_transport(sio, engineio_sid)
+                await registry.unbind_socket(socket_id)
+            finally:
+                _copilot_task_collector.reset(collector_token)
+                if teardown_waiters.get(socket_id) is completion:
+                    teardown_waiters.pop(socket_id, None)
+
+    async def close_rejected_socket(socket_id: str) -> None:
+        try:
+            await _close_engineio_transport(
+                sio,
+                _engineio_sid_for_socket(sio, socket_id),
+            )
+        except Exception:
+            logger.exception(
+                "Failed to close a rejected Copilot transport"
+            )
+
+    _copilot_disconnect_socket = disconnect_socket
+
+    engineio_server = getattr(sio, "eio", None)
+    engineio_handlers = getattr(engineio_server, "handlers", None)
+    engineio_admission_enabled = False
+    if isinstance(engineio_handlers, dict):
+        original_engineio_connect = engineio_handlers.get("connect")
+        original_engineio_disconnect = engineio_handlers.get("disconnect")
+
+        if original_engineio_connect:
+            engineio_admission_enabled = True
+
+            async def guarded_engineio_connect(engineio_sid, environ):
+                session_id = _copilot_session_id_from_environ(environ)
+                reserved = False
+                if session_id:
+                    if not await sessions.get(session_id):
+                        return False
+                    reserved = await registry.reserve_engineio_transport(
+                        session_id,
+                        engineio_sid,
+                    )
+                    if not reserved:
+                        return False
+                try:
+                    result = await original_engineio_connect(
+                        engineio_sid,
+                        environ,
+                    )
+                except BaseException:
+                    if reserved:
+                        await registry.release_engineio_transport(
+                            engineio_sid
+                        )
+                    raise
+                if result is False and reserved:
+                    await registry.release_engineio_transport(engineio_sid)
+                return result
+
+            engineio_server.on(
+                "connect",
+                handler=guarded_engineio_connect,
+            )
+
+        if original_engineio_disconnect:
+
+            async def guarded_engineio_disconnect(
+                engineio_sid,
+                *args,
+                **kwargs,
+            ):
+                try:
+                    result = await original_engineio_disconnect(
+                        engineio_sid,
+                        *args,
+                        **kwargs,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Engine.IO disconnect cleanup failed; forcing "
+                        "transport cleanup"
+                    )
+                    manager = getattr(sio, "manager", None)
+                    try:
+                        namespaces = tuple(manager.get_namespaces())
+                    except Exception:
+                        namespaces = ()
+                        logger.exception(
+                            "Failed to enumerate Socket.IO namespaces "
+                            "during Engine.IO cleanup"
+                        )
+                    for namespace in namespaces:
+                        try:
+                            socket_id = manager.sid_from_eio_sid(
+                                engineio_sid,
+                                namespace,
+                            )
+                        except Exception:
+                            logger.exception(
+                                "Failed to resolve a Socket.IO transport "
+                                "during Engine.IO cleanup"
+                            )
+                            continue
+                        if not socket_id:
+                            continue
+                        try:
+                            await manager.disconnect(
+                                socket_id,
+                                namespace=namespace,
+                                ignore_queue=True,
+                            )
+                        except Exception:
+                            logger.exception(
+                                "Failed to force Socket.IO manager cleanup"
+                            )
+                        await registry.unbind_socket(socket_id)
+                    result = None
+                await registry.release_engineio_transport(engineio_sid)
+                return result
+
+            engineio_server.on(
+                "disconnect",
+                handler=guarded_engineio_disconnect,
+            )
 
     async def guarded_emit(event, *args, **kwargs):
         target = _socket_target(args, kwargs)
@@ -367,20 +1136,14 @@ def configure_copilot_bridge_guards(
             is_copilot_identity = (
                 metadata.get("auth_source") == "copilot_session"
             )
-            if is_copilot_identity:
-                active_session = await sessions.get(copilot_session_id)
-                if (
-                    not active_session
-                    or active_session.principal_id != current_user.identifier
-                    or auth_payload.get("clientType") != "copilot"
-                ):
-                    logger.warning(
-                        "Blocked Socket.IO connection for an inactive or "
-                        "invalid Copilot session"
-                    )
-                    raise ConnectionRefusedError("authentication failed")
-
-            existing = _existing_socket_session(auth_payload.get("sessionId"))
+            requested_chainlit_session_id = auth_payload.get("sessionId")
+            chainlit_session_id = (
+                requested_chainlit_session_id
+                if isinstance(requested_chainlit_session_id, str)
+                and requested_chainlit_session_id
+                else None
+            )
+            existing = _existing_socket_session(chainlit_session_id)
             if existing and existing.user:
                 same_principal = bool(
                     current_user
@@ -392,12 +1155,295 @@ def configure_copilot_bridge_guards(
                 )
                 if not same_principal or not same_copilot_session:
                     logger.warning(
-                        "Blocked Socket.IO session restore across authenticated sessions"
+                        "Blocked Socket.IO session restore across "
+                        "authenticated sessions"
                     )
-                    raise ConnectionRefusedError("authentication failed")
-            return await original_connect(socket_id, environ, auth)
+                    await close_rejected_socket(socket_id)
+                    raise SocketIOConnectionRefusedError(
+                        "authentication failed"
+                    )
+
+            if not is_copilot_identity:
+                return await original_connect(socket_id, environ, auth)
+            if auth_payload.get("clientType") != "copilot":
+                logger.warning(
+                    "Blocked Socket.IO connection with invalid Copilot "
+                    "client state"
+                )
+                await close_rejected_socket(socket_id)
+                raise SocketIOConnectionRefusedError("authentication failed")
+
+            active_session = await sessions.get(copilot_session_id)
+            engineio_sid = _engineio_sid_for_socket(sio, socket_id)
+            if (
+                not active_session
+                or active_session.principal_id != current_user.identifier
+                or (
+                    engineio_admission_enabled
+                    and (
+                        not engineio_sid
+                        or await registry.engineio_session(engineio_sid)
+                        != copilot_session_id
+                    )
+                )
+            ):
+                logger.warning(
+                    "Blocked Socket.IO connection for an inactive or "
+                    "invalid Copilot session"
+                )
+                await close_rejected_socket(socket_id)
+                raise SocketIOConnectionRefusedError("authentication failed")
+
+            restore_cleanup_tasks: list[asyncio.Task] = []
+
+            async def disconnect_superseded(
+                replaced_socket_id: str,
+            ) -> None:
+                try:
+                    await disconnect_socket(
+                        replaced_socket_id,
+                        restore_cleanup_tasks,
+                    )
+                finally:
+                    if chainlit_session_id:
+                        registry.register_restore_cleanup_tasks(
+                            copilot_session_id,
+                            chainlit_session_id,
+                            restore_cleanup_tasks,
+                        )
+
+            reserved = await registry.bind_connection(
+                session_id=copilot_session_id,
+                socket_id=socket_id,
+                chainlit_session_id=chainlit_session_id,
+                disconnect=disconnect_superseded,
+                engineio_sid=(
+                    engineio_sid
+                    if engineio_admission_enabled
+                    else None
+                ),
+            )
+            if not reserved:
+                await close_rejected_socket(socket_id)
+                raise SocketIOConnectionRefusedError(
+                    "authentication failed"
+                )
+
+            try:
+                result = await original_connect(socket_id, environ, auth)
+                if result is False:
+                    await _terminate_socket(
+                        sio,
+                        registry,
+                        socket_id,
+                        disconnect_socket,
+                    )
+                    return result
+                from chainlit.session import WebsocketSession
+
+                websocket_session = WebsocketSession.get(socket_id)
+                restored_chainlit_session_id = getattr(
+                    websocket_session,
+                    "id",
+                    None,
+                )
+                if (
+                    isinstance(restored_chainlit_session_id, str)
+                    and restored_chainlit_session_id
+                ):
+                    await registry.associate_chainlit_session(
+                        socket_id=socket_id,
+                        chainlit_session_id=restored_chainlit_session_id,
+                    )
+                active_session = await sessions.get(copilot_session_id)
+                if (
+                    not websocket_session
+                    or (
+                        chainlit_session_id
+                        and websocket_session.id != chainlit_session_id
+                    )
+                    or _copilot_session_marker(websocket_session.user)
+                    != copilot_session_id
+                    or not active_session
+                    or active_session.principal_id
+                    != current_user.identifier
+                    or not await registry.socket_is_active(socket_id)
+                ):
+                    raise SocketIOConnectionRefusedError(
+                        "authentication failed"
+                    )
+                await registry.cancel_restore_cleanup_tasks(
+                    copilot_session_id,
+                    websocket_session.id,
+                )
+                return result
+            except asyncio.CancelledError:
+                await _terminate_socket(
+                    sio,
+                    registry,
+                    socket_id,
+                    disconnect_socket,
+                )
+                raise
+            except SocketIOConnectionRefusedError:
+                await _terminate_socket(
+                    sio,
+                    registry,
+                    socket_id,
+                    disconnect_socket,
+                )
+                raise
+            except Exception:
+                logger.exception("Chainlit Socket.IO connection failed")
+                await _terminate_socket(
+                    sio,
+                    registry,
+                    socket_id,
+                    disconnect_socket,
+                )
+                raise SocketIOConnectionRefusedError(
+                    "authentication failed"
+                ) from None
 
         sio.on("connect", handler=guarded_connect)
+
+    if original_disconnect:
+
+        async def guarded_disconnect(socket_id, *args, **kwargs):
+            if existing_completion := disconnect_handler_completions.get(
+                socket_id
+            ):
+                return await asyncio.shield(existing_completion)
+
+            handler_completion = (
+                asyncio.get_running_loop().create_future()
+            )
+            handler_completion.add_done_callback(
+                lambda future: (
+                    future.exception()
+                    if not future.cancelled()
+                    else None
+                )
+            )
+            disconnect_handler_completions[
+                socket_id
+            ] = handler_completion
+            engineio_sid = _engineio_sid_for_socket(sio, socket_id)
+            binding = await registry.socket_binding(socket_id)
+            captured_tasks: list[asyncio.Task] = []
+            _ensure_copilot_task_factory()
+            collector_token = _copilot_task_collector.set(
+                captured_tasks
+            )
+            try:
+                try:
+                    result = await original_disconnect(socket_id)
+                finally:
+                    _copilot_task_collector.reset(collector_token)
+                    if binding and binding[1]:
+                        registry.register_restore_cleanup_tasks(
+                            binding[0],
+                            binding[1],
+                            captured_tasks,
+                        )
+                completion = teardown_waiters.get(socket_id)
+                if completion and not completion.done():
+                    completion.set_result(None)
+                else:
+                    reason = args[0] if args else None
+                    if reason == "client disconnect":
+                        await _close_engineio_transport(
+                            sio,
+                            engineio_sid,
+                        )
+                    await registry.unbind_socket(socket_id)
+                handler_completion.set_result(result)
+                return result
+            except asyncio.CancelledError:
+                handler_completion.cancel()
+                raise
+            except Exception as error:
+                handler_completion.set_exception(error)
+                raise
+            finally:
+                if (
+                    disconnect_handler_completions.get(socket_id)
+                    is handler_completion
+                ):
+                    disconnect_handler_completions.pop(socket_id, None)
+
+        sio.on("disconnect", handler=guarded_disconnect)
+
+    guarded_active_events = (
+        "audio_chunk",
+        "audio_end",
+        "audio_start",
+        "chat_settings_change",
+        "clear_session",
+        "client_message",
+        "connection_successful",
+        "edit_message",
+        "stop",
+    )
+    for event in guarded_active_events:
+        original_handler = handlers.get(event)
+        if not original_handler:
+            continue
+
+        async def guarded_active_handler(
+            socket_id,
+            *args,
+            _event=event,
+            _handler=original_handler,
+            **kwargs,
+        ):
+            is_copilot_socket = (
+                _is_copilot_socket(socket_id)
+                or await registry.socket_is_tracked(socket_id)
+            )
+            if not is_copilot_socket:
+                return await _handler(socket_id, *args, **kwargs)
+            if not await registry.socket_is_active(socket_id):
+                logger.warning(
+                    "Blocked %s for an invalidated Copilot socket",
+                    _event,
+                )
+                await _terminate_socket(
+                    sio,
+                    registry,
+                    socket_id,
+                    disconnect_socket,
+                )
+                return None
+            task = asyncio.current_task()
+            if task is None:
+                await _terminate_socket(
+                    sio,
+                    registry,
+                    socket_id,
+                    disconnect_socket,
+                )
+                return None
+            session_id = await registry.track_task(socket_id, task)
+            if not session_id:
+                await _terminate_socket(
+                    sio,
+                    registry,
+                    socket_id,
+                    disconnect_socket,
+                )
+                return None
+            _ensure_copilot_task_factory()
+            context_token = _copilot_task_context.set(
+                (registry, session_id)
+            )
+            try:
+                return await _handler(socket_id, *args, **kwargs)
+            finally:
+                _copilot_task_context.reset(context_token)
+                await registry.untrack_task(session_id, task)
+
+        sio.on(event, handler=guarded_active_handler)
 
     for event in ("call_fn", "window_message"):
         original_handler = handlers.get(event)
@@ -411,7 +1457,10 @@ def configure_copilot_bridge_guards(
             _handler=original_handler,
             **kwargs,
         ):
-            if _is_copilot_socket(socket_id):
+            if (
+                _is_copilot_socket(socket_id)
+                or await registry.socket_is_tracked(socket_id)
+            ):
                 logger.warning(
                     "Blocked inbound %s for a Copilot session",
                     _event,

@@ -294,11 +294,11 @@ call `stopAssistant` and remain signed out. On account change:
 4. Bootstrap again.
 5. Mount a fresh widget.
 
-A successful bootstrap atomically replaces and disconnects any existing
-Copilot server session, so a different account cannot inherit the previous
-principal's state. A malformed token or temporary JWKS failure does not destroy
-an otherwise valid current session. An explicit logout or an authorization
-denial clears it.
+A successful bootstrap replaces any existing Copilot server session and
+triggers disconnection of its tracked transports, so a different account
+cannot inherit the previous principal's state. A malformed token or temporary
+JWKS failure does not destroy an otherwise valid current session. An explicit
+logout or an authorization denial clears it.
 
 Skipping the stop-and-clear sequence is not cosmetic: it can leave the old
 account's locally rendered thread visible. Treat a widget that shows the wrong
@@ -313,6 +313,15 @@ in one tab replaces the server session and disconnects the other tabs. Do not
 support concurrent accounts in separate tabs. Coordinate lifecycle changes
 with `BroadcastChannel` or an equivalent portal-owned mechanism if multiple
 tabs are expected.
+
+The UI admits at most four concurrent physical Socket.IO transports per opaque
+Copilot session. This fixed safety bound is not configurable. Restoring an
+already-connected logical Chainlit session replaces its existing transport:
+the existing transport is disconnected before restoration continues, and the
+replacement is rejected if disconnection fails. Logout, session expiry,
+bounded-state eviction, a successful account-switch bootstrap, and
+same-principal session replacement invalidate all tracked transports, trigger
+their disconnection, and cancel associated active Chainlit tasks.
 
 ## Portal Content Security Policy
 

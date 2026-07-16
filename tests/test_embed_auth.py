@@ -159,6 +159,111 @@ class EmbedAuthTests(unittest.IsolatedAsyncioTestCase):
                 principal_name="",
             )
 
+    async def test_cookie_less_rebootstrap_replaces_same_principal(self):
+        invalidated = []
+
+        async def on_invalidate(session_id):
+            invalidated.append(session_id)
+
+        store = CopilotSessionStore(
+            max_sessions=5,
+            ttl_seconds=120,
+            on_invalidate=on_invalidate,
+        )
+        claims = {
+            "tid": TENANT_ID,
+            "oid": OBJECT_ID,
+            "exp": int(time.time()) + 600,
+        }
+        first = await store.replace(
+            previous_session_id=None,
+            access_token="first",
+            claims=claims,
+            display_name="User",
+            principal_name="user@example.com",
+        )
+        second = await store.replace(
+            previous_session_id=None,
+            access_token="second",
+            claims=claims,
+            display_name="User",
+            principal_name="user@example.com",
+        )
+
+        self.assertIsNone(await store.get(first.session_id))
+        self.assertEqual(second, await store.get(second.session_id))
+        self.assertIn(first.session_id, invalidated)
+        self.assertEqual(1, await store.count())
+
+    async def test_stale_account_switch_replaces_latest_successor(self):
+        invalidated = []
+
+        async def on_invalidate(session_id):
+            invalidated.append(session_id)
+
+        store = CopilotSessionStore(
+            max_sessions=5,
+            ttl_seconds=120,
+            on_invalidate=on_invalidate,
+        )
+        base_claims = {
+            "tid": TENANT_ID,
+            "exp": int(time.time()) + 600,
+        }
+        original = await store.replace(
+            previous_session_id=None,
+            access_token="original",
+            claims={**base_claims, "oid": OBJECT_ID},
+            display_name="Original",
+            principal_name="original@example.com",
+        )
+        first_successor = await store.replace(
+            previous_session_id=original.session_id,
+            access_token="first",
+            claims={
+                **base_claims,
+                "oid": "bbbbbbbb-cccc-dddd-eeee-ffffffffffff",
+            },
+            display_name="First",
+            principal_name="first@example.com",
+        )
+        latest = await store.replace(
+            previous_session_id=original.session_id,
+            access_token="latest",
+            claims={
+                **base_claims,
+                "oid": "cccccccc-dddd-eeee-ffff-000000000000",
+            },
+            display_name="Latest",
+            principal_name="latest@example.com",
+        )
+        for index in range(20):
+            latest = await store.replace(
+                previous_session_id=original.session_id,
+                access_token=f"latest-{index}",
+                claims={
+                    **base_claims,
+                    "oid": (
+                        "bbbbbbbb-cccc-dddd-eeee-ffffffffffff"
+                        if index % 2
+                        else "cccccccc-dddd-eeee-ffff-000000000000"
+                    ),
+                },
+                display_name="Latest",
+                principal_name="latest@example.com",
+            )
+
+        self.assertIsNone(await store.get(first_successor.session_id))
+        self.assertEqual(latest, await store.get(latest.session_id))
+        self.assertIn(first_successor.session_id, invalidated)
+        self.assertEqual(1, await store.count())
+
+        await store.delete(first_successor.session_id)
+
+        self.assertIsNone(await store.get(latest.session_id))
+        self.assertIn(latest.session_id, invalidated)
+        self.assertEqual(0, await store.count())
+
     async def test_cookie_is_opaque_http_only_and_secure(self):
         store = CopilotSessionStore(max_sessions=1, ttl_seconds=120)
         session = await store.replace(
@@ -222,7 +327,10 @@ class EmbedAuthTests(unittest.IsolatedAsyncioTestCase):
         third = await store.replace(
             previous_session_id=None,
             access_token="three",
-            claims=claims,
+            claims={
+                **claims,
+                "oid": "bbbbbbbb-cccc-dddd-eeee-ffffffffffff",
+            },
             display_name="User",
             principal_name="",
         )

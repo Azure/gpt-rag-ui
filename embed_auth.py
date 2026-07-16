@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import hashlib
 import logging
 import math
@@ -30,8 +31,27 @@ from entra_token import EntraTokenError
 COPILOT_SESSION_COOKIE = "gpt_rag_copilot_session"
 logger = logging.getLogger("gpt_rag_ui.embed_auth")
 _SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{43}$")
+_SESSION_FAMILY_BYTES = 16
 
 SessionInvalidationCallback = Callable[[str], Awaitable[None]]
+
+
+def _session_family_id(session_id: str | None) -> bytes | None:
+    if not session_id or not _SESSION_ID_PATTERN.fullmatch(session_id):
+        return None
+    try:
+        decoded = base64.urlsafe_b64decode(session_id + "=")
+    except ValueError:
+        return None
+    if len(decoded) != 32:
+        return None
+    return decoded[:_SESSION_FAMILY_BYTES]
+
+
+def _new_session_id(family_id: bytes | None = None) -> str:
+    family = family_id or secrets.token_bytes(_SESSION_FAMILY_BYTES)
+    session_bytes = family + secrets.token_bytes(_SESSION_FAMILY_BYTES)
+    return base64.urlsafe_b64encode(session_bytes).rstrip(b"=").decode()
 
 
 @dataclass(frozen=True)
@@ -76,6 +96,8 @@ class CopilotSessionStore:
         self.max_sessions = max_sessions
         self.ttl_seconds = ttl_seconds
         self._sessions: OrderedDict[str, CopilotSession] = OrderedDict()
+        self._principal_sessions: dict[str, str] = {}
+        self._lineage_sessions: dict[bytes, str] = {}
         self._expiry_tasks: dict[str, asyncio.Task[None]] = {}
         self._lock = asyncio.Lock()
         self._on_invalidate = on_invalidate
@@ -88,7 +110,24 @@ class CopilotSessionStore:
     def _remove_locked(self, session_id: str) -> CopilotSession | None:
         session = self._sessions.pop(session_id, None)
         self._cancel_expiry_locked(session_id)
+        if (
+            session
+            and self._principal_sessions.get(session.principal_id) == session_id
+        ):
+            self._principal_sessions.pop(session.principal_id, None)
+        family_id = _session_family_id(session_id)
+        if (
+            family_id
+            and self._lineage_sessions.get(family_id) == session_id
+        ):
+            self._lineage_sessions.pop(family_id, None)
         return session
+
+    def _current_lineage_session_locked(self, session_id: str) -> str:
+        family_id = _session_family_id(session_id)
+        if not family_id:
+            return session_id
+        return self._lineage_sessions.get(family_id, session_id)
 
     def _prune_locked(self, now: int) -> list[str]:
         expired = [
@@ -113,8 +152,7 @@ class CopilotSessionStore:
                         return
                     if session.expires_at > time.time():
                         continue
-                    self._sessions.pop(session_id, None)
-                    self._expiry_tasks.pop(session_id, None)
+                    self._remove_locked(session_id)
                 await self._notify_invalidated([session_id])
                 return
         except asyncio.CancelledError:
@@ -150,56 +188,75 @@ class CopilotSessionStore:
         object_id = str(claims["oid"])
         principal_id = canonical_principal_id(tenant_id, object_id)
         tenant_id, object_id = principal_id.split(":", 1)
-        session_id = secrets.token_urlsafe(32)
         group_ids = tuple(
             str(group)
             for group in claims.get("groups", [])
             if isinstance(group, str)
         )
-        user = User(
-            identifier=principal_id,
-            display_name=display_name,
-            metadata={
-                "authorized": True,
-                "auth_source": "copilot_session",
-                "copilot_session_id": session_id,
-                "tenant_id": tenant_id,
-                "object_id": object_id,
-                "principal_id": principal_id,
-                "client_principal_id": object_id,
-                "client_principal_name": principal_name,
-                "user_name": principal_id,
-                "client_group_names": list(group_ids),
-            },
-        )
-        chainlit_token = create_embed_session_jwt(user, expires_at)
-        session = CopilotSession(
-            session_id=session_id,
-            principal_id=principal_id,
-            tenant_id=tenant_id,
-            object_id=object_id,
-            access_token=access_token,
-            chainlit_token=chainlit_token,
-            expires_at=expires_at,
-            display_name=display_name,
-            principal_name=principal_name,
-            group_ids=group_ids,
-        )
 
         invalidated: list[str] = []
         async with self._lock:
             invalidated.extend(self._prune_locked(now))
+            family_id = _session_family_id(previous_session_id)
             if previous_session_id:
-                self._remove_locked(previous_session_id)
-                invalidated.append(previous_session_id)
+                current_session_id = self._current_lineage_session_locked(
+                    previous_session_id
+                )
+                self._remove_locked(current_session_id)
+                invalidated.extend(
+                    [previous_session_id, current_session_id]
+                )
+            principal_session_id = self._principal_sessions.get(principal_id)
+            if principal_session_id:
+                if family_id is None:
+                    family_id = _session_family_id(principal_session_id)
+                previous = self._remove_locked(principal_session_id)
+                if previous:
+                    invalidated.append(principal_session_id)
+
+            session_id = _new_session_id(family_id)
+            family_id = _session_family_id(session_id)
+            if family_id is None:
+                raise RuntimeError("Failed to create a Copilot session ID.")
+            user = User(
+                identifier=principal_id,
+                display_name=display_name,
+                metadata={
+                    "authorized": True,
+                    "auth_source": "copilot_session",
+                    "copilot_session_id": session_id,
+                    "tenant_id": tenant_id,
+                    "object_id": object_id,
+                    "principal_id": principal_id,
+                    "client_principal_id": object_id,
+                    "client_principal_name": principal_name,
+                    "user_name": principal_id,
+                    "client_group_names": list(group_ids),
+                },
+            )
+            chainlit_token = create_embed_session_jwt(user, expires_at)
+            session = CopilotSession(
+                session_id=session_id,
+                principal_id=principal_id,
+                tenant_id=tenant_id,
+                object_id=object_id,
+                access_token=access_token,
+                chainlit_token=chainlit_token,
+                expires_at=expires_at,
+                display_name=display_name,
+                principal_name=principal_name,
+                group_ids=group_ids,
+            )
             self._sessions[session_id] = session
+            self._principal_sessions[principal_id] = session_id
+            self._lineage_sessions[family_id] = session_id
             self._expiry_tasks[session_id] = asyncio.create_task(
                 self._expire_at(session_id, expires_at),
                 name=f"copilot-session-expiry-{session_id[:8]}",
             )
             while len(self._sessions) > self.max_sessions:
-                evicted_id, _ = self._sessions.popitem(last=False)
-                self._cancel_expiry_locked(evicted_id)
+                evicted_id = next(iter(self._sessions))
+                self._remove_locked(evicted_id)
                 invalidated.append(evicted_id)
         await self._notify_invalidated(invalidated)
         return session
@@ -220,10 +277,15 @@ class CopilotSessionStore:
         if not is_valid_session_id(session_id):
             return
         async with self._lock:
-            self._remove_locked(session_id)
+            current_session_id = self._current_lineage_session_locked(
+                session_id
+            )
+            self._remove_locked(current_session_id)
         # Always notify. The process may still have a live upgraded socket after
         # the bounded state entry was evicted or expired.
-        await self._notify_invalidated([session_id])
+        await self._notify_invalidated(
+            [session_id, current_session_id]
+        )
 
     async def count(self) -> int:
         async with self._lock:
@@ -535,8 +597,8 @@ def register_copilot_auth_routes(
             principal_id,
         ):
             logger.warning("Copilot bootstrap denied principal=%s", principal_id)
-            if previous_session:
-                await sessions.delete(previous_session.session_id)
+            if previous_session_id:
+                await sessions.delete(previous_session_id)
             return auth_error(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Access denied",
