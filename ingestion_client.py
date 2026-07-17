@@ -170,9 +170,20 @@ async def _build_ingest_documents_payload(conversation_id: str, question_id: str
     # search index has permission trimming enabled, the uploader can retrieve
     # their own uploaded chunks (issue #478). Skip anonymous/placeholder ids.
     _ACL_PLACEHOLDERS = {"", "no-auth", "anonymous", "00000000-0000-0000-0000-000000000000"}
-    uploader_oid = ((auth_info or {}).get("client_principal_id") or "").strip()
-    if uploader_oid and uploader_oid.lower() not in _ACL_PLACEHOLDERS:
-        payload["securityUserIds"] = [uploader_oid]
+    uploader_oid = str(
+        (auth_info or {}).get("object_id")
+        or (auth_info or {}).get("client_principal_id")
+        or ""
+    ).strip()
+    if uploader_oid.lower() not in _ACL_PLACEHOLDERS:
+        try:
+            uploader_oid = str(uuid.UUID(uploader_oid))
+        except ValueError:
+            logger.warning(
+                "Ingestion ACL omitted because the uploader identity is not an oid"
+            )
+        else:
+            payload["securityUserIds"] = [uploader_oid]
 
     return payload
 
@@ -246,4 +257,3 @@ async def ingest_files_session(conversation_id: str, question_id: str, auth_info
         raise RuntimeError(f"Ingestion request timed out. url={url}") from e
     except httpx.HTTPError as e:
         raise RuntimeError(f"Ingestion HTTP error. url={url} error={e}") from e
-

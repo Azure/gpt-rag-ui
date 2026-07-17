@@ -7,6 +7,7 @@ User identity is resolved from the Chainlit session context (populated by OAuth)
 
 import logging
 import uuid
+from contextvars import ContextVar
 from datetime import datetime
 from typing import Optional
 
@@ -24,9 +25,18 @@ from chainlit.user import PersistedUser, User
 
 from orchestrator_client import (
     call_orchestrator_list_conversations,
-    call_orchestrator_get_conversation,
     call_orchestrator_update_conversation,
     call_orchestrator_delete_conversation,
+)
+from conversation_security import (
+    get_owned_conversation,
+    principal_id_from_metadata,
+    thread_owner_id_from_metadata,
+)
+from embed_auth import (
+    get_request_copilot_session,
+    is_copilot_session_active,
+    resolve_access_token,
 )
 
 logger = logging.getLogger("gpt_rag_ui.datalayer")
@@ -34,6 +44,10 @@ logger = logging.getLogger("gpt_rag_ui.datalayer")
 # In-memory user store: identifier -> PersistedUser
 # Populated on login, lost on restart (acceptable: users re-auth via OAuth each session).
 _users: dict[str, PersistedUser] = {}
+_request_user_metadata: ContextVar[Optional[dict]] = ContextVar(
+    "request_user_metadata",
+    default=None,
+)
 
 
 def _get_current_timestamp() -> str:
@@ -64,6 +78,14 @@ def _get_session_metadata() -> Optional[dict]:
     except Exception as e:
         logger.debug("_get_session_metadata: cl.user_session not available: %s", e)
 
+    if metadata := _request_user_metadata.get():
+        _request_user_metadata.set(None)
+        logger.debug(
+            "_get_session_metadata: consumed authenticated request context (keys=%s)",
+            sorted(metadata.keys()),
+        )
+        return metadata
+
     logger.warning("_get_session_metadata: no metadata found via any source")
     return None
 
@@ -80,24 +102,59 @@ class OrchestratorDataLayer(BaseDataLayer):
     # ── User management (in-memory) ──────────────────────────────────────
 
     async def get_user(self, identifier: str) -> Optional[PersistedUser]:
-        return _users.get(identifier)
+        request_session = get_request_copilot_session()
+        if request_session:
+            if not await is_copilot_session_active(
+                request_session.user_metadata()
+            ):
+                logger.warning(
+                    "Rejected persisted-user lookup for an expired Copilot session"
+                )
+                return None
+            if request_session.principal_id != identifier:
+                logger.warning(
+                    "Rejected persisted-user lookup across Copilot principals"
+                )
+                return None
+            user = PersistedUser(
+                id=identifier,
+                identifier=identifier,
+                display_name=request_session.display_name,
+                createdAt=_get_current_timestamp(),
+                metadata=request_session.user_metadata(),
+            )
+            _request_user_metadata.set(user.metadata)
+            return user
+
+        user = _users.get(identifier)
+        if user and user.metadata:
+            _request_user_metadata.set(user.metadata)
+        return user
 
     async def create_user(self, user: User) -> Optional[PersistedUser]:
-        principal_id = None
-        if user.metadata:
-            principal_id = user.metadata.get("principal_id") or user.metadata.get("client_principal_id")
-
+        if not await is_copilot_session_active(user.metadata):
+            logger.warning("Rejected user creation for an expired Copilot session")
+            return None
+        principal_id = principal_id_from_metadata(user.metadata)
         if not principal_id:
             logger.warning("No principal_id in user metadata for %s", user.identifier)
+            return None
+        if user.identifier.lower() != principal_id:
+            logger.warning(
+                "Refusing user with missing or inconsistent canonical identity"
+            )
             return None
 
         persisted = PersistedUser(
             id=user.identifier,
             identifier=user.identifier,
+            display_name=user.display_name,
             createdAt=_get_current_timestamp(),
             metadata=user.metadata or {},
         )
-        _users[user.identifier] = persisted
+        if persisted.metadata.get("auth_source") != "copilot_session":
+            _users[user.identifier] = persisted
+        _request_user_metadata.set(persisted.metadata)
         return persisted
 
     # ── Thread / conversation operations (via orchestrator API) ──────────
@@ -118,16 +175,21 @@ class OrchestratorDataLayer(BaseDataLayer):
         logger.info("list_threads called: pagination=%s filters=%s", pagination, filters)
 
         metadata = _get_session_metadata()
-        if not metadata:
-            # Fallback: try in-memory user store
-            user_id = filters.userId if hasattr(filters, "userId") else None
-            if user_id and user_id in _users:
-                metadata = _users[user_id].metadata
-            else:
-                logger.warning("list_threads: no session metadata and no in-memory user found; returning empty")
-                return empty
+        if not metadata or not await is_copilot_session_active(metadata):
+            logger.warning(
+                "list_threads: no active session metadata; returning empty"
+            )
+            return empty
 
-        access_token = metadata.get("access_token")
+        principal_id = principal_id_from_metadata(metadata)
+        user_identifier = thread_owner_id_from_metadata(metadata)
+        if not principal_id:
+            logger.warning(
+                "list_threads: principal identity is missing; returning empty"
+            )
+            return empty
+
+        access_token = await resolve_access_token(metadata)
         logger.info(
             "list_threads: metadata found (has_access_token=%s, user_name=%s, principal_id=%s)",
             bool(access_token),
@@ -160,13 +222,21 @@ class OrchestratorDataLayer(BaseDataLayer):
 
         threads = []
         for conv in conversations:
+            conversation_id = str(conv.get("id") or "").strip()
+            if not conversation_id:
+                logger.warning("list_threads: omitted conversation without an id")
+                continue
+            # The orchestrator list endpoint validates the same bearer token and
+            # queries only that oid partition. Its compact response intentionally
+            # omits principal_id, so the UI binds each returned thread to the
+            # canonical tid:oid identity rather than inventing an owner fallback.
             threads.append(
                 ThreadDict(
-                    id=conv.get("id"),
+                    id=conversation_id,
                     name=conv.get("name", ""),
                     createdAt=conv.get("lastUpdated"),
-                    userId=metadata.get("principal_id", ""),
-                    userIdentifier=metadata.get("user_name", ""),
+                    userId=principal_id,
+                    userIdentifier=user_identifier,
                     tags=[],
                     metadata={},
                     steps=[],
@@ -184,33 +254,26 @@ class OrchestratorDataLayer(BaseDataLayer):
 
     async def get_thread(self, thread_id: str) -> Optional[ThreadDict]:
         metadata = _get_session_metadata()
-        if not metadata:
-            # Fallback: try in-memory user store (session context may not be
-            # available when Chainlit calls get_thread during resume).
-            for user in _users.values():
-                if user.metadata and user.metadata.get("access_token"):
-                    metadata = user.metadata
-                    logger.debug("get_thread: using in-memory user '%s' as fallback for thread=%s", user.identifier, thread_id)
-                    break
-            if not metadata:
-                logger.warning("get_thread: no session metadata and no in-memory user found; returning None for thread=%s", thread_id)
-                return None
-
-        access_token = metadata.get("access_token")
-        if not access_token:
-            logger.warning("get_thread: no access_token in session metadata; returning None for thread=%s", thread_id)
+        if not metadata or not await is_copilot_session_active(metadata):
+            logger.warning(
+                "get_thread: no active session metadata; returning None for thread=%s",
+                thread_id,
+            )
             return None
 
-        conv = await call_orchestrator_get_conversation(
-            access_token=access_token,
-            conversation_id=thread_id,
-        )
+        conv = await get_owned_conversation(thread_id, metadata)
         if not conv:
-            logger.warning("get_thread: orchestrator returned no data for thread=%s", thread_id)
+            logger.warning(
+                "get_thread: conversation missing or ownership denied for thread=%s",
+                thread_id,
+            )
             return None
 
         messages = conv.get("messages", [])
-        steps = self._messages_to_steps(messages, thread_id)
+        principal_id = principal_id_from_metadata(metadata)
+        steps = self._messages_to_steps(messages, thread_id, principal_id)
+        thread_user_id = principal_id
+        user_identifier = principal_id
 
         ts_value = conv.get("_ts")
         created_at = None
@@ -223,26 +286,11 @@ class OrchestratorDataLayer(BaseDataLayer):
             except (ValueError, TypeError):
                 pass
 
-        principal_id = conv.get("principal_id", "")
-        user_context = conv.get("user_context", {})
-        # Prefer the Chainlit session/in-memory user_name so userIdentifier
-        # matches user.identifier used by Chainlit's authorization check.
-        user_identifier = (
-            metadata.get("user_name")
-            or user_context.get("user_name")
-            or principal_id
-        )
-        logger.debug(
-            "get_thread: thread=%s userIdentifier='%s' (meta=%s, ctx=%s, pid=%s)",
-            thread_id, user_identifier,
-            metadata.get("user_name"), user_context.get("user_name"), principal_id,
-        )
-
         return ThreadDict(
             id=conv["id"],
             name=conv.get("name", ""),
             createdAt=created_at,
-            userId=principal_id,
+            userId=thread_user_id,
             userIdentifier=user_identifier,
             tags=[],
             metadata={},
@@ -256,29 +304,33 @@ class OrchestratorDataLayer(BaseDataLayer):
         return None
 
     async def update_thread(self, thread_id: str, **kwargs) -> None:
+        metadata = _get_session_metadata()
+        if not metadata or not await is_copilot_session_active(metadata):
+            logger.warning(
+                "update_thread: no active session metadata; cannot rename thread=%s",
+                thread_id,
+            )
+            return
+
+        if not await get_owned_conversation(thread_id, metadata):
+            logger.warning("update_thread: ownership denied for thread=%s", thread_id)
+            return
+
         try:
             cl.user_session.set("conversation_id", thread_id)
         except Exception as exc:
-            logger.debug("update_thread: could not set conversation_id in session: %s", exc)
+            logger.debug(
+                "update_thread: could not set conversation_id in session: %s",
+                exc,
+            )
 
         name_value = kwargs.get("name") or kwargs.get("title") or ""
         name = str(name_value).strip()
         if not name:
             return
-
-        metadata = _get_session_metadata()
-        if not metadata:
-            for user in _users.values():
-                if user.metadata and user.metadata.get("access_token"):
-                    metadata = user.metadata
-                    break
-            if not metadata:
-                logger.warning("update_thread: no session metadata; cannot rename thread=%s", thread_id)
-                return
-
-        access_token = metadata.get("access_token")
+        access_token = await resolve_access_token(metadata)
         if not access_token:
-            logger.warning("update_thread: no access_token; cannot rename thread=%s", thread_id)
+            logger.warning("update_thread: auth session unavailable for thread=%s", thread_id)
             return
 
         updated = await call_orchestrator_update_conversation(
@@ -291,16 +343,17 @@ class OrchestratorDataLayer(BaseDataLayer):
 
     async def delete_thread(self, thread_id: str) -> bool:
         metadata = _get_session_metadata()
-        if not metadata:
-            for user in _users.values():
-                if user.metadata and user.metadata.get("access_token"):
-                    metadata = user.metadata
-                    break
-            if not metadata:
-                logger.warning("delete_thread: no session metadata; cannot delete thread=%s", thread_id)
-                return False
+        if not metadata or not await is_copilot_session_active(metadata):
+            logger.warning(
+                "delete_thread: no active session metadata; cannot delete thread=%s",
+                thread_id,
+            )
+            return False
 
-        access_token = metadata.get("access_token")
+        if not await get_owned_conversation(thread_id, metadata):
+            logger.warning("delete_thread: ownership denied for thread=%s", thread_id)
+            return False
+        access_token = await resolve_access_token(metadata)
         if not access_token:
             logger.warning("delete_thread: no access_token; cannot delete thread=%s", thread_id)
             return False
@@ -347,7 +400,12 @@ class OrchestratorDataLayer(BaseDataLayer):
 
     # ── Helpers ──────────────────────────────────────────────────────────
 
-    def _messages_to_steps(self, messages: list, thread_id: str) -> list:
+    def _messages_to_steps(
+        self,
+        messages: list,
+        thread_id: str,
+        principal_id: str,
+    ) -> list:
         """Convert orchestrator conversation messages to Chainlit StepDict format."""
         # Lazy import to avoid circular dependency (app.py imports datalayer).
         from app import replace_source_reference_links
@@ -360,7 +418,11 @@ class OrchestratorDataLayer(BaseDataLayer):
 
             # Resolve source reference links so markdown renders on resume.
             if step_type == "assistant_message" and text:
-                text = replace_source_reference_links(text)
+                text = replace_source_reference_links(
+                    text,
+                    conversation_id=thread_id,
+                    principal_id=principal_id,
+                )
 
             steps.append({
                 "id": str(uuid.uuid4()),

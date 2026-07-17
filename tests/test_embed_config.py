@@ -1,0 +1,218 @@
+import unittest
+from types import SimpleNamespace
+
+from embed_config import (
+    configure_chainlit_allowed_origins,
+    EmbedConfigError,
+    EmbedSettings,
+    load_embed_settings,
+)
+
+
+TENANT_ID = "11111111-2222-3333-4444-555555555555"
+
+
+class FakeConfig:
+    def __init__(self, values=None):
+        self.values = values or {}
+
+    def get(self, key, default=None, type=str):
+        value = self.values.get(key, default)
+        return type(value) if value is not None and type is not None else value
+
+
+def enabled_env(**overrides):
+    values = {
+        "CHAINLIT_COPILOT_ENABLED": "true",
+        "CHAINLIT_COPILOT_AUTH_MODE": "entra",
+        "CHAINLIT_URL": "https://chat.example.com",
+        "CHAINLIT_ALLOWED_ORIGINS": "https://portal.example.com",
+        "CHAINLIT_COPILOT_ENTRA_TENANT_ID": TENANT_ID,
+        "CHAINLIT_COPILOT_ENTRA_AUDIENCE": "api://test",
+    }
+    values.update(overrides)
+    return values
+
+
+class EmbedConfigTests(unittest.TestCase):
+    def test_disabled_by_default_ignores_other_settings(self):
+        settings = load_embed_settings(
+            FakeConfig({"CHAINLIT_ALLOWED_ORIGINS": "*"}),
+            {},
+        )
+        self.assertEqual(EmbedSettings(), settings)
+
+    def test_enabled_mode_requires_entra_and_normalizes_origins(self):
+        settings = load_embed_settings(
+            FakeConfig(),
+            enabled_env(
+                CHAINLIT_ALLOWED_ORIGINS=(
+                    "https://PORTAL.example.com/, http://localhost:3000, "
+                    "https://portal.example.com"
+                )
+            ),
+        )
+        self.assertTrue(settings.uses_entra)
+        self.assertEqual(
+            ("https://portal.example.com", "http://localhost:3000"),
+            settings.allowed_origins,
+        )
+        self.assertEqual("https://chat.example.com", settings.ui_origin)
+        self.assertEqual(
+            (
+                "https://chat.example.com",
+                "https://portal.example.com",
+                "http://localhost:3000",
+            ),
+            settings.runtime_allowed_origins,
+        )
+
+    def test_enabled_mode_requires_url_tenant_and_audience(self):
+        for key in (
+            "CHAINLIT_URL",
+            "CHAINLIT_COPILOT_ENTRA_TENANT_ID",
+            "CHAINLIT_COPILOT_ENTRA_AUDIENCE",
+        ):
+            with self.subTest(key=key):
+                values = enabled_env()
+                values.pop(key)
+                with self.assertRaises(EmbedConfigError):
+                    load_embed_settings(FakeConfig(), values)
+
+    def test_tenant_id_is_normalized_for_exact_claim_matching(self):
+        settings = load_embed_settings(
+            FakeConfig(),
+            enabled_env(
+                CHAINLIT_COPILOT_ENTRA_TENANT_ID=TENANT_ID.upper(),
+            ),
+        )
+        self.assertEqual(TENANT_ID.lower(), settings.entra_tenant_id)
+
+    def test_rejects_unsafe_origins(self):
+        for origin in (
+            "*",
+            "null",
+            "https://*.example.com",
+            "http://portal.example.com",
+            "https://portal.example.com/chat",
+            "******portal.example.com",
+        ):
+            with self.subTest(origin=origin):
+                with self.assertRaises(EmbedConfigError):
+                    load_embed_settings(
+                        FakeConfig(),
+                        enabled_env(CHAINLIT_ALLOWED_ORIGINS=origin),
+                    )
+
+    def test_rejects_cross_site_cookie_on_http(self):
+        with self.assertRaisesRegex(EmbedConfigError, "requires HTTPS"):
+            load_embed_settings(
+                FakeConfig(),
+                enabled_env(
+                    CHAINLIT_ALLOWED_ORIGINS="http://localhost:3000",
+                    CHAINLIT_COOKIE_SAMESITE="none",
+                ),
+            )
+
+    def test_rejects_http_chainlit_url_even_on_localhost(self):
+        with self.assertRaisesRegex(EmbedConfigError, "CHAINLIT_URL must use HTTPS"):
+            load_embed_settings(
+                FakeConfig(),
+                enabled_env(CHAINLIT_URL="http://localhost:8000"),
+            )
+
+    def test_rejects_unbounded_session_settings(self):
+        for key, value in (
+            ("CHAINLIT_COPILOT_SESSION_TTL_SECONDS", "59"),
+            ("CHAINLIT_COPILOT_MAX_SESSIONS", "10001"),
+            ("CHAINLIT_COPILOT_MAX_SESSIONS", "many"),
+            ("CHAINLIT_COPILOT_BOOTSTRAP_RATE_LIMIT_PER_MINUTE", "0"),
+            ("CHAINLIT_COPILOT_BOOTSTRAP_RATE_LIMIT_PER_MINUTE", "601"),
+        ):
+            with self.subTest(key=key):
+                with self.assertRaises(EmbedConfigError):
+                    load_embed_settings(FakeConfig(), enabled_env(**{key: value}))
+
+    def test_same_origin_is_rejected_to_isolate_standalone_auth(self):
+        with self.assertRaisesRegex(EmbedConfigError, "separate authentication"):
+            load_embed_settings(
+                FakeConfig(),
+                enabled_env(
+                    CHAINLIT_ALLOWED_ORIGINS="https://chat.example.com",
+                ),
+            )
+
+    def test_root_path_is_rejected_when_embedding_is_enabled(self):
+        with self.assertRaisesRegex(EmbedConfigError, "not supported"):
+            load_embed_settings(
+                FakeConfig(),
+                enabled_env(CHAINLIT_ROOT_PATH="/gpt-rag"),
+            )
+
+    def test_auth_mode_is_required_and_explicit(self):
+        for auth_mode in ("", "ANON", "oauth"):
+            with self.subTest(auth_mode=auth_mode):
+                values = enabled_env(CHAINLIT_COPILOT_AUTH_MODE=auth_mode)
+                with self.assertRaisesRegex(
+                    EmbedConfigError,
+                    "CHAINLIT_COPILOT_AUTH_MODE",
+                ):
+                    load_embed_settings(FakeConfig(), values)
+
+    def test_anonymous_mode_does_not_require_entra_settings(self):
+        values = enabled_env(CHAINLIT_COPILOT_AUTH_MODE="anonymous")
+        for key in (
+            "CHAINLIT_COPILOT_ENTRA_TENANT_ID",
+            "CHAINLIT_COPILOT_ENTRA_AUDIENCE",
+        ):
+            values.pop(key)
+        settings = load_embed_settings(FakeConfig(), values)
+        self.assertEqual("anonymous", settings.auth_mode)
+        self.assertFalse(settings.uses_entra)
+
+    def test_rejects_path_in_chainlit_url(self):
+        with self.assertRaisesRegex(EmbedConfigError, "CHAINLIT_URL"):
+            load_embed_settings(
+                FakeConfig(),
+                enabled_env(
+                    CHAINLIT_URL="https://portal.example.com/gpt-rag",
+                ),
+            )
+
+    def test_reads_bootstrap_rate_limit(self):
+        settings = load_embed_settings(
+            FakeConfig(),
+            enabled_env(
+                CHAINLIT_COPILOT_BOOTSTRAP_RATE_LIMIT_PER_MINUTE="25",
+            ),
+        )
+        self.assertEqual(25, settings.bootstrap_rate_limit_per_minute)
+
+    def test_configure_leaves_standalone_origins_unchanged(self):
+        chainlit_config = SimpleNamespace(
+            project=SimpleNamespace(allow_origins=["https://standalone.example.com"])
+        )
+        configure_chainlit_allowed_origins(EmbedSettings(), chainlit_config)
+        self.assertEqual(
+            ["https://standalone.example.com"],
+            chainlit_config.project.allow_origins,
+        )
+
+    def test_configure_uses_exact_portal_and_ui_origins(self):
+        chainlit_config = SimpleNamespace(
+            project=SimpleNamespace(allow_origins=["*"])
+        )
+        enabled = EmbedSettings(
+            enabled=True,
+            ui_origin="https://chat.example.com",
+            allowed_origins=("https://portal.example.com",),
+        )
+        configure_chainlit_allowed_origins(enabled, chainlit_config)
+        self.assertEqual(
+            ["https://chat.example.com", "https://portal.example.com"],
+            chainlit_config.project.allow_origins,
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

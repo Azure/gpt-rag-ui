@@ -4,6 +4,7 @@ import inspect
 
 from orchestrator_client import call_orchestrator_for_feedback
 from dependencies import get_config
+from conversation_security import get_owned_conversation
 
 config = get_config()
 
@@ -81,7 +82,22 @@ def create_feedback_actions(question_id: str, conversation_id: str, ask: str) ->
     ]
 
 
-def register_feedback_handlers(auth_info=None):
+def _feedback_requires_ownership(
+    auth_payload: dict,
+    *,
+    allow_standalone_anonymous: bool,
+) -> bool:
+    copilot_auth_mode = str(
+        auth_payload.get("copilot_auth_mode") or ""
+    ).strip().lower()
+    return bool(copilot_auth_mode) or not allow_standalone_anonymous
+
+
+def register_feedback_handlers(
+    auth_info=None,
+    *,
+    allow_standalone_anonymous: bool = False,
+):
     """Register feedback-related Chainlit event handlers"""
 
     feedback_msg: cl.Message | None = None
@@ -130,7 +146,7 @@ def register_feedback_handlers(auth_info=None):
         nonlocal feedback_msg
         nonlocal last_feedback_context
         try:
-            logging.info("[feedback] Received submit_feedback action with payload: %s", action.payload)
+            logging.info("[feedback] Received submit_feedback action")
             question_id = action.payload.get("questionId")
             ask = action.payload.get("ask")
             conversation_id = action.payload.get("conversationId")
@@ -160,6 +176,25 @@ def register_feedback_handlers(auth_info=None):
             auth_payload = auth_info() if auth_info else {}
             if inspect.isawaitable(auth_payload):
                 auth_payload = await auth_payload
+            requires_ownership = _feedback_requires_ownership(
+                auth_payload,
+                allow_standalone_anonymous=allow_standalone_anonymous,
+            )
+            if (
+                requires_ownership
+                and not await get_owned_conversation(
+                    conversation_id,
+                    auth_payload,
+                )
+            ):
+                logging.warning(
+                    "[feedback] Conversation ownership denied: conversation=%s",
+                    conversation_id,
+                )
+                return await cl.context.emitter.send_toast(
+                    "You are not authorized to submit feedback for this conversation.",
+                    "error",
+                )
             orc_feedback_response = await call_orchestrator_for_feedback(
                 conversation_id=conversation_id,
                 question_id=question_id,
@@ -186,7 +221,7 @@ def register_feedback_handlers(auth_info=None):
                 feedback_msg = None
             logging.exception("[feedback] Error while handling feedback submission")
             return await cl.context.emitter.send_toast(
-                f"An unexpected error occurred while submitting feedback: {e}", "error"
+                "An unexpected error occurred while submitting feedback.", "error"
             )
 
     @cl.action_callback("close_feedback_popup")
