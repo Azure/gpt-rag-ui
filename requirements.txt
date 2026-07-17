@@ -15,5 +15,5 @@ PyJWT[crypto]>=2.8.0,<3.0.0
 starlette
 tenacity==9.1.4
 uvicorn==0.35.0
-azure-appconfiguration-provider==2.1.0
+azure-appconfiguration-provider==2.5.0
 azure-applicationinsights==0.1.1
