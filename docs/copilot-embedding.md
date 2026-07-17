@@ -16,7 +16,10 @@ anonymous access.
 ## Rendering and token flow
 
 Chainlit 2.9.4 Copilot mode renders a floating widget in an open Shadow DOM. It
-does not use an iframe.
+is loaded by a script and does not use an iframe. Embedding therefore does not
+require relaxing `frame-ancestors` or `X-Frame-Options` on the GPT-RAG UI
+origin. Do not weaken either protection for this widget; they continue to
+protect the standalone GPT-RAG UI page from clickjacking.
 
 The portal first calls GPT-RAG's bootstrap endpoint and then mounts the widget.
 In Entra mode, the portal sends its delegated API access token only to:
@@ -58,6 +61,25 @@ OAuth or anonymous policy. A normal HTTP request is treated as embedded only
 when it has an exact configured portal `Origin`. A cookie by itself does not
 select embedded authentication.
 
+### Network boundary
+
+Exact-origin enforcement is a browser policy, not authentication. A direct HTTP
+client can set a matching `Origin` header without loading the portal. In
+`anonymous` mode, anyone who can reach the GPT-RAG UI endpoint can create an
+ephemeral session and consume model and search capacity.
+
+Use Entra mode unless an authenticated gateway or a private network boundary
+authoritatively restricts access before traffic reaches GPT-RAG. A Zero Trust or
+private Container Apps deployment must remain private and be exposed through
+the environment's existing authenticated front door or gateway. Never enable
+public ingress solely to make the widget reachable.
+
+The [canonical GPT-RAG documentation](https://azure.github.io/GPT-RAG/) remains
+the source for architecture and infrastructure deployment. This repository
+guide defines the widget's application contract; it does not replace ingress,
+gateway, WAF, or private networking controls owned by the GPT-RAG
+infrastructure.
+
 Browsers normally omit `Origin` on top-level download navigation. The secure
 download endpoint has a narrow exception: it rechecks the opaque session and a
 signed grant bound to the principal, session, conversation, container, and blob
@@ -73,7 +95,7 @@ configuration source. Environment variables take precedence.
 | `CHAINLIT_COPILOT_ENABLED` | No | Defaults to `false`. Set to `true` to enable embedding. |
 | `CHAINLIT_COPILOT_AUTH_MODE` | When enabled | Must be exactly `anonymous` or `entra`. |
 | `CHAINLIT_URL` | When enabled | Exact HTTPS origin serving GPT-RAG UI, with no path. |
-| `CHAINLIT_ALLOWED_ORIGINS` | When enabled | Comma-separated exact portal origins. The UI origin is not allowed here. |
+| `CHAINLIT_ALLOWED_ORIGINS` | When enabled | Comma-separated exact portal origins. The UI origin is not allowed here. This is a CORS-style browser control, not authentication or a network access boundary. |
 | `CHAINLIT_COOKIE_SAMESITE` | No | `lax` by default. Use `none` only when a cross-site portal requires it; HTTPS is mandatory. |
 | `CHAINLIT_COPILOT_SESSION_TTL_SECONDS` | No | Maximum opaque-session lifetime. The session also expires when its Entra token expires. |
 | `CHAINLIT_COPILOT_MAX_SESSIONS` | No | Process-local bound on active embedded sessions. |
@@ -98,11 +120,14 @@ CHAINLIT_COPILOT_MAX_SESSIONS=1000
 CHAINLIT_COPILOT_BOOTSTRAP_RATE_LIMIT_PER_MINUTE=60
 ```
 
-Choosing anonymous mode is a security decision. Anyone able to load the
-allow-listed portal origin and reach GPT-RAG can create an ephemeral assistant
-session. The portal's own authentication may restrict who can reach the page,
-but GPT-RAG does not receive or validate that portal identity in anonymous
-mode.
+Choosing anonymous mode is a security decision. `CHAINLIT_ALLOWED_ORIGINS`
+stops browser pages on unlisted origins from calling GPT-RAG, but a non-browser
+client can forge a matching `Origin` header. Anyone who can reach the GPT-RAG UI
+endpoint can create an ephemeral assistant session, whether or not they can
+load the portal. The portal's own authentication does not protect the GPT-RAG
+endpoint unless an authenticated gateway or private network boundary enforces
+that identity before forwarding the request. Prefer Entra mode when GPT-RAG
+must authenticate each user.
 
 ### Entra example
 
@@ -125,6 +150,20 @@ validated Entra deployments retain their behavior.
 
 Load the Copilot bundle from the GPT-RAG origin. Bootstrap first, verify that
 the browser accepted the cookie, and mount only after bootstrap succeeds.
+
+This is a script/widget integration, not an iframe integration. The portal's
+Content Security Policy must allow the GPT-RAG UI origin in `script-src` and
+`connect-src`, including its secure WebSocket endpoint. For example:
+
+```text
+Content-Security-Policy:
+  script-src 'self' https://chat.contoso.com;
+  connect-src 'self' https://chat.contoso.com wss://chat.contoso.com;
+```
+
+Keep the portal's other CSP directives intact. Do not loosen
+`frame-ancestors` or `X-Frame-Options` on the portal or GPT-RAG UI for this
+widget.
 
 ```html
 <div id="gpt-rag-status" role="status">Loading assistant...</div>
@@ -216,6 +255,27 @@ stores sessions, sockets, and task registries in process memory, so the supporte
 deployment contract is one Uvicorn process, one active Container Apps revision,
 and one replica.
 
+## Safe rollout and rollback
+
+Process-local sessions require Container Apps Single revision mode with exactly
+one active revision and one replica. Keep the existing private ingress and
+authenticated gateway in place.
+
+1. Configure the Copilot settings and one-replica limit, then deploy the new
+   revision without adding the widget to the production portal.
+2. Use a staged browser or staged portal on an allow-listed origin to validate
+   bootstrap, cookie delivery, CSP, WebSocket connectivity, logout, expiry, and
+   Entra rejection behavior.
+3. Add the widget script to the production portal only after that validation
+   succeeds.
+
+To roll back, remove or disable the portal widget first so browsers stop
+creating sessions. Then set `CHAINLIT_COPILOT_ENABLED=false` and deploy the
+configuration or previous image through the normal Single revision flow. A
+restart, revision switch, or rollback terminates active embedded sessions and
+invalidates their opaque cookies and download grants; those sessions are not
+restored.
+
 ## Session and thread isolation
 
 Anonymous bootstrap creates a random unique principal. It does not attach an
@@ -278,8 +338,8 @@ anonymous mode send no token.
   third-party-cookie policy can still block the session.
 - Anonymous mode is intentionally non-durable and cannot download private
   citations.
-- Exact-origin checks are not a substitute for network controls, WAF policy,
-  CSP, or the portal's own authentication.
+- Exact-origin checks are not authentication and are not a substitute for
+  private ingress, an authenticated gateway, WAF policy, or CSP.
 
 ## Troubleshooting
 
@@ -289,6 +349,7 @@ anonymous mode send no token.
 | Bootstrap 403 | The browser `Origin` exactly matches `CHAINLIT_ALLOWED_ORIGINS`; in Entra mode also check tenant, audience, delegated scope, and user policy. |
 | Bootstrap 401 | The Entra token is present, unexpired, and issued as a v2 delegated token for the configured GPT-RAG audience. |
 | Bootstrap succeeds but widget requests return 401 | The browser may have rejected the cookie. Check HTTPS, `CHAINLIT_COOKIE_SAMESITE`, and third-party-cookie policy. |
-| Socket connects then closes | Verify exact origin, cookie delivery, affinity, WebSocket upgrade forwarding, and the one-process/one-replica contract. |
+| Portal blocks the bundle or socket | Allow the GPT-RAG UI origin in the portal's `script-src` and `connect-src`, including `wss://`; do not change framing protections. |
+| Socket connects then closes | Verify exact origin, cookie delivery, affinity, WebSocket upgrade forwarding, and the one-process/one-active-revision/one-replica contract. |
 | Anonymous thread or download returns 403 | This is intentional. Anonymous mode denies durable identity-bound state and private citation downloads. |
 | Standalone OAuth behaves unexpectedly | Ensure the portal origin differs from `CHAINLIT_URL`; a cookie alone must not select embedded policy. |

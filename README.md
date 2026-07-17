@@ -29,38 +29,12 @@ repository-specific security contract and portal integration steps for the
 opt-in Chainlit Copilot widget are documented in
 [Embed GPT-RAG with Chainlit Copilot](docs/copilot-embedding.md).
 
-Chainlit 2.9.4 floating Copilot mode is opt-in and requires an explicit
-`CHAINLIT_COPILOT_AUTH_MODE=anonymous|entra`. There is no default mode and no
-fallback from failed Entra authentication to anonymous access.
-
-Use distinct exact origins for the portal and GPT-RAG UI:
-
-```text
-CHAINLIT_COPILOT_ENABLED=true
-CHAINLIT_COPILOT_AUTH_MODE=anonymous
-CHAINLIT_URL=https://chat.contoso.com
-CHAINLIT_ALLOWED_ORIGINS=https://portal.contoso.com
-```
-
-`CHAINLIT_ROOT_PATH` is not supported while embedding is enabled. Exact origin
-checks isolate embedded sessions from standalone OAuth and `ALLOW_ANONYMOUS`.
-Embedding remains disabled by default, and standalone behavior is unchanged
-when `CHAINLIT_COPILOT_ENABLED=false`.
-
-Both modes issue only a bounded opaque `Secure; HttpOnly` session cookie to the
-browser. Anonymous mode creates a unique ephemeral principal and deliberately
-disables durable thread recovery, user-bound uploads, and citation downloads.
-Entra mode validates a delegated v2 access token during bootstrap. The portal
-does not pass that token to `mountChainlitWidget`.
-
-Chainlit Copilot renders as a floating widget in an open Shadow DOM, not an
-iframe. For cross-site portals, `CHAINLIT_COOKIE_SAMESITE=none` is required and
-browser third-party-cookie policy can still block the session. Process-local
-session and socket state requires one Uvicorn process, one active revision, and
-one replica.
-
-See [Embed GPT-RAG with Chainlit Copilot](docs/copilot-embedding.md) for both
-mode examples, the security tradeoffs, lifecycle handling, and troubleshooting.
+Chainlit Copilot embedding is opt-in and disabled by default. Enabling the
+script/widget requires an explicit `anonymous` or `entra` mode, distinct exact
+portal and UI origins, and a private or authenticated network boundary; origin
+checks are not authentication. See
+[Embed GPT-RAG with Chainlit Copilot](docs/copilot-embedding.md) for
+configuration, CSP, deployment, security, rollout, and rollback guidance.
 
 ## Prerequisites
 

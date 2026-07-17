@@ -597,7 +597,10 @@ tracer = Telemetry.get_tracer(__name__)
 
 # Register feedback handlers
 if ENABLE_FEEDBACK:
-    register_feedback_handlers(get_auth_info)
+    register_feedback_handlers(
+        get_auth_info,
+        allow_standalone_anonymous=ALLOW_ANONYMOUS and not OAUTH_CONFIGURED,
+    )
 
 # Chainlit event handlers
 @cl.on_chat_start

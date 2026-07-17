@@ -109,6 +109,7 @@ class EntraTokenValidator:
                 self._keys
                 and now - self._loaded_at < self.cache_ttl_seconds
             )
+            refresh_attempted = False
             should_refresh_unknown_key = (
                 cache_is_fresh
                 and kid not in self._keys
@@ -117,11 +118,13 @@ class EntraTokenValidator:
             )
             if not cache_is_fresh:
                 await self._refresh_keys()
+                refresh_attempted = True
             elif should_refresh_unknown_key:
                 self._last_unknown_key_refresh_at = now
                 await self._refresh_keys()
+                refresh_attempted = True
             key = self._keys.get(kid)
-            if key is None:
+            if key is None and refresh_attempted:
                 self._last_unknown_key_refresh_at = time.monotonic()
 
         if key is None:

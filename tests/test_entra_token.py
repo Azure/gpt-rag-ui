@@ -1,6 +1,7 @@
 import json
 import time
 import unittest
+from unittest.mock import patch
 
 import jwt
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -140,6 +141,50 @@ class EntraTokenValidatorTests(unittest.IsolatedAsyncioTestCase):
                 await validator.validate(self.create_token(_kid=kid))
 
         self.assertEqual(1, loader_calls)
+
+    async def test_unknown_key_throttle_does_not_starve_rotation_refresh(self):
+        loader_calls = 0
+        monotonic_time = 100.0
+
+        async def counted_loader():
+            nonlocal loader_calls
+            loader_calls += 1
+            return self.jwks
+
+        validator = EntraTokenValidator(
+            tenant_id=TENANT_ID,
+            audience=AUDIENCE,
+            unknown_key_refresh_interval_seconds=60,
+            clock_skew_seconds=0,
+            jwks_loader=counted_loader,
+        )
+
+        with patch(
+            "entra_token.time.monotonic",
+            side_effect=lambda: monotonic_time,
+        ):
+            with self.assertRaisesRegex(EntraTokenError, "signing key"):
+                await validator.validate(
+                    self.create_token(_kid="unknown-one")
+                )
+
+            monotonic_time = 110.0
+            with self.assertRaisesRegex(EntraTokenError, "signing key"):
+                await validator.validate(
+                    self.create_token(_kid="unknown-two")
+                )
+
+            rotated_jwk = dict(self.jwks["keys"][0])
+            rotated_jwk["kid"] = "rotated-key"
+            self.jwks = {"keys": [rotated_jwk]}
+            monotonic_time = 161.0
+
+            claims = await validator.validate(
+                self.create_token(_kid="rotated-key")
+            )
+
+        self.assertEqual(TENANT_ID, claims["tid"])
+        self.assertEqual(2, loader_calls)
 
     async def test_rejects_algorithm_confusion(self):
         token = jwt.encode(

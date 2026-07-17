@@ -82,7 +82,22 @@ def create_feedback_actions(question_id: str, conversation_id: str, ask: str) ->
     ]
 
 
-def register_feedback_handlers(auth_info=None):
+def _feedback_requires_ownership(
+    auth_payload: dict,
+    *,
+    allow_standalone_anonymous: bool,
+) -> bool:
+    copilot_auth_mode = str(
+        auth_payload.get("copilot_auth_mode") or ""
+    ).strip().lower()
+    return bool(copilot_auth_mode) or not allow_standalone_anonymous
+
+
+def register_feedback_handlers(
+    auth_info=None,
+    *,
+    allow_standalone_anonymous: bool = False,
+):
     """Register feedback-related Chainlit event handlers"""
 
     feedback_msg: cl.Message | None = None
@@ -161,7 +176,17 @@ def register_feedback_handlers(auth_info=None):
             auth_payload = auth_info() if auth_info else {}
             if inspect.isawaitable(auth_payload):
                 auth_payload = await auth_payload
-            if not await get_owned_conversation(conversation_id, auth_payload):
+            requires_ownership = _feedback_requires_ownership(
+                auth_payload,
+                allow_standalone_anonymous=allow_standalone_anonymous,
+            )
+            if (
+                requires_ownership
+                and not await get_owned_conversation(
+                    conversation_id,
+                    auth_payload,
+                )
+            ):
                 logging.warning(
                     "[feedback] Conversation ownership denied: conversation=%s",
                     conversation_id,
