@@ -2,8 +2,10 @@
 
 ## [Unreleased]
 
+## [v2.4.0] - 2026-07-17
+
 ### Added
-- **Secure opt-in Chainlit Copilot embedding ([Azure/GPT-RAG#556](https://github.com/Azure/GPT-RAG/issues/556))**: Added explicit `anonymous` and `entra` modes with no default or downgrade, distinct exact-origin enforcement, bounded opaque `HttpOnly` sessions, unique anonymous principals, thread and socket isolation, cleanup on logout or eviction, and principal/session/conversation/blob-bound citation grants. Anonymous mode deliberately denies durable threads, user-bound uploads, and private citation downloads. Entra and standalone OAuth behavior remain independent. The operator guide documents the Shadow DOM widget, bootstrap-only Entra token flow, both configurations, security tradeoffs, private ingress and CSP requirements, and the one-process/one-active-revision/one-replica limitation.
+- **Secure opt-in Chainlit Copilot embedding ([Azure/GPT-RAG#556](https://github.com/Azure/GPT-RAG/issues/556), [#80](https://github.com/Azure/gpt-rag-ui/pull/80))**: Added explicit `anonymous` and `entra` modes with no default or downgrade, distinct exact-origin enforcement, bounded opaque `HttpOnly` sessions, unique anonymous principals, thread and socket isolation, cleanup on logout or eviction, and principal/session/conversation/blob-bound citation grants. Anonymous mode deliberately denies durable threads, user-bound uploads, and private citation downloads. Entra and standalone OAuth behavior remain independent. The operator guide documents the Shadow DOM widget, bootstrap-only Entra token flow, both configurations, security tradeoffs, private ingress and CSP requirements, and the one-process/one-active-revision/one-replica limitation.
 
 ### Fixed
 - **Copilot identity binding with Chainlit no-auth sockets:** Bound the already verified Copilot principal only to the new `WebsocketSession` created by Chainlit 2.9.4 when standalone login is disabled and Chainlit leaves `user` unset. Fresh anonymous sockets are distinguished from forbidden session recovery, while existing or restored users are never overwritten, preserving standalone auth behavior and per-session identity isolation.
