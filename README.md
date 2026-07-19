@@ -23,6 +23,19 @@ This repo provides a user interface built with [Chainlit](https://www.chainlit.i
 
 For comprehensive information about GPT-RAG, including architecture details, configuration guides, best practices, troubleshooting resources, deployment guidance, customization options, and advanced usage scenarios, please refer to the [official project documentation](https://azure.github.io/GPT-RAG/).
 
+The canonical architecture and deployment documentation remains the
+[GPT-RAG documentation site](https://azure.github.io/GPT-RAG/). The
+repository-specific security contract and portal integration steps for the
+opt-in Chainlit Copilot widget are documented in
+[Embed GPT-RAG with Chainlit Copilot](docs/copilot-embedding.md).
+
+Chainlit Copilot embedding is opt-in and disabled by default. Enabling the
+script/widget requires an explicit `anonymous` or `entra` mode, distinct exact
+portal and UI origins, and a private or authenticated network boundary; origin
+checks are not authentication. See
+[Embed GPT-RAG with Chainlit Copilot](docs/copilot-embedding.md) for
+configuration, CSP, deployment, security, rollout, and rollback guidance.
+
 ## Prerequisites
 
 Provision the infrastructure first by following the GPT-RAG repository instructions [GPT-RAG](https://github.com/azure/gpt-rag). This ensures all required Azure resources (e.g., Container App, Storage, AI Search) are in place before deploying the web application.
@@ -127,7 +140,3 @@ We appreciate contributions! See [CONTRIBUTING](https://github.com/Azure/gpt-rag
 
 
 This project may contain trademarks or logos. Authorized use of Microsoft trademarks or logos must follow [Microsoft’s Trademark & Brand Guidelines](https://www.microsoft.com/en-us/legal/intellectualproperty/trademarks/usage/general). Modified versions must not imply sponsorship or cause confusion. Third-party trademarks are subject to their own policies.
-
-
-
-
