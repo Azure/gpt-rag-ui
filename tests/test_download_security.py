@@ -31,6 +31,7 @@ OTHER_PRINCIPAL = (
     "bbbbbbbb-cccc-dddd-eeee-ffffffffffff"
 )
 SESSION_ID = "s" * 43
+REPLACEMENT_SESSION_ID = "r" * 43
 CONVERSATION_ID = "12345678-1234-4abc-8def-1234567890ab"
 METADATA = {
     "principal_id": PRINCIPAL,
@@ -48,6 +49,7 @@ class DownloadSecurityTests(unittest.IsolatedAsyncioTestCase):
         )
         url = manager.issue(
             principal_id=PRINCIPAL,
+            session_id=SESSION_ID,
             conversation_id=CONVERSATION_ID,
             container="documents",
             blob_name="folder/file.pdf",
@@ -55,6 +57,7 @@ class DownloadSecurityTests(unittest.IsolatedAsyncioTestCase):
         grant = manager.verify(url.rsplit("/", 1)[-1])
         self.assertTrue(url.startswith("https://chat.example.com/api/download/"))
         self.assertEqual(PRINCIPAL, grant.principal_id)
+        self.assertEqual(SESSION_ID, grant.session_id)
         self.assertEqual("folder/file.pdf", grant.blob_name)
         self.assertIsNone(manager.verify("tampered"))
 
@@ -69,8 +72,9 @@ class DownloadSecurityTests(unittest.IsolatedAsyncioTestCase):
             signer_kwargs={"digest_method": hashlib.sha1},
         ).dumps(
             {
-                "v": 1,
+                "v": 2,
                 "p": PRINCIPAL,
+                "s": SESSION_ID,
                 "c": CONVERSATION_ID,
                 "n": "documents",
                 "b": "folder/file.pdf",
@@ -86,6 +90,7 @@ class DownloadSecurityTests(unittest.IsolatedAsyncioTestCase):
         )
         url = manager.issue(
             principal_id=PRINCIPAL,
+            session_id=SESSION_ID,
             conversation_id=CONVERSATION_ID,
             container="documents",
             blob_name="folder/file.pdf",
@@ -114,6 +119,7 @@ class DownloadSecurityTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             manager.issue(
                 principal_id=PRINCIPAL,
+                session_id=SESSION_ID,
                 conversation_id=CONVERSATION_ID,
                 container="documents",
                 blob_name="../secret.pdf",
@@ -121,6 +127,7 @@ class DownloadSecurityTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             manager.issue(
                 principal_id=PRINCIPAL,
+                session_id=SESSION_ID,
                 conversation_id="../conversations/other",
                 container="documents",
                 blob_name="file.pdf",
@@ -128,6 +135,7 @@ class DownloadSecurityTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             manager.issue(
                 principal_id=PRINCIPAL,
+                session_id=SESSION_ID,
                 conversation_id=CONVERSATION_ID,
                 container="conversation-documents",
                 blob_name="conversations/mine/%2e%2e/victim/file.pdf",
@@ -247,12 +255,14 @@ class DownloadSecurityTests(unittest.IsolatedAsyncioTestCase):
         )
         url = manager.issue(
             principal_id=PRINCIPAL,
+            session_id=SESSION_ID,
             conversation_id=CONVERSATION_ID,
             container="conversation-documents",
             blob_name=f"conversations/{CONVERSATION_ID}/file.pdf",
         )
         grant_token = urlsplit(url).path.rsplit("/", 1)[-1]
         session = SimpleNamespace(
+            session_id=SESSION_ID,
             principal_id=PRINCIPAL,
             chainlit_token="internal-chainlit-token",
             user_metadata=lambda: {
@@ -341,6 +351,7 @@ class DownloadSecurityTests(unittest.IsolatedAsyncioTestCase):
         )
         valid_url = manager.issue(
             principal_id=PRINCIPAL,
+            session_id=SESSION_ID,
             conversation_id=CONVERSATION_ID,
             container="documents",
             blob_name="file.pdf",
@@ -348,20 +359,34 @@ class DownloadSecurityTests(unittest.IsolatedAsyncioTestCase):
         token = urlsplit(valid_url).path.rsplit("/", 1)[-1]
         other_url = manager.issue(
             principal_id=OTHER_PRINCIPAL,
+            session_id=SESSION_ID,
             conversation_id=CONVERSATION_ID,
             container="documents",
             blob_name="file.pdf",
         )
         other_token = urlsplit(other_url).path.rsplit("/", 1)[-1]
         session = SimpleNamespace(
+            session_id=SESSION_ID,
             principal_id=PRINCIPAL,
             chainlit_token="internal-chainlit-token",
             user_metadata=lambda: METADATA,
         )
+        replacement_session = SimpleNamespace(
+            session_id=REPLACEMENT_SESSION_ID,
+            principal_id=PRINCIPAL,
+            chainlit_token="replacement-chainlit-token",
+            user_metadata=lambda: {
+                **METADATA,
+                "copilot_session_id": REPLACEMENT_SESSION_ID,
+            },
+        )
 
         class Sessions:
             async def get(self, session_id):
-                return session if session_id == SESSION_ID else None
+                return {
+                    SESSION_ID: session,
+                    REPLACEMENT_SESSION_ID: replacement_session,
+                }.get(session_id)
 
         async def request(
             *,
@@ -371,6 +396,7 @@ class DownloadSecurityTests(unittest.IsolatedAsyncioTestCase):
             authenticated=True,
             shared_containers=None,
             cookie_header=None,
+            session_id=SESSION_ID,
         ):
             app = FastAPI()
             resolver = AsyncMock(return_value=resolver_result)
@@ -403,7 +429,7 @@ class DownloadSecurityTests(unittest.IsolatedAsyncioTestCase):
                 sessions=Sessions(),
             )
             cookies = (
-                {COPILOT_SESSION_COOKIE: SESSION_ID}
+                {COPILOT_SESSION_COOKIE: session_id}
                 if authenticated and cookie_header is None
                 else {}
             )
@@ -464,6 +490,15 @@ class DownloadSecurityTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(
             404,
+            (
+                await request(
+                    resolver_result={"id": CONVERSATION_ID},
+                    session_id=REPLACEMENT_SESSION_ID,
+                )
+            ).status_code,
+        )
+        self.assertEqual(
+            404,
             (await request(resolver_result=None)).status_code,
         )
         self.assertEqual(
@@ -491,13 +526,14 @@ class DownloadSecurityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(500, backend_failure.status_code)
         self.assertNotIn("backend-secret", backend_failure.text)
 
-    async def test_download_accepts_standalone_chainlit_session(self):
+    async def test_copilot_grant_rejects_standalone_chainlit_session(self):
         manager = DownloadTokenManager(
             secret="secret",
             public_url="https://chat.example.com",
         )
         url = manager.issue(
             principal_id=PRINCIPAL,
+            session_id=SESSION_ID,
             conversation_id=CONVERSATION_ID,
             container="documents",
             blob_name="file.pdf",
@@ -543,7 +579,7 @@ class DownloadSecurityTests(unittest.IsolatedAsyncioTestCase):
                 base_url="https://chat.example.com",
             ) as client:
                 response = await client.get(f"/api/download/{token}")
-        self.assertEqual(200, response.status_code)
+        self.assertEqual(404, response.status_code)
 
     async def test_grant_principal_selects_standalone_cookie_over_other_opaque_cookie(
         self,
@@ -554,6 +590,7 @@ class DownloadSecurityTests(unittest.IsolatedAsyncioTestCase):
         )
         url = manager.issue(
             principal_id=PRINCIPAL,
+            session_id=SESSION_ID,
             conversation_id=CONVERSATION_ID,
             container="documents",
             blob_name="file.pdf",
@@ -618,7 +655,7 @@ class DownloadSecurityTests(unittest.IsolatedAsyncioTestCase):
             ) as client:
                 response = await client.get(f"/api/download/{token}")
 
-        self.assertEqual(200, response.status_code)
+        self.assertEqual(404, response.status_code)
         self.assertEqual(
             [call(SESSION_ID), call(SESSION_ID)],
             sessions.get.await_args_list,
@@ -631,6 +668,7 @@ class DownloadSecurityTests(unittest.IsolatedAsyncioTestCase):
         )
         url = manager.issue(
             principal_id=PRINCIPAL,
+            session_id=SESSION_ID,
             conversation_id=CONVERSATION_ID,
             container="documents",
             blob_name="file.pdf",

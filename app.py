@@ -224,10 +224,16 @@ def _resolve_secure_reference_href(
     *,
     conversation_id: str,
     principal_id: str,
+    copilot_session_id: str,
 ) -> Optional[str]:
-    """Create an authenticated, principal-bound absolute citation URL."""
+    """Create an authenticated, session-bound absolute citation URL."""
     href = (raw_href or "").strip()
-    if not href or not conversation_id or not principal_id:
+    if (
+        not href
+        or not conversation_id
+        or not principal_id
+        or not copilot_session_id
+    ):
         return None
 
     split_href = urllib.parse.urlsplit(href)
@@ -298,6 +304,7 @@ def _resolve_secure_reference_href(
     try:
         download_url = get_download_tokens().issue(
             principal_id=principal_id,
+            session_id=copilot_session_id,
             conversation_id=conversation_id,
             container=container,
             blob_name=blob_name,
@@ -316,13 +323,15 @@ def resolve_reference_href(
     *,
     conversation_id: str = "",
     principal_id: str = "",
+    copilot_session_id: str = "",
 ) -> Optional[str]:
-    if not COPILOT_ENABLED:
+    if not COPILOT_ENABLED or not copilot_session_id:
         return _resolve_legacy_reference_href(raw_href)
     return _resolve_secure_reference_href(
         raw_href,
         conversation_id=conversation_id,
         principal_id=principal_id,
+        copilot_session_id=copilot_session_id,
     )
 
 
@@ -332,6 +341,7 @@ def replace_source_reference_links(
     *,
     conversation_id: str = "",
     principal_id: str = "",
+    copilot_session_id: str = "",
 ) -> str:
     """
     Replace source reference links in text. Links that point to non-existent blobs are completely removed.
@@ -344,13 +354,14 @@ def replace_source_reference_links(
             raw_href,
             conversation_id=conversation_id,
             principal_id=principal_id,
+            copilot_session_id=copilot_session_id,
         )
         if resolved_href:
             if references is not None:
                 references.add(resolved_href)
             logger.debug("Resolved reference '%s' -> '%s'", raw_href, resolved_href)
             return f"[{display_text}]({resolved_href})"
-        if COPILOT_ENABLED:
+        if copilot_session_id:
             logger.debug(
                 "Rendering citation '%s' without an unauthorized link",
                 display_text,
@@ -403,6 +414,7 @@ def check_authorization() -> dict:
                 '' if is_anonymous_copilot else metadata.get('object_id', '')
             ),
             'copilot_auth_mode': metadata.get('copilot_auth_mode', ''),
+            'copilot_session_id': metadata.get('copilot_session_id', ''),
         }
 
     # If OAuth is configured but we don't have a user in session,
@@ -509,6 +521,11 @@ async def get_auth_info() -> dict:
                 '' if is_anonymous_copilot else metadata.get('object_id', '')
             ),
             'copilot_auth_mode': auth_mode,
+            'copilot_session_id': (
+                metadata.get('copilot_session_id', '')
+                if metadata.get("auth_source") == "copilot_session"
+                else ""
+            ),
         }
 
     return {
@@ -905,6 +922,9 @@ async def handle_message(message: cl.Message):
                     chunk_refs,
                     conversation_id=conversation_id,
                     principal_id=str(auth_info.get("principal_id") or ""),
+                    copilot_session_id=str(
+                        auth_info.get("copilot_session_id") or ""
+                    ),
                 )
                 if chunk_refs:
                     references.update(chunk_refs)
@@ -1020,6 +1040,9 @@ async def handle_message(message: cl.Message):
             references,
             conversation_id=conversation_id,
             principal_id=str(auth_info.get("principal_id") or ""),
+            copilot_session_id=str(
+                auth_info.get("copilot_session_id") or ""
+            ),
         )
         if SHOW_STATISTICS:
             elapsed = time.time() - response_start_time

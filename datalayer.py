@@ -271,7 +271,12 @@ class OrchestratorDataLayer(BaseDataLayer):
 
         messages = conv.get("messages", [])
         principal_id = principal_id_from_metadata(metadata)
-        steps = self._messages_to_steps(messages, thread_id, principal_id)
+        steps = self._messages_to_steps(
+            messages,
+            thread_id,
+            principal_id,
+            str(metadata.get("copilot_session_id") or ""),
+        )
         thread_user_id = principal_id
         user_identifier = principal_id
 
@@ -405,6 +410,7 @@ class OrchestratorDataLayer(BaseDataLayer):
         messages: list,
         thread_id: str,
         principal_id: str,
+        copilot_session_id: str = "",
     ) -> list:
         """Convert orchestrator conversation messages to Chainlit StepDict format."""
         # Lazy import to avoid circular dependency (app.py imports datalayer).
@@ -422,6 +428,7 @@ class OrchestratorDataLayer(BaseDataLayer):
                     text,
                     conversation_id=thread_id,
                     principal_id=principal_id,
+                    copilot_session_id=copilot_session_id,
                 )
 
             steps.append({

@@ -33,6 +33,7 @@ logger = logging.getLogger("gpt_rag_ui.download_security")
 @dataclass(frozen=True)
 class DownloadGrant:
     principal_id: str
+    session_id: str
     conversation_id: str
     container: str
     blob_name: str
@@ -41,6 +42,7 @@ class DownloadGrant:
 @dataclass(frozen=True)
 class DownloadPrincipal:
     principal_id: str
+    session_id: str | None
     metadata: dict
 
 
@@ -113,6 +115,7 @@ class DownloadTokenManager:
     def _valid_target(
         *,
         principal_id: str,
+        session_id: str,
         conversation_id: str,
         container: str,
         blob_name: str,
@@ -120,6 +123,10 @@ class DownloadTokenManager:
         normalized_blob = blob_name.replace("\\", "/")
         return bool(
             principal_id
+            and session_id
+            and len(session_id) <= 256
+            and session_id.strip() == session_id
+            and not any(ord(char) < 32 for char in session_id)
             and canonical_conversation_id(conversation_id) == conversation_id
             and _CONTAINER_PATTERN.fullmatch(container)
             and normalized_blob
@@ -136,12 +143,14 @@ class DownloadTokenManager:
         self,
         *,
         principal_id: str,
+        session_id: str,
         conversation_id: str,
         container: str,
         blob_name: str,
     ) -> str:
         if not self._valid_target(
             principal_id=principal_id,
+            session_id=session_id,
             conversation_id=conversation_id,
             container=container,
             blob_name=blob_name,
@@ -149,8 +158,9 @@ class DownloadTokenManager:
             raise ValueError("Invalid download grant.")
         token = self.serializer.dumps(
             {
-                "v": 1,
+                "v": 2,
                 "p": principal_id,
+                "s": session_id,
                 "c": conversation_id,
                 "n": container,
                 "b": blob_name.replace("\\", "/"),
@@ -168,10 +178,10 @@ class DownloadTokenManager:
             )
         except BadData:
             return None
-        if not isinstance(payload, dict) or payload.get("v") != 1:
+        if not isinstance(payload, dict) or payload.get("v") != 2:
             return None
 
-        required = ("p", "c", "n", "b")
+        required = ("p", "s", "c", "n", "b")
         if any(
             not isinstance(payload.get(key), str) or not payload[key]
             for key in required
@@ -179,6 +189,7 @@ class DownloadTokenManager:
             return None
         if not self._valid_target(
             principal_id=payload["p"],
+            session_id=payload["s"],
             conversation_id=payload["c"],
             container=payload["n"],
             blob_name=payload["b"],
@@ -186,6 +197,7 @@ class DownloadTokenManager:
             return None
         return DownloadGrant(
             principal_id=payload["p"],
+            session_id=payload["s"],
             conversation_id=payload["c"],
             container=payload["n"],
             blob_name=payload["b"],
@@ -226,6 +238,7 @@ async def resolve_download_principal(
             return None
         opaque_principal = DownloadPrincipal(
             principal_id=opaque_session.principal_id,
+            session_id=opaque_session.session_id,
             metadata=opaque_session.user_metadata(),
         )
         if (
@@ -240,6 +253,7 @@ async def resolve_download_principal(
         if opaque_session:
             mismatched_principal = DownloadPrincipal(
                 principal_id=opaque_session.principal_id,
+                session_id=opaque_session.session_id,
                 metadata=opaque_session.user_metadata(),
             )
             if (
@@ -264,6 +278,7 @@ async def resolve_download_principal(
         return mismatched_principal
     standalone_principal = DownloadPrincipal(
         principal_id=principal_id,
+        session_id=None,
         metadata=metadata,
     )
     if expected_principal_id and principal_id != expected_principal_id:
@@ -308,7 +323,10 @@ def register_secure_download_route(
                 headers={"Cache-Control": "no-store"},
             )
 
-        if grant.principal_id != principal.principal_id:
+        if (
+            grant.principal_id != principal.principal_id
+            or grant.session_id != principal.session_id
+        ):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Not found",
