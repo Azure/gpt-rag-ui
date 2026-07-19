@@ -10,6 +10,7 @@
 ### Fixed
 - **Copilot identity binding with Chainlit no-auth sockets:** Bound the already verified Copilot principal only to the new `WebsocketSession` created by Chainlit 2.9.4 when standalone login is disabled and Chainlit leaves `user` unset. Fresh anonymous sockets are distinguished from forbidden session recovery, while existing or restored users are never overwritten, preserving standalone auth behavior and per-session identity isolation.
 - **Bound and isolated Copilot Socket.IO transports:** Enforced a fixed limit of four physical Socket.IO connections per opaque Copilot session, explicitly disconnected superseded transports before Chainlit session restoration, and made logout, expiry, eviction, account switch, and same-principal session replacement invalidate all tracked transports and cancel associated active Chainlit tasks. Exact configured portal origins now gate Copilot Engine.IO and Socket.IO admission, tracking, caps, and cleanup, so stale or active Copilot cookies cannot reject, associate, or later disconnect standalone Chainlit transports.
+- **Session-bound citation grants with standalone compatibility:** Bound each embedded citation grant to the issuing opaque Copilot session as well as its principal, conversation, container, and blob path, so logout or same-principal session replacement invalidates previously issued grants. Standalone OAuth and anonymous sessions continue using the existing citation path when Copilot embedding is enabled.
 
 ## [v2.3.13] - 2026-06-15
 

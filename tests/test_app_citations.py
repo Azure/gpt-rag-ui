@@ -43,6 +43,7 @@ class AppCitationTests(unittest.TestCase):
                 "documents/folder/file.pdf",
                 conversation_id="thread-1",
                 principal_id="tenant:object",
+                copilot_session_id="opaque-session",
             )
 
         self.assertEqual(
@@ -51,6 +52,7 @@ class AppCitationTests(unittest.TestCase):
         )
         manager.issue.assert_called_once_with(
             principal_id="tenant:object",
+            session_id="opaque-session",
             conversation_id="thread-1",
             container="documents",
             blob_name="folder/file.pdf",
@@ -63,6 +65,7 @@ class AppCitationTests(unittest.TestCase):
                     "documents/file.pdf",
                     conversation_id="",
                     principal_id="tenant:object",
+                    copilot_session_id="opaque-session",
                 )
             )
             self.assertIsNone(
@@ -70,6 +73,7 @@ class AppCitationTests(unittest.TestCase):
                     "documents/file.pdf",
                     conversation_id="thread-1",
                     principal_id="",
+                    copilot_session_id="opaque-session",
                 )
             )
 
@@ -97,11 +101,12 @@ class AppCitationTests(unittest.TestCase):
                 ),
                 conversation_id=conversation_id,
                 principal_id="tenant:object",
+                copilot_session_id="opaque-session",
             )
 
         self.assertIsNone(citation)
 
-    def test_standalone_citations_keep_legacy_sas_path(self):
+    def test_standalone_citations_keep_legacy_sas_path_when_copilot_enabled(self):
         legacy = Mock(
             return_value=(
                 "https://storage.blob.core.windows.net/"
@@ -109,7 +114,7 @@ class AppCitationTests(unittest.TestCase):
             )
         )
         with (
-            patch.object(app, "COPILOT_ENABLED", False),
+            patch.object(app, "COPILOT_ENABLED", True),
             patch("app._resolve_legacy_reference_href", legacy),
         ):
             citation = app.resolve_reference_href("documents/file.pdf")
@@ -121,6 +126,21 @@ class AppCitationTests(unittest.TestCase):
             ),
             citation,
         )
+        legacy.assert_called_once_with("documents/file.pdf")
+
+    def test_embedded_citation_requires_opaque_session(self):
+        legacy = Mock(return_value="https://storage.example.com/file.pdf")
+        with (
+            patch.object(app, "COPILOT_ENABLED", True),
+            patch("app._resolve_legacy_reference_href", legacy),
+        ):
+            citation = app.resolve_reference_href(
+                "documents/file.pdf",
+                conversation_id="thread-1",
+                principal_id="tenant:object",
+            )
+
+        self.assertEqual("https://storage.example.com/file.pdf", citation)
         legacy.assert_called_once_with("documents/file.pdf")
 
     def test_anonymous_copilot_feedback_is_hidden(self):
