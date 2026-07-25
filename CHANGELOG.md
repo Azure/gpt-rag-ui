@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Added
+- **GitHub Copilot engineering-agent framework:** Reorganized repository guidance into a concise operating contract, UI-specific engineering agents, reusable skills, path-scoped instructions, evidence-oriented pull request guidance, and pinned CI validation for YAML frontmatter. These assets govern repository development and operations only; Chainlit runtime, authentication, feedback, UI, and backend behavior are unchanged.
+
 ## [v2.4.0] - 2026-07-17
 
 ### Added
