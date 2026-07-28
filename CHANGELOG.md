@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Added
+- **Chainlit hosted-agent BFF path ([Azure/GPT-RAG#587](https://github.com/Azure/GPT-RAG/issues/587))**: Added a server-side `hosted_agent` chat backend selected by the `CHAT_BACKEND` configuration key (default: `orchestrator`). When `CHAT_BACKEND=hosted_agent`, the UI streams responses from the GPT-RAG hosted orchestrator over a typed Server-Sent Events contract covering text deltas, citation annotations, tool activity, error events, cancellation, and conversation/thread-ID continuity mapping. All credentials are obtained server-side via managed identity; no tokens or platform details are ever forwarded from the browser. Only the authenticated identity context permitted by ADR-0001 (principal ID and name) is propagated in the payload. Configuration validation at startup produces a clear, explicit error when `HOSTED_AGENT_BASE_URL` is absent or invalid, with no silent fallback to the classic orchestrator path.
+
 ## [v2.4.0] - 2026-07-17
 
 ### Added
