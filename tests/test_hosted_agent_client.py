@@ -455,8 +455,9 @@ class TestCallHostedAgentStream(unittest.TestCase):
             gen = call_hosted_agent_stream("conv-1", "Hi", {}, "q-1")
             _run(_collect_events(gen))
 
-        # The header value is masked ("******") for safety; just verify presence
+        # The header value is ****** MI token; just verify presence
         self.assertIn("Authorization", captured_headers)
+        self.assertIn("server-mi-token", captured_headers["Authorization"])
 
     # -- identity propagation -------------------------------------------------
 
@@ -600,18 +601,19 @@ class TestBuildHostedAgentHeaders(unittest.TestCase):
             return_value=MagicMock(get_token=MagicMock(return_value=MagicMock(token="mi-tok"))),
         ):
             headers = _build_hosted_agent_headers({"access_token": "user-secret-token"})
+        # The managed-identity token is present, but the user's token must not be.
         self.assertNotIn("user-secret-token", str(headers))
 
-    def test_authorization_header_masked(self):
-        """The Authorization value must be masked in the header dict (never plain token)."""
+    def test_authorization_header_contains_bearer_token(self):
+        """The Authorization header must carry a ****** (managed identity)."""
         with patch(
             "hosted_agent_client.ChainedTokenCredential",
             return_value=MagicMock(get_token=MagicMock(return_value=MagicMock(token="my-mi-token"))),
         ):
             headers = _build_hosted_agent_headers({})
-        # The header value is "******" but _build_hosted_agent_headers
-        # uses "******" per the logging-safe convention in the codebase.
-        self.assertNotIn("my-mi-token", headers.get("Authorization", ""))
+        self.assertIn("Authorization", headers)
+        self.assertIn("Bearer", headers["Authorization"])
+        self.assertIn("my-mi-token", headers["Authorization"])
 
     def test_api_key_included_when_configured(self):
         with (

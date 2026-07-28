@@ -188,7 +188,7 @@ def _build_hosted_agent_headers(auth_info: dict) -> dict:  # noqa: ARG001
             AzureCliCredential(),
         )
         mi_token = credential.get_token(scope).token
-        headers["Authorization"] = f"******"
+        headers["Authorization"] = "Bearer " + mi_token
         logger.debug("Hosted-agent: managed identity token acquired (scope=%s)", scope)
     except Exception:
         logger.warning(
