@@ -891,7 +891,17 @@ def _create_chainlit_app(
 
     chainlit_app.openapi = _safe_openapi
 
-    host_app = FastAPI(title="GPT-RAG UI host")
+    @asynccontextmanager
+    async def _host_lifespan(_: FastAPI) -> AsyncIterator[None]:
+        try:
+            yield
+        finally:
+            if chainlit_handlers.CHAT_BACKEND == "hosted_agent":
+                from hosted_agent_client import close_hosted_agent_client
+
+                await close_hosted_agent_client()
+
+    host_app = FastAPI(title="GPT-RAG UI host", lifespan=_host_lifespan)
     if embed_settings.enabled:
         from embed_security import (
             configure_copilot_bridge_guards,

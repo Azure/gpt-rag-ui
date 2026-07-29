@@ -1,783 +1,649 @@
-"""
-Contract tests for hosted_agent_client.py.
-
-All SSE frames use the actual ``/invocations`` Responses contract from the
-hosted orchestrator (``response.created``, ``response.output_text.delta``,
-``response.output_text.annotation.added``,
-``response.function_call_arguments.delta/.done``,
-``response.completed``, ``response.cancelled``, ``error``).
-
-Coverage:
-- Config validation (URL, required scope)
-- SSE parsing (_parse_sse_block / _iter_sse_events)
-- InvocationRequest shape (messages, conversation_id, metadata)
-- Two-turn conversation continuity via managed conversation_id
-- Text delta streaming
-- Citation annotation events
-- Tool-call delta / done activity
-- Successful completion (response.completed)
-- Cancellation (response.cancelled)
-- Error event (error)
-- HTTP error response
-- Auth fail-fast: missing scope raises before sending request
-- Auth fail-fast: token acquisition failure raises before sending request
-- Managed-identity token used in Authorization header (not user token)
-- User access token never forwarded
-- No automatic fallback to classic orchestrator path
-"""
 import asyncio
 import json
 import os
 import unittest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
+import httpx
+from azure.core.credentials import AccessToken
+from azure.core.exceptions import ClientAuthenticationError
+
+from chat_backend import resolve_chat_backend, select_upload_conversation_id
 from hosted_agent_client import (
+    HostedAgentAuthenticationError,
+    HostedAgentCancelledError,
+    HostedAgentClient,
     HostedAgentConfigError,
-    HostedAgentEvent,
-    _iter_sse_events,
+    HostedAgentHTTPError,
+    HostedAgentProtocolError,
+    HostedAgentResponseError,
+    HostedAgentSettings,
+    InvocationMessage,
     _parse_sse_block,
-    call_hosted_agent_stream,
-    validate_hosted_agent_config,
+    build_invocation_messages,
+    load_hosted_agent_settings,
 )
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+def _frame(event_type: str, data: dict) -> str:
+    return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
 
 
-def _run(coro):
-    return asyncio.run(coro)
-
-
-async def _collect(gen):
-    """Drain an async generator into a list of (text, meta) pairs.
-
-    Exceptions are captured as ``("__exc__", <exception>)`` tuples so callers
-    can assert on error cases without the test runner swallowing the exception.
-    """
-    results = []
-    try:
-        async for item in gen:
-            results.append(item)
-    except Exception as exc:
-        results.append(("__exc__", exc))
-    return results
-
-
-def _sse(event_type: str, data: dict) -> str:
-    """Build a single SSE block (without the trailing double newline)."""
-    return f"event: {event_type}\ndata: {json.dumps(data)}"
-
-
-def _sse_body(*blocks: str) -> str:
-    """Join SSE blocks with the required blank-line separator."""
-    return "\n\n".join(blocks) + "\n\n"
-
-
-def _mock_response(body: str, status_code: int = 200):
-    """Mock httpx.Response that streams *body* as SSE text."""
-    resp = MagicMock()
-    resp.status_code = status_code
-    resp.reason_phrase = "OK" if status_code < 400 else "Error"
-
-    async def _aiter_text():
-        yield body
-
-    resp.aiter_text = _aiter_text
-
-    async def _aread():
-        return body.encode()
-
-    resp.aread = _aread
-    return resp
-
-
-def _make_stream_cm(body: str, status_code: int = 200):
-    """Build a mock httpx.AsyncClient context manager that yields *body*."""
-    resp = _mock_response(body, status_code)
-
-    stream_cm = MagicMock()
-    stream_cm.__aenter__ = AsyncMock(return_value=resp)
-    stream_cm.__aexit__ = AsyncMock(return_value=False)
-
-    client = MagicMock()
-    client.stream = MagicMock(return_value=stream_cm)
-
-    client_cm = MagicMock()
-    client_cm.__aenter__ = AsyncMock(return_value=client)
-    client_cm.__aexit__ = AsyncMock(return_value=False)
-
-    return client_cm
-
-
-def _patch_env(url="https://agent.example.com"):
-    return patch.dict(
-        os.environ,
-        {"HOSTED_AGENT_BASE_URL": url, "HOSTED_AGENT_RESOURCE_SCOPE": "api://agent/.default"},
-        clear=False,
+def _created(conversation_id: str) -> str:
+    return _frame(
+        "response.created",
+        {
+            "type": "response.created",
+            "response": {
+                "id": "resp_123",
+                "object": "response",
+                "status": "in_progress",
+                "conversation_id": conversation_id,
+                "output": [],
+            },
+        },
     )
 
 
-def _patch_credential(token: str = "mi-token"):
-    """Patch _get_credential so token acquisition succeeds without network."""
-    mock_cred = MagicMock()
-    mock_cred.get_token = MagicMock(return_value=MagicMock(token=token))
-    return patch("hosted_agent_client._get_credential", return_value=mock_cred)
-
-
-# ---------------------------------------------------------------------------
-# Config validation
-# ---------------------------------------------------------------------------
-
-
-class TestValidateHostedAgentConfig(unittest.TestCase):
-    def test_raises_when_url_missing(self):
-        with (
-            patch.dict(os.environ, {"HOSTED_AGENT_RESOURCE_SCOPE": "api://x/.default"}, clear=True),
-            patch("hosted_agent_client.config") as cfg,
-        ):
-            cfg.get.return_value = None
-            with self.assertRaises(HostedAgentConfigError) as ctx:
-                validate_hosted_agent_config()
-        self.assertIn("HOSTED_AGENT_BASE_URL", str(ctx.exception))
-
-    def test_raises_when_url_not_absolute_http(self):
-        with patch.dict(
-            os.environ,
-            {"HOSTED_AGENT_BASE_URL": "not-a-url", "HOSTED_AGENT_RESOURCE_SCOPE": "api://x/.default"},
-            clear=True,
-        ):
-            with self.assertRaises(HostedAgentConfigError) as ctx:
-                validate_hosted_agent_config()
-        self.assertIn("absolute HTTP", str(ctx.exception))
-
-    def test_raises_when_scope_missing(self):
-        """Scope is required; ARM default is explicitly rejected."""
-        with patch.dict(
-            os.environ,
-            {"HOSTED_AGENT_BASE_URL": "https://agent.example.com"},
-            clear=True,
-        ):
-            with patch("hosted_agent_client.config") as cfg:
-                cfg.get.return_value = None
-                with self.assertRaises(HostedAgentConfigError) as ctx:
-                    validate_hosted_agent_config()
-        self.assertIn("HOSTED_AGENT_RESOURCE_SCOPE", str(ctx.exception))
-
-    def test_accepts_https_url_with_scope(self):
-        with patch.dict(
-            os.environ,
-            {
-                "HOSTED_AGENT_BASE_URL": "https://agent.example.com",
-                "HOSTED_AGENT_RESOURCE_SCOPE": "api://agent/.default",
+def _completed() -> str:
+    return _frame(
+        "response.completed",
+        {
+            "type": "response.completed",
+            "response": {
+                "id": "resp_123",
+                "object": "response",
+                "status": "completed",
             },
-            clear=True,
-        ):
-            validate_hosted_agent_config()  # must not raise
+        },
+    )
 
-    def test_accepts_http_url_with_scope(self):
-        with patch.dict(
-            os.environ,
-            {
-                "HOSTED_AGENT_BASE_URL": "http://localhost:8000",
-                "HOSTED_AGENT_RESOURCE_SCOPE": "api://agent/.default",
-            },
-            clear=True,
-        ):
-            validate_hosted_agent_config()  # must not raise
 
-    def test_reads_url_from_app_configuration(self):
+class StubCredential:
+    def __init__(self, token: str = "server-data-plane-token", error=None):
+        self.token = token
+        self.error = error
+        self.scopes: list[tuple[str, ...]] = []
+        self.closed = False
+
+    async def get_token(self, *scopes: str, **_kwargs) -> AccessToken:
+        self.scopes.append(scopes)
+        if self.error:
+            raise self.error
+        return AccessToken(self.token, 4_102_444_800)
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class TestConfiguration(unittest.TestCase):
+    def _load(self, values: dict[str, str]):
+        def get_value(key, default=None, _type=str):
+            return values.get(key, default)
+
         with (
-            patch.dict(os.environ, {"HOSTED_AGENT_RESOURCE_SCOPE": "api://x/.default"}, clear=True),
-            patch("hosted_agent_client.config") as cfg,
+            patch.dict(os.environ, {}, clear=True),
+            patch("hosted_agent_client.config.get", side_effect=get_value),
         ):
-            cfg.get.return_value = "https://agent.example.com"
-            validate_hosted_agent_config()  # must not raise
+            return load_hosted_agent_settings()
+
+    def test_requires_endpoint(self):
+        with self.assertRaisesRegex(HostedAgentConfigError, "HOSTED_AGENT_BASE_URL"):
+            self._load(
+                {"HOSTED_AGENT_RESOURCE_SCOPE": "https://ai.azure.com/.default"}
+            )
+
+    def test_requires_explicit_data_plane_scope(self):
+        with self.assertRaisesRegex(
+            HostedAgentConfigError, "HOSTED_AGENT_RESOURCE_SCOPE"
+        ):
+            self._load({"HOSTED_AGENT_BASE_URL": "https://agent.example.com"})
+
+    def test_rejects_arm_scope(self):
+        with self.assertRaisesRegex(HostedAgentConfigError, "not Azure ARM"):
+            self._load(
+                {
+                    "HOSTED_AGENT_BASE_URL": "https://agent.example.com",
+                    "HOSTED_AGENT_RESOURCE_SCOPE": "https://management.azure.com/.default",
+                }
+            )
+
+    def test_rejects_unbounded_idle_timeout(self):
+        with self.assertRaisesRegex(HostedAgentConfigError, "finite positive"):
+            self._load(
+                {
+                    "HOSTED_AGENT_BASE_URL": "https://agent.example.com",
+                    "HOSTED_AGENT_RESOURCE_SCOPE": "https://ai.azure.com/.default",
+                    "HOSTED_AGENT_SSE_IDLE_TIMEOUT_SECONDS": "inf",
+                }
+            )
+
+    def test_loads_valid_settings_and_invocations_url(self):
+        settings = self._load(
+            {
+                "HOSTED_AGENT_BASE_URL": "https://agent.example.com/protocol",
+                "HOSTED_AGENT_RESOURCE_SCOPE": "api://hosted-agent/.default",
+                "HOSTED_AGENT_SSE_IDLE_TIMEOUT_SECONDS": "45",
+            }
+        )
+        self.assertEqual(
+            settings.invocations_url,
+            "https://agent.example.com/protocol/invocations",
+        )
+        self.assertEqual(settings.resource_scope, "api://hosted-agent/.default")
+        self.assertEqual(settings.idle_timeout_seconds, 45.0)
 
 
-# ---------------------------------------------------------------------------
-# SSE parsing — _parse_sse_block
-# ---------------------------------------------------------------------------
+class TestBackendSelection(unittest.TestCase):
+    def test_classic_is_the_default(self):
+        self.assertEqual(resolve_chat_backend(None), "orchestrator")
+
+    def test_hosted_mode_is_explicit(self):
+        self.assertEqual(resolve_chat_backend(" hosted_agent "), "hosted_agent")
+
+    def test_unknown_backend_fails_instead_of_falling_back(self):
+        with self.assertRaisesRegex(RuntimeError, "Unknown CHAT_BACKEND"):
+            resolve_chat_backend("hosted-or-classic")
+
+    def test_hosted_upload_uses_only_runtime_managed_conversation_id(self):
+        self.assertEqual(
+            select_upload_conversation_id(
+                "hosted_agent",
+                classic_conversation_id="fabricated-chainlit-id",
+                hosted_conversation_id="managed-conversation-id",
+            ),
+            "managed-conversation-id",
+        )
+
+    def test_new_hosted_upload_never_uses_classic_thread_id(self):
+        self.assertEqual(
+            select_upload_conversation_id(
+                "hosted_agent",
+                classic_conversation_id="fabricated-chainlit-id",
+                hosted_conversation_id="",
+            ),
+            "",
+        )
 
 
-class TestParseSseBlock(unittest.TestCase):
-    def test_returns_none_for_empty_block(self):
-        self.assertIsNone(_parse_sse_block(""))
+class TestInvocationMessages(unittest.TestCase):
+    def test_preserves_order_and_current_user_ask(self):
+        history = [
+            {"role": "user", "content": "first question"},
+            {"role": "assistant", "content": "first answer"},
+            {"role": "user", "content": "follow-up"},
+        ]
+        messages = build_invocation_messages(history, "follow-up")
+        self.assertEqual([item.to_payload() for item in messages], history)
 
-    def test_parses_response_output_text_delta(self):
-        block = 'event: response.output_text.delta\ndata: {"delta": "Hello"}'
-        event = _parse_sse_block(block)
+    def test_appends_current_ask_when_chat_context_does_not_include_it(self):
+        messages = build_invocation_messages(
+            [{"role": "user", "content": "first"}],
+            "second",
+        )
+        self.assertEqual(
+            [item.to_payload() for item in messages],
+            [
+                {"role": "user", "content": "first"},
+                {"role": "user", "content": "second"},
+            ],
+        )
+
+    def test_rejects_non_runtime_roles(self):
+        with self.assertRaisesRegex(HostedAgentProtocolError, "unsupported role"):
+            build_invocation_messages(
+                [{"role": "system", "content": "untrusted"}],
+                "hello",
+            )
+
+
+class TestSseParsing(unittest.TestCase):
+    def test_parses_real_response_delta(self):
+        event = _parse_sse_block(
+            'event: response.output_text.delta\n'
+            'data: {"type":"response.output_text.delta","delta":"hello"}'
+        )
         self.assertIsNotNone(event)
         self.assertEqual(event.event_type, "response.output_text.delta")
-        self.assertEqual(event.data, {"delta": "Hello"})
+        self.assertEqual(event.data["delta"], "hello")
 
-    def test_parses_response_created(self):
-        block = 'event: response.created\ndata: {"conversation_id": "conv-1"}'
-        event = _parse_sse_block(block)
-        self.assertIsNotNone(event)
-        self.assertEqual(event.event_type, "response.created")
-        self.assertEqual(event.data.get("conversation_id"), "conv-1")
-
-    def test_parses_response_completed(self):
-        block = 'event: response.completed\ndata: {"conversation_id": "conv-1"}'
-        event = _parse_sse_block(block)
-        self.assertIsNotNone(event)
+    def test_uses_data_type_when_event_field_is_absent(self):
+        event = _parse_sse_block(
+            'data: {"type":"response.completed","response":{"status":"completed"}}'
+        )
         self.assertEqual(event.event_type, "response.completed")
 
-    def test_handles_invalid_json_gracefully(self):
-        block = "event: error\ndata: not json"
-        event = _parse_sse_block(block)
-        self.assertIsNotNone(event)
-        self.assertEqual(event.event_type, "error")
-        self.assertIn("raw", event.data)
-
-    def test_data_only_block_uses_unknown_type(self):
-        block = 'data: {"foo": "bar"}'
-        event = _parse_sse_block(block)
-        self.assertIsNotNone(event)
-        self.assertEqual(event.event_type, "unknown")
-
-    def test_empty_data_produces_empty_dict(self):
-        block = "event: response.completed"
-        event = _parse_sse_block(block)
-        self.assertIsNotNone(event)
-        self.assertEqual(event.event_type, "response.completed")
-        self.assertEqual(event.data, {})
+    def test_invalid_json_is_a_protocol_error(self):
+        with self.assertRaises(HostedAgentProtocolError):
+            _parse_sse_block("event: error\ndata: not-json")
 
 
-# ---------------------------------------------------------------------------
-# SSE iteration — _iter_sse_events
-# ---------------------------------------------------------------------------
+class TestHostedAgentClient(unittest.IsolatedAsyncioTestCase):
+    settings = HostedAgentSettings(
+        base_url="https://agent.example.com/protocol",
+        resource_scope="api://hosted-agent/.default",
+        idle_timeout_seconds=12.0,
+    )
 
+    async def _client_for_body(
+        self,
+        body: str,
+        *,
+        status_code: int = 200,
+        content_type: str = "text/event-stream",
+        credential: StubCredential | None = None,
+        capture: list[dict] | None = None,
+    ) -> HostedAgentClient:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            if capture is not None:
+                capture.append(
+                    {
+                        "method": request.method,
+                        "url": str(request.url),
+                        "headers": dict(request.headers),
+                        "json": json.loads((await request.aread()).decode()),
+                    }
+                )
+            return httpx.Response(
+                status_code,
+                headers={"content-type": content_type},
+                content=body.encode(),
+            )
 
-class TestIterSseEvents(unittest.TestCase):
-    def test_yields_events_from_well_formed_sse(self):
-        body = _sse_body(
-            _sse("response.output_text.delta", {"delta": "Hello "}),
-            _sse("response.output_text.delta", {"delta": "world"}),
-            _sse("response.completed", {"conversation_id": "c1"}),
-        )
-        resp = _mock_response(body)
-
-        async def _c():
-            return [e async for e in _iter_sse_events(resp)]
-
-        events = _run(_c())
-        self.assertEqual(len(events), 3)
-        self.assertEqual(events[0].event_type, "response.output_text.delta")
-        self.assertEqual(events[0].data["delta"], "Hello ")
-        self.assertEqual(events[2].event_type, "response.completed")
-
-    def test_skips_comment_lines(self):
-        body = ": keep-alive\n\n" + _sse("response.completed", {}) + "\n\n"
-        resp = _mock_response(body)
-
-        async def _c():
-            return [e async for e in _iter_sse_events(resp)]
-
-        events = _run(_c())
-        self.assertEqual(len(events), 1)
-        self.assertEqual(events[0].event_type, "response.completed")
-
-    def test_handles_trailing_block_without_final_blank_line(self):
-        body = _sse("response.output_text.delta", {"delta": "hi"})  # no trailing \n\n
-        resp = _mock_response(body)
-
-        async def _c():
-            return [e async for e in _iter_sse_events(resp)]
-
-        events = _run(_c())
-        self.assertEqual(len(events), 1)
-        self.assertEqual(events[0].data["delta"], "hi")
-
-
-# ---------------------------------------------------------------------------
-# InvocationRequest shape
-# ---------------------------------------------------------------------------
-
-
-class TestInvocationRequestShape(unittest.TestCase):
-    """Verify that call_hosted_agent_stream sends the correct request body."""
-
-    def _capture_payload_cm(self, body: str):
-        """Build a client mock that captures the JSON payload sent."""
-        captured = {}
-        resp = _mock_response(body)
-
-        stream_cm = MagicMock()
-        stream_cm.__aenter__ = AsyncMock(return_value=resp)
-        stream_cm.__aexit__ = AsyncMock(return_value=False)
-
-        def _stream(method, url, json, headers):  # noqa: A002
-            captured.update(json)
-            return stream_cm
-
-        client = MagicMock()
-        client.stream = MagicMock(side_effect=_stream)
-
-        client_cm = MagicMock()
-        client_cm.__aenter__ = AsyncMock(return_value=client)
-        client_cm.__aexit__ = AsyncMock(return_value=False)
-
-        return client_cm, captured
-
-    def test_messages_array_contains_user_turn(self):
-        body = _sse_body(_sse("response.completed", {}))
-        client_cm, captured = self._capture_payload_cm(body)
-        with _patch_env(), _patch_credential(), patch("httpx.AsyncClient", return_value=client_cm):
-            _run(_collect(call_hosted_agent_stream("", "What is RAG?", {}, "q-1")))
-
-        self.assertIn("messages", captured)
-        self.assertEqual(len(captured["messages"]), 1)
-        self.assertEqual(captured["messages"][0]["role"], "user")
-        self.assertEqual(captured["messages"][0]["content"], "What is RAG?")
-
-    def test_conversation_id_included_when_continuing(self):
-        body = _sse_body(_sse("response.completed", {}))
-        client_cm, captured = self._capture_payload_cm(body)
-        with _patch_env(), _patch_credential(), patch("httpx.AsyncClient", return_value=client_cm):
-            _run(_collect(call_hosted_agent_stream("conv-abc", "follow-up", {}, "q-2")))
-
-        self.assertEqual(captured.get("conversation_id"), "conv-abc")
-
-    def test_conversation_id_absent_for_new_conversation(self):
-        body = _sse_body(_sse("response.completed", {}))
-        client_cm, captured = self._capture_payload_cm(body)
-        with _patch_env(), _patch_credential(), patch("httpx.AsyncClient", return_value=client_cm):
-            _run(_collect(call_hosted_agent_stream("", "new question", {}, "q-3")))
-
-        self.assertNotIn("conversation_id", captured)
-
-    def test_metadata_contains_question_id(self):
-        body = _sse_body(_sse("response.completed", {}))
-        client_cm, captured = self._capture_payload_cm(body)
-        with _patch_env(), _patch_credential(), patch("httpx.AsyncClient", return_value=client_cm):
-            _run(_collect(call_hosted_agent_stream("", "hi", {}, "q-xyz")))
-
-        self.assertEqual(captured.get("metadata", {}).get("question_id"), "q-xyz")
-
-    def test_no_legacy_fields_in_payload(self):
-        """question, ask, thread_id, client_principal_* must not appear."""
-        body = _sse_body(_sse("response.completed", {}))
-        client_cm, captured = self._capture_payload_cm(body)
-        auth_info = {"client_principal_id": "u1", "client_principal_name": "alice"}
-        with _patch_env(), _patch_credential(), patch("httpx.AsyncClient", return_value=client_cm):
-            _run(_collect(call_hosted_agent_stream("", "hi", auth_info, "q-1")))
-
-        for forbidden in ("question", "ask", "thread_id", "client_principal_id", "client_principal_name"):
-            self.assertNotIn(forbidden, captured, f"'{forbidden}' must not appear in payload")
-
-    def test_invocations_endpoint_used(self):
-        """Endpoint must be /invocations, not /chat."""
-        body = _sse_body(_sse("response.completed", {}))
-        captured_urls = []
-
-        resp = _mock_response(body)
-        stream_cm = MagicMock()
-        stream_cm.__aenter__ = AsyncMock(return_value=resp)
-        stream_cm.__aexit__ = AsyncMock(return_value=False)
-
-        def _stream(method, url, json, headers):  # noqa: A002
-            captured_urls.append(url)
-            return stream_cm
-
-        client = MagicMock()
-        client.stream = MagicMock(side_effect=_stream)
-        client_cm = MagicMock()
-        client_cm.__aenter__ = AsyncMock(return_value=client)
-        client_cm.__aexit__ = AsyncMock(return_value=False)
-
-        with _patch_env(), _patch_credential(), patch("httpx.AsyncClient", return_value=client_cm):
-            _run(_collect(call_hosted_agent_stream("", "hi", {}, "q-1")))
-
-        self.assertTrue(
-            any("/invocations" in u for u in captured_urls),
-            f"Expected /invocations in URL, got: {captured_urls}",
-        )
-        self.assertFalse(
-            any("/chat" in u for u in captured_urls),
-            "/chat must not be used",
+        http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        self.addAsyncCleanup(http_client.aclose)
+        return HostedAgentClient(
+            self.settings,
+            credential=credential or StubCredential(),
+            http_client=http_client,
         )
 
+    async def _collect(self, client: HostedAgentClient, messages, **kwargs):
+        return [item async for item in client.stream(messages, **kwargs)]
 
-# ---------------------------------------------------------------------------
-# Responses SSE contract — call_hosted_agent_stream
-# ---------------------------------------------------------------------------
-
-
-class TestResponsesSSEContract(unittest.TestCase):
-
-    # -- response.created / conversation_id continuity -----------------------
-
-    def test_response_created_yields_conversation_id(self):
-        body = _sse_body(
-            _sse("response.created", {"conversation_id": "srv-conv-1"}),
-            _sse("response.output_text.delta", {"delta": "Hi"}),
-            _sse("response.completed", {}),
+    async def test_real_frames_surface_text_citation_tool_and_completion(self):
+        body = (
+            _created("conv-managed")
+            + _frame(
+                "response.output_item.added",
+                {
+                    "type": "response.output_item.added",
+                    "response_id": "resp_123",
+                    "output_index": 0,
+                    "item": {
+                        "id": "item_123",
+                        "type": "message",
+                        "role": "assistant",
+                        "status": "in_progress",
+                        "content": [],
+                    },
+                },
+            )
+            + _frame(
+                "response.content_part.added",
+                {
+                    "type": "response.content_part.added",
+                    "item_id": "item_123",
+                    "output_index": 0,
+                    "content_index": 0,
+                    "part": {"type": "output_text", "text": ""},
+                },
+            )
+            + _frame(
+                "response.output_text.delta",
+                {
+                    "type": "response.output_text.delta",
+                    "item_id": "item_123",
+                    "output_index": 0,
+                    "content_index": 0,
+                    "delta": "Hello ",
+                },
+            )
+            + _frame(
+                "response.output_text.annotation.added",
+                {
+                    "type": "response.output_text.annotation.added",
+                    "item_id": "item_123",
+                    "output_index": 0,
+                    "content_index": 0,
+                    "annotation": {
+                        "type": "url_citation",
+                        "citation_id": "src-1",
+                        "title": "Policy",
+                        "url": "documents/policy.pdf",
+                        "snippet": "Relevant text",
+                    },
+                },
+            )
+            + _frame(
+                "response.function_call_arguments.delta",
+                {
+                    "type": "response.function_call_arguments.delta",
+                    "call_id": "call-1",
+                    "name": "search",
+                    "delta": "",
+                    "status": "started",
+                },
+            )
+            + _frame(
+                "response.function_call_arguments.done",
+                {
+                    "type": "response.function_call_arguments.done",
+                    "call_id": "call-1",
+                    "name": "search",
+                    "status": "completed",
+                },
+            )
+            + _frame(
+                "response.output_text.delta",
+                {
+                    "type": "response.output_text.delta",
+                    "item_id": "item_123",
+                    "output_index": 0,
+                    "content_index": 0,
+                    "delta": "world",
+                },
+            )
+            + _completed()
         )
-        with _patch_env(), _patch_credential(), patch("httpx.AsyncClient", return_value=_make_stream_cm(body)):
-            results = _run(_collect(call_hosted_agent_stream("", "hello", {}, "q-1")))
-
-        meta_events = [r for r in results if not r[0] and r[1]]
-        self.assertTrue(
-            any(m[1].get("conversation_id") == "srv-conv-1" for m in meta_events),
-            "response.created must yield conversation_id",
-        )
-
-    def test_two_turn_continuity(self):
-        """Turn 1 establishes conversation_id; Turn 2 resends it."""
-        body_t1 = _sse_body(
-            _sse("response.created", {"conversation_id": "mgd-conv-99"}),
-            _sse("response.output_text.delta", {"delta": "Turn 1 answer"}),
-            _sse("response.completed", {"conversation_id": "mgd-conv-99"}),
-        )
-        captured_t2 = {}
-
-        # ---- Turn 1 ----
-        with _patch_env(), _patch_credential(), patch("httpx.AsyncClient", return_value=_make_stream_cm(body_t1)):
-            results_t1 = _run(_collect(call_hosted_agent_stream("", "turn 1", {}, "q-t1")))
-
-        # Extract conversation_id surfaced by Turn 1.
-        conv_id = None
-        for text, meta in results_t1:
-            if meta.get("conversation_id"):
-                conv_id = meta["conversation_id"]
-
-        self.assertEqual(conv_id, "mgd-conv-99")
-
-        # ---- Turn 2 ----
-        body_t2 = _sse_body(_sse("response.completed", {}))
-        resp = _mock_response(body_t2)
-        stream_cm = MagicMock()
-        stream_cm.__aenter__ = AsyncMock(return_value=resp)
-        stream_cm.__aexit__ = AsyncMock(return_value=False)
-
-        def _stream(method, url, json, headers):  # noqa: A002
-            captured_t2.update(json)
-            return stream_cm
-
-        client = MagicMock()
-        client.stream = MagicMock(side_effect=_stream)
-        client_cm = MagicMock()
-        client_cm.__aenter__ = AsyncMock(return_value=client)
-        client_cm.__aexit__ = AsyncMock(return_value=False)
-
-        with _patch_env(), _patch_credential(), patch("httpx.AsyncClient", return_value=client_cm):
-            _run(_collect(call_hosted_agent_stream(conv_id, "turn 2", {}, "q-t2")))
-
-        self.assertEqual(captured_t2.get("conversation_id"), "mgd-conv-99")
-
-    # -- text deltas ----------------------------------------------------------
-
-    def test_text_deltas_are_yielded(self):
-        body = _sse_body(
-            _sse("response.output_text.delta", {"delta": "Hello "}),
-            _sse("response.output_text.delta", {"delta": "world"}),
-            _sse("response.completed", {}),
-        )
-        with _patch_env(), _patch_credential(), patch("httpx.AsyncClient", return_value=_make_stream_cm(body)):
-            results = _run(_collect(call_hosted_agent_stream("c1", "Hi", {}, "q-1")))
-
-        texts = [r[0] for r in results if r[0]]
-        self.assertEqual(texts, ["Hello ", "world"])
-
-    def test_empty_delta_not_yielded(self):
-        body = _sse_body(
-            _sse("response.output_text.delta", {"delta": ""}),
-            _sse("response.completed", {}),
-        )
-        with _patch_env(), _patch_credential(), patch("httpx.AsyncClient", return_value=_make_stream_cm(body)):
-            results = _run(_collect(call_hosted_agent_stream("c1", "Hi", {}, "q-1")))
-
-        texts = [r[0] for r in results if r[0]]
-        self.assertEqual(texts, [])
-
-    # -- response.completed ---------------------------------------------------
-
-    def test_response_completed_stops_stream(self):
-        body = _sse_body(
-            _sse("response.output_text.delta", {"delta": "answer"}),
-            _sse("response.completed", {"conversation_id": "c-fin"}),
-            _sse("response.output_text.delta", {"delta": "should not appear"}),
-        )
-        with _patch_env(), _patch_credential(), patch("httpx.AsyncClient", return_value=_make_stream_cm(body)):
-            results = _run(_collect(call_hosted_agent_stream("c-fin", "Hi", {}, "q-1")))
-
-        texts = [r[0] for r in results if r[0]]
-        self.assertEqual(texts, ["answer"])
-        exc_items = [r for r in results if r[0] == "__exc__"]
-        self.assertEqual(exc_items, [])
-
-    def test_response_completed_yields_conversation_id(self):
-        body = _sse_body(
-            _sse("response.completed", {"conversation_id": "c-done"}),
-        )
-        with _patch_env(), _patch_credential(), patch("httpx.AsyncClient", return_value=_make_stream_cm(body)):
-            results = _run(_collect(call_hosted_agent_stream("c-done", "Hi", {}, "q-1")))
-
-        meta_events = [r for r in results if not r[0] and r[1]]
-        self.assertTrue(
-            any(m[1].get("conversation_id") == "c-done" for m in meta_events),
+        capture: list[dict] = []
+        credential = StubCredential()
+        client = await self._client_for_body(
+            body,
+            credential=credential,
+            capture=capture,
         )
 
-    # -- response.cancelled ---------------------------------------------------
-
-    def test_response_cancelled_stops_stream_cleanly(self):
-        body = _sse_body(
-            _sse("response.output_text.delta", {"delta": "partial"}),
-            _sse("response.cancelled", {}),
-            _sse("response.output_text.delta", {"delta": "should not appear"}),
+        results = await self._collect(
+            client,
+            [InvocationMessage("user", "What is the policy?")],
+            question_id="question-1",
+            correlation_id="correlation-1",
         )
-        with _patch_env(), _patch_credential(), patch("httpx.AsyncClient", return_value=_make_stream_cm(body)):
-            results = _run(_collect(call_hosted_agent_stream("c1", "Hi", {}, "q-1")))
 
-        texts = [r[0] for r in results if r[0]]
-        self.assertEqual(texts, ["partial"])
-        exc_items = [r for r in results if r[0] == "__exc__"]
-        self.assertEqual(exc_items, [])
-
-    # -- error event ----------------------------------------------------------
-
-    def test_error_event_raises_runtime_error(self):
-        body = _sse_body(
-            _sse("error", {"message": "internal failure", "code": "ERR_500"}),
+        self.assertEqual([text for text, _ in results if text], ["Hello ", "world"])
+        self.assertEqual(
+            [meta["conversation_id"] for _, meta in results if meta.get("conversation_id")][0],
+            "conv-managed",
         )
-        with _patch_env(), _patch_credential(), patch("httpx.AsyncClient", return_value=_make_stream_cm(body)):
-            results = _run(_collect(call_hosted_agent_stream("c1", "Hi", {}, "q-1")))
-
-        exc_items = [r for r in results if r[0] == "__exc__"]
-        self.assertEqual(len(exc_items), 1)
-        self.assertIsInstance(exc_items[0][1], RuntimeError)
-        self.assertIn("internal failure", str(exc_items[0][1]))
-
-    # -- citation annotations -------------------------------------------------
-
-    def test_annotation_events_do_not_yield_text(self):
-        body = _sse_body(
-            _sse("response.output_text.annotation.added", {"title": "Source 1", "url": "doc.pdf"}),
-            _sse("response.output_text.delta", {"delta": "answer"}),
-            _sse("response.completed", {}),
+        self.assertEqual(
+            [meta["citation"]["citation_id"] for _, meta in results if meta.get("citation")],
+            ["src-1"],
         )
-        with _patch_env(), _patch_credential(), patch("httpx.AsyncClient", return_value=_make_stream_cm(body)):
-            results = _run(_collect(call_hosted_agent_stream("c1", "Hi", {}, "q-1")))
-
-        texts = [r[0] for r in results if r[0]]
-        self.assertEqual(texts, ["answer"])
-
-    # -- tool call events -----------------------------------------------------
-
-    def test_tool_call_events_do_not_yield_text(self):
-        body = _sse_body(
-            _sse("response.function_call_arguments.delta", {"name": "file_search"}),
-            _sse("response.function_call_arguments.done", {"name": "file_search"}),
-            _sse("response.output_text.delta", {"delta": "result"}),
-            _sse("response.completed", {}),
+        self.assertEqual(
+            [
+                meta["tool_activity"]["event_type"]
+                for _, meta in results
+                if meta.get("tool_activity")
+            ],
+            [
+                "response.function_call_arguments.delta",
+                "response.function_call_arguments.done",
+            ],
         )
-        with _patch_env(), _patch_credential(), patch("httpx.AsyncClient", return_value=_make_stream_cm(body)):
-            results = _run(_collect(call_hosted_agent_stream("c1", "Hi", {}, "q-1")))
-
-        texts = [r[0] for r in results if r[0]]
-        self.assertEqual(texts, ["result"])
-
-    # -- unknown events -------------------------------------------------------
-
-    def test_unknown_events_ignored(self):
-        body = _sse_body(
-            _sse("future.event.v2", {"data": "x"}),
-            _sse("response.output_text.delta", {"delta": "hi"}),
-            _sse("response.completed", {}),
+        self.assertTrue(any(meta.get("completed") for _, meta in results))
+        self.assertEqual(
+            credential.scopes,
+            [("api://hosted-agent/.default",)],
         )
-        with _patch_env(), _patch_credential(), patch("httpx.AsyncClient", return_value=_make_stream_cm(body)):
-            results = _run(_collect(call_hosted_agent_stream("c1", "Hi", {}, "q-1")))
+        self.assertEqual(capture[0]["method"], "POST")
+        self.assertEqual(
+            capture[0]["url"],
+            "https://agent.example.com/protocol/invocations",
+        )
+        self.assertEqual(
+            capture[0]["headers"]["authorization"],
+            "Bearer server-data-plane-token",
+        )
+        self.assertEqual(
+            capture[0]["json"],
+            {
+                "messages": [
+                    {"role": "user", "content": "What is the policy?"}
+                ],
+                "metadata": {
+                    "question_id": "question-1",
+                    "correlation_id": "correlation-1",
+                },
+            },
+        )
 
-        texts = [r[0] for r in results if r[0]]
-        self.assertEqual(texts, ["hi"])
-        exc_items = [r for r in results if r[0] == "__exc__"]
-        self.assertEqual(exc_items, [])
+    async def test_two_turn_continuity_resends_ordered_history_and_only_managed_id(self):
+        captures: list[dict] = []
+        response_bodies = iter(
+            [
+                _created("conv-managed")
+                + _frame(
+                    "response.output_text.delta",
+                    {"type": "response.output_text.delta", "delta": "first answer"},
+                )
+                + _completed(),
+                _created("conv-managed")
+                + _frame(
+                    "response.output_text.delta",
+                    {"type": "response.output_text.delta", "delta": "second answer"},
+                )
+                + _completed(),
+            ]
+        )
 
-    # -- HTTP error response --------------------------------------------------
+        async def handler(request: httpx.Request) -> httpx.Response:
+            captures.append(json.loads((await request.aread()).decode()))
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                content=next(response_bodies).encode(),
+            )
 
-    def test_http_error_raises_runtime_error(self):
-        with _patch_env(), _patch_credential(), patch("httpx.AsyncClient", return_value=_make_stream_cm("{}", 404)):
-            results = _run(_collect(call_hosted_agent_stream("c1", "Hi", {}, "q-1")))
+        http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        self.addAsyncCleanup(http_client.aclose)
+        client = HostedAgentClient(
+            self.settings,
+            credential=StubCredential(),
+            http_client=http_client,
+        )
 
-        exc_items = [r for r in results if r[0] == "__exc__"]
-        self.assertEqual(len(exc_items), 1)
-        self.assertIsInstance(exc_items[0][1], RuntimeError)
-        self.assertIn("404", str(exc_items[0][1]))
+        first = build_invocation_messages(
+            [{"role": "user", "content": "first question"}],
+            "first question",
+        )
+        first_results = await self._collect(
+            client,
+            first,
+            question_id="q-1",
+            correlation_id="corr-1",
+        )
+        conversation_id = next(
+            meta["conversation_id"]
+            for _, meta in first_results
+            if meta.get("conversation_id")
+        )
+        second = build_invocation_messages(
+            [
+                {"role": "user", "content": "first question"},
+                {"role": "assistant", "content": "first answer"},
+                {"role": "user", "content": "follow-up"},
+            ],
+            "follow-up",
+        )
+        await self._collect(
+            client,
+            second,
+            conversation_id=conversation_id,
+            question_id="q-2",
+            correlation_id="corr-2",
+        )
 
-    # -- missing config -------------------------------------------------------
-
-    def test_raises_config_error_when_url_not_configured(self):
-        with (
-            patch.dict(os.environ, {}, clear=False),
-            patch("hosted_agent_client.os.getenv", return_value=None),
-            patch("hosted_agent_client.config") as cfg,
+        self.assertEqual(
+            captures[1],
+            {
+                "messages": [
+                    {"role": "user", "content": "first question"},
+                    {"role": "assistant", "content": "first answer"},
+                    {"role": "user", "content": "follow-up"},
+                ],
+                "conversation_id": "conv-managed",
+                "metadata": {
+                    "question_id": "q-2",
+                    "correlation_id": "corr-2",
+                },
+            },
+        )
+        for forbidden in (
+            "question",
+            "ask",
+            "thread_id",
+            "client_principal_id",
+            "client_principal_name",
+            "access_token",
         ):
-            cfg.get.return_value = None
-            results = _run(_collect(call_hosted_agent_stream("c1", "Hi", {}, "q-1")))
+            self.assertNotIn(forbidden, captures[1])
 
-        exc_items = [r for r in results if r[0] == "__exc__"]
-        self.assertEqual(len(exc_items), 1)
-        self.assertIsInstance(exc_items[0][1], HostedAgentConfigError)
+    async def test_error_frame_raises_typed_error(self):
+        body = _created("conv-1") + _frame(
+            "error",
+            {
+                "type": "error",
+                "code": "tool_failed",
+                "message": "Search failed.",
+                "retryable": True,
+            },
+        )
+        client = await self._client_for_body(body)
+        with self.assertRaises(HostedAgentResponseError) as context:
+            await self._collect(client, [InvocationMessage("user", "hello")])
+        self.assertEqual(context.exception.code, "tool_failed")
+        self.assertTrue(context.exception.retryable)
 
-    # -- no automatic fallback to orchestrator --------------------------------
+    async def test_cancelled_frame_raises_typed_error(self):
+        body = _created("conv-1") + _frame(
+            "response.cancelled",
+            {"type": "response.cancelled", "reason": "client_cancelled"},
+        )
+        client = await self._client_for_body(body)
+        with self.assertRaisesRegex(HostedAgentCancelledError, "client_cancelled"):
+            await self._collect(client, [InvocationMessage("user", "hello")])
 
-    def test_config_error_is_not_swallowed(self):
-        """HostedAgentConfigError must propagate; no silent fallback."""
-        with (
-            patch.dict(os.environ, {}, clear=False),
-            patch("hosted_agent_client.os.getenv", return_value=None),
-            patch("hosted_agent_client.config") as cfg,
-        ):
-            cfg.get.return_value = None
-            results = _run(_collect(call_hosted_agent_stream("", "Hi", {}, "q-1")))
+    async def test_stream_without_terminal_frame_is_rejected(self):
+        body = _created("conv-1") + _frame(
+            "response.output_text.delta",
+            {"type": "response.output_text.delta", "delta": "partial"},
+        )
+        client = await self._client_for_body(body)
+        with self.assertRaisesRegex(HostedAgentProtocolError, "terminal"):
+            await self._collect(client, [InvocationMessage("user", "hello")])
 
-        exc_items = [r for r in results if r[0] == "__exc__"]
-        self.assertGreater(len(exc_items), 0)
-        # Must be a HostedAgentConfigError — not caught and silently retried
-        self.assertIsInstance(exc_items[0][1], HostedAgentConfigError)
+    async def test_non_sse_response_is_rejected(self):
+        client = await self._client_for_body(
+            "{}",
+            content_type="application/json",
+        )
+        with self.assertRaisesRegex(HostedAgentProtocolError, "text/event-stream"):
+            await self._collect(client, [InvocationMessage("user", "hello")])
 
+    async def test_http_error_is_not_retried_or_fallen_back(self):
+        capture: list[dict] = []
+        client = await self._client_for_body(
+            '{"detail":"denied"}',
+            status_code=403,
+            content_type="application/json",
+            capture=capture,
+        )
+        with self.assertRaisesRegex(HostedAgentHTTPError, "403"):
+            await self._collect(client, [InvocationMessage("user", "hello")])
+        self.assertEqual(len(capture), 1)
 
-# ---------------------------------------------------------------------------
-# Auth — fail-fast behaviour
-# ---------------------------------------------------------------------------
+    async def test_token_failure_happens_before_http_request(self):
+        calls = 0
 
+        async def handler(_request: httpx.Request) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            return httpx.Response(500)
 
-class TestAuthFailFast(unittest.TestCase):
-
-    def test_missing_scope_raises_before_sending_request(self):
-        """No request must be sent when HOSTED_AGENT_RESOURCE_SCOPE is absent."""
-        sent = []
-
-        resp = _mock_response(_sse_body(_sse("response.completed", {})))
-        stream_cm = MagicMock()
-        stream_cm.__aenter__ = AsyncMock(return_value=resp)
-        stream_cm.__aexit__ = AsyncMock(return_value=False)
-
-        def _stream(method, url, json, headers):  # noqa: A002
-            sent.append(url)
-            return stream_cm
-
-        client = MagicMock()
-        client.stream = MagicMock(side_effect=_stream)
-        client_cm = MagicMock()
-        client_cm.__aenter__ = AsyncMock(return_value=client)
-        client_cm.__aexit__ = AsyncMock(return_value=False)
-
-        # Scope absent; URL present.
-        with (
-            patch.dict(
-                os.environ,
-                {"HOSTED_AGENT_BASE_URL": "https://agent.example.com"},
-                clear=True,
+        http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        self.addAsyncCleanup(http_client.aclose)
+        client = HostedAgentClient(
+            self.settings,
+            credential=StubCredential(
+                error=ClientAuthenticationError(message="identity unavailable")
             ),
-            patch("hosted_agent_client.config") as cfg,
-            patch("httpx.AsyncClient", return_value=client_cm),
-        ):
-            cfg.get.return_value = None  # scope not in App Configuration either
-            results = _run(_collect(call_hosted_agent_stream("", "Hi", {}, "q-1")))
+            http_client=http_client,
+        )
+        with self.assertRaises(HostedAgentAuthenticationError):
+            await self._collect(client, [InvocationMessage("user", "hello")])
+        self.assertEqual(calls, 0)
 
-        self.assertEqual(sent, [], "No HTTP request should be sent when scope is missing")
-        exc_items = [r for r in results if r[0] == "__exc__"]
-        self.assertEqual(len(exc_items), 1)
-        self.assertIsInstance(exc_items[0][1], HostedAgentConfigError)
+    async def test_read_timeout_propagates(self):
+        class TimeoutStream(httpx.AsyncByteStream):
+            async def __aiter__(self):
+                raise httpx.ReadTimeout("SSE idle timeout reached")
+                yield b""  # pragma: no cover
 
-    def test_token_acquisition_failure_raises_before_sending_request(self):
-        """If the MI token cannot be acquired the request must not be sent."""
-        sent = []
+        async def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                stream=TimeoutStream(),
+            )
 
-        resp = _mock_response(_sse_body(_sse("response.completed", {})))
-        stream_cm = MagicMock()
-        stream_cm.__aenter__ = AsyncMock(return_value=resp)
-        stream_cm.__aexit__ = AsyncMock(return_value=False)
+        http_client = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+            timeout=httpx.Timeout(
+                connect=10,
+                read=self.settings.idle_timeout_seconds,
+                write=30,
+                pool=10,
+            ),
+        )
+        self.addAsyncCleanup(http_client.aclose)
+        client = HostedAgentClient(
+            self.settings,
+            credential=StubCredential(),
+            http_client=http_client,
+        )
+        with self.assertRaisesRegex(httpx.ReadTimeout, "idle timeout"):
+            await self._collect(client, [InvocationMessage("user", "hello")])
 
-        def _stream(method, url, json, headers):  # noqa: A002
-            sent.append(url)
-            return stream_cm
+    async def test_task_cancellation_closes_stream_and_propagates(self):
+        class BlockingStream(httpx.AsyncByteStream):
+            def __init__(self):
+                self.started = asyncio.Event()
+                self.closed = False
 
-        client = MagicMock()
-        client.stream = MagicMock(side_effect=_stream)
-        client_cm = MagicMock()
-        client_cm.__aenter__ = AsyncMock(return_value=client)
-        client_cm.__aexit__ = AsyncMock(return_value=False)
+            async def __aiter__(self):
+                self.started.set()
+                await asyncio.Event().wait()
+                yield b""  # pragma: no cover
 
-        failing_cred = MagicMock()
-        failing_cred.get_token = MagicMock(side_effect=Exception("no identity"))
+            async def aclose(self):
+                self.closed = True
 
-        with (
-            _patch_env(),
-            patch("hosted_agent_client._get_credential", return_value=failing_cred),
-            patch("httpx.AsyncClient", return_value=client_cm),
-        ):
-            results = _run(_collect(call_hosted_agent_stream("", "Hi", {}, "q-1")))
+        stream = BlockingStream()
 
-        self.assertEqual(sent, [], "No HTTP request should be sent after auth failure")
-        exc_items = [r for r in results if r[0] == "__exc__"]
-        self.assertEqual(len(exc_items), 1)
-        self.assertIsInstance(exc_items[0][1], HostedAgentConfigError)
-        self.assertIn("no identity", str(exc_items[0][1]))
+        async def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                stream=stream,
+            )
 
-    def test_managed_identity_token_in_authorization_header(self):
-        body = _sse_body(_sse("response.completed", {}))
-        captured_headers = {}
+        http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        self.addAsyncCleanup(http_client.aclose)
+        client = HostedAgentClient(
+            self.settings,
+            credential=StubCredential(),
+            http_client=http_client,
+        )
+        generator = client.stream([InvocationMessage("user", "hello")])
+        pending = asyncio.create_task(anext(generator))
+        await stream.started.wait()
+        pending.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await pending
+        await generator.aclose()
+        self.assertTrue(stream.closed)
 
-        resp = _mock_response(body)
-        stream_cm = MagicMock()
-        stream_cm.__aenter__ = AsyncMock(return_value=resp)
-        stream_cm.__aexit__ = AsyncMock(return_value=False)
 
-        def _stream(method, url, json, headers):  # noqa: A002
-            captured_headers.update(headers)
-            return stream_cm
-
-        client = MagicMock()
-        client.stream = MagicMock(side_effect=_stream)
-        client_cm = MagicMock()
-        client_cm.__aenter__ = AsyncMock(return_value=client)
-        client_cm.__aexit__ = AsyncMock(return_value=False)
-
-        with (
-            _patch_env(),
-            _patch_credential("server-mi-token"),
-            patch("httpx.AsyncClient", return_value=client_cm),
-        ):
-            _run(_collect(call_hosted_agent_stream("", "Hi", {}, "q-1")))
-
-        self.assertIn("Authorization", captured_headers)
-        self.assertIn("server-mi-token", captured_headers["Authorization"])
-
-    def test_user_access_token_never_forwarded(self):
-        body = _sse_body(_sse("response.completed", {}))
-        captured_headers = {}
-
-        resp = _mock_response(body)
-        stream_cm = MagicMock()
-        stream_cm.__aenter__ = AsyncMock(return_value=resp)
-        stream_cm.__aexit__ = AsyncMock(return_value=False)
-
-        def _stream(method, url, json, headers):  # noqa: A002
-            captured_headers.update(headers)
-            return stream_cm
-
-        client = MagicMock()
-        client.stream = MagicMock(side_effect=_stream)
-        client_cm = MagicMock()
-        client_cm.__aenter__ = AsyncMock(return_value=client)
-        client_cm.__aexit__ = AsyncMock(return_value=False)
-
-        auth_info = {
-            "access_token": "user-delegated-token-must-not-be-forwarded",
-            "client_principal_id": "user-1",
-        }
-
-        with (
-            _patch_env(),
-            _patch_credential(),
-            patch("httpx.AsyncClient", return_value=client_cm),
-        ):
-            _run(_collect(call_hosted_agent_stream("", "Hi", auth_info, "q-1")))
-
-        auth_header = captured_headers.get("Authorization", "")
-        self.assertNotIn("user-delegated-token-must-not-be-forwarded", auth_header)
+if __name__ == "__main__":
+    unittest.main()

@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 import chainlit as cl
 import httpx
 
+from chat_backend import resolve_chat_backend, select_upload_conversation_id
 from orchestrator_client import call_orchestrator_stream
 from feedback import register_feedback_handlers,create_feedback_actions
 from dependencies import get_config
@@ -32,21 +33,12 @@ config = get_config()
 
 Telemetry.configure_monitoring(config, APPLICATION_INSIGHTS_CONNECTION_STRING, APP_NAME)
 
-# ---------------------------------------------------------------------------
-# Chat backend selection — default is 'orchestrator'; 'hosted_agent' activates
-# the GPT-RAG hosted-agent BFF path.  No automatic fallback between backends.
-# ---------------------------------------------------------------------------
-CHAT_BACKEND = (config.get("CHAT_BACKEND", "orchestrator", str) or "orchestrator").strip().lower()
-
-if CHAT_BACKEND not in ("orchestrator", "hosted_agent"):
-    raise RuntimeError(
-        f"Unknown CHAT_BACKEND value: {CHAT_BACKEND!r}. "
-        "Valid values are 'orchestrator' (default) and 'hosted_agent'."
-    )
+CHAT_BACKEND = resolve_chat_backend(config.get("CHAT_BACKEND", "orchestrator", str))
 
 if CHAT_BACKEND == "hosted_agent":
     from hosted_agent_client import (  # noqa: E402
-        HostedAgentConfigError,
+        HostedAgentCancelledError,
+        build_invocation_messages,
         call_hosted_agent_stream,
         validate_hosted_agent_config,
     )
@@ -643,7 +635,8 @@ if ENABLE_FEEDBACK:
 # Chainlit event handlers
 @cl.on_chat_start
 async def on_chat_start():
-    pass
+    if CHAT_BACKEND == "hosted_agent":
+        cl.user_session.set("hosted_agent_conversation_id", "")
     # app_user = cl.user_session.get("user")
     # if app_user:
         # await cl.Message(content=f"Hello {app_user.metadata.get('user_name')}").send()
@@ -659,6 +652,10 @@ async def on_chat_resume(thread: ThreadDict):
         logger.warning("Blocked unauthorized chat resume: thread=%s", thread["id"])
         raise PermissionError("Thread access denied.")
     cl.user_session.set("conversation_id", thread["id"])
+    if CHAT_BACKEND == "hosted_agent":
+        # A Chainlit thread ID is not proof of a runtime-managed conversation.
+        # Ordered history restores context; the runtime will issue a new managed ID.
+        cl.user_session.set("hosted_agent_conversation_id", "")
     logger.info("Chat resumed: thread=%s", thread["id"])
 
 @cl.on_message
@@ -669,7 +666,17 @@ async def handle_message(message: cl.Message):
         message.id = message.id or str(uuid.uuid4())
         conversation_id = cl.user_session.get("conversation_id") or ""
         existing_conversation_id = str(conversation_id).strip()
+        hosted_conversation_id = (
+            str(cl.user_session.get("hosted_agent_conversation_id") or "").strip()
+            if CHAT_BACKEND == "hosted_agent"
+            else ""
+        )
         response_msg = cl.Message(content="")
+        hosted_history = (
+            cl.chat_context.to_openai()
+            if CHAT_BACKEND == "hosted_agent"
+            else None
+        )
 
         def _trim_for_log(value: str, limit: int = 400) -> str:
             clean_value = (value or "").strip().replace("\n", " ")
@@ -761,15 +768,31 @@ async def handle_message(message: cl.Message):
             rejected.extend([f["name"] + " (too many files)" for f in uploaded_files[max_files:]])
             uploaded_files = uploaded_files[:max_files]
 
-        if uploaded_files and existing_conversation_id:
+        upload_conversation_id = select_upload_conversation_id(
+            CHAT_BACKEND,
+            classic_conversation_id=existing_conversation_id,
+            hosted_conversation_id=hosted_conversation_id,
+        )
+        if uploaded_files and not upload_conversation_id and CHAT_BACKEND == "hosted_agent":
+            rejected.extend(
+                f"{file['name']} (start the hosted conversation with a text message first)"
+                for file in uploaded_files
+            )
+            uploaded_files = []
+
+        if (
+            uploaded_files
+            and CHAT_BACKEND == "orchestrator"
+            and upload_conversation_id
+        ):
             owned_conversation = await get_owned_conversation(
-                existing_conversation_id,
+                upload_conversation_id,
                 auth_info,
             )
             if not owned_conversation:
                 logger.warning(
                     "Blocked upload to missing or unauthorized conversation=%s",
-                    existing_conversation_id,
+                    upload_conversation_id,
                 )
                 rejected.extend(
                     f"{file['name']} (conversation access denied)"
@@ -782,9 +805,11 @@ async def handle_message(message: cl.Message):
             file_reply_parts.append(_skip_msg)
             await response_msg.stream_token(_skip_msg)
 
-        if uploaded_files and not (conversation_id or "").strip():
+        if uploaded_files and not upload_conversation_id:
             conversation_id = str(uuid.uuid4())
             cl.user_session.set("conversation_id", conversation_id)
+        elif uploaded_files:
+            conversation_id = upload_conversation_id
 
         if uploaded_files:
             try:
@@ -818,6 +843,21 @@ async def handle_message(message: cl.Message):
                 await response_msg.stream_token(_ok_msg)
 
         user_ask = (message.content or "").strip()
+        if CHAT_BACKEND == "hosted_agent" and not user_ask:
+            final_text = "".join(file_reply_parts).strip()
+            if not final_text:
+                final_text = "Enter a question to start or continue the hosted conversation."
+            if SHOW_STATISTICS:
+                final_text += f"\n\n*\u23f1 {time.time() - handler_start:.2f}s*"
+            response_msg.content = final_text
+            await response_msg.update()
+            logger.info(
+                "Skipping hosted agent (empty ask): conversation=%s question_id=%s",
+                hosted_conversation_id or "new",
+                message.id,
+            )
+            return
+
         if uploaded_files and not user_ask:
             final_text = "".join(file_reply_parts).strip() or "Files received."
             if SHOW_STATISTICS:
@@ -867,29 +907,48 @@ async def handle_message(message: cl.Message):
         chunk_count = 0
 
         if CHAT_BACKEND == "hosted_agent":
-            # ------------------------------------------------------------------
-            # Hosted-agent BFF path (CHAT_BACKEND=hosted_agent)
-            # ------------------------------------------------------------------
+            hosted_messages = build_invocation_messages(
+                hosted_history or [],
+                message.content,
+            )
             logger.info(
                 "Forwarding request to hosted agent: conversation=%s question_id=%s user=%s authorized=%s",
-                conversation_id or "new",
+                hosted_conversation_id or "new",
                 message.id,
                 principal,
                 auth_info.get("authorized"),
             )
 
             generator = call_hosted_agent_stream(
-                conversation_id,
-                message.content,
-                auth_info,
-                message.id,
+                hosted_messages,
+                conversation_id=hosted_conversation_id,
+                question_id=message.id,
+                correlation_id=message.id,
             )
+            hosted_citations: list[dict] = []
 
             try:
                 async for text_chunk, meta in generator:
-                    # Update session state from lifecycle metadata events.
                     if meta.get("conversation_id"):
-                        conversation_id = meta["conversation_id"]
+                        hosted_conversation_id = meta["conversation_id"]
+                        conversation_id = hosted_conversation_id
+                        cl.user_session.set(
+                            "hosted_agent_conversation_id",
+                            hosted_conversation_id,
+                        )
+                    if meta.get("citation"):
+                        hosted_citations.append(meta["citation"])
+                    if meta.get("tool_activity"):
+                        tool = meta["tool_activity"]
+                        logger.info(
+                            "Hosted-agent tool activity: conversation=%s question_id=%s "
+                            "tool=%s status=%s event=%s",
+                            conversation_id or "pending",
+                            message.id,
+                            tool.get("name") or "unknown",
+                            tool.get("status") or "unknown",
+                            tool.get("event_type") or "unknown",
+                        )
 
                     if not text_chunk:
                         continue
@@ -916,6 +975,52 @@ async def handle_message(message: cl.Message):
                     full_text += text_chunk
                     chunk_count += 1
                     await response_msg.stream_token(text_chunk)
+
+                if hosted_citations:
+                    citation_lines: list[str] = []
+                    seen_citations: set[tuple[str, str]] = set()
+                    for citation in hosted_citations:
+                        title = str(
+                            citation.get("title")
+                            or citation.get("citation_id")
+                            or "Source"
+                        )
+                        url = str(citation.get("url") or "")
+                        citation_key = (title, url)
+                        if citation_key in seen_citations:
+                            continue
+                        seen_citations.add(citation_key)
+                        line = f"- [{title}]({url})" if url else f"- {title}"
+                        line = replace_source_reference_links(
+                            line,
+                            references,
+                            conversation_id=conversation_id,
+                            principal_id=str(auth_info.get("principal_id") or ""),
+                            copilot_session_id=str(
+                                auth_info.get("copilot_session_id") or ""
+                            ),
+                        )
+                        if line.strip():
+                            citation_lines.append(line)
+                    if citation_lines:
+                        citation_text = "\n\n### Sources\n" + "\n".join(citation_lines)
+                        full_text += citation_text
+                        await response_msg.stream_token(citation_text)
+
+            except HostedAgentCancelledError as exc:
+                logger.warning(
+                    "Hosted agent cancelled response: conversation=%s question_id=%s reason=%s",
+                    conversation_id or "pending",
+                    message.id,
+                    exc,
+                )
+                user_error_message = (
+                    "The hosted agent cancelled this request. "
+                    "Please retry or contact the application support team and share reference "
+                    f"{message.id}."
+                )
+                full_text = user_error_message
+                await response_msg.stream_token(user_error_message)
 
             except httpx.ConnectError as e:
                 logger.error(
