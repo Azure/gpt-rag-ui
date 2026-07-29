@@ -878,13 +878,11 @@ async def handle_message(message: cl.Message):
                 auth_info.get("authorized"),
             )
 
-            hosted_thread_id: Optional[str] = cl.user_session.get("hosted_agent_thread_id")
             generator = call_hosted_agent_stream(
                 conversation_id,
                 message.content,
                 auth_info,
                 message.id,
-                hosted_thread_id,
             )
 
             try:
@@ -892,8 +890,6 @@ async def handle_message(message: cl.Message):
                     # Update session state from lifecycle metadata events.
                     if meta.get("conversation_id"):
                         conversation_id = meta["conversation_id"]
-                    if meta.get("thread_id"):
-                        cl.user_session.set("hosted_agent_thread_id", meta["thread_id"])
 
                     if not text_chunk:
                         continue

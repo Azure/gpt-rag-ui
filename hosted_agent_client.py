@@ -1,17 +1,18 @@
 """
 Client for the Chainlit hosted-agent BFF path (CHAT_BACKEND=hosted_agent).
 
-Implements server-side streaming over the GPT-RAG hosted orchestrator contract:
-text deltas, citations, tool activity, errors, cancellation, and
-conversation/thread-ID mapping.
+Implements server-side streaming over the GPT-RAG hosted orchestrator
+``/invocations`` Responses contract: conversation continuity, text deltas,
+citations, tool activity, errors, and cancellation.
 
 All credentials are obtained server-side via managed identity; no tokens or
 platform details are ever forwarded from the browser to the backend service.
-Per ADR-0001, only the authenticated identity context (principal ID and name)
-is propagated in the payload — never raw access tokens.
+Per ADR-0001, end-user document authorisation is governed by the Toolbox /
+native identity path — the UI does not assert any caller identity claim.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -31,10 +32,25 @@ from orchestrator_client import (
 logger = logging.getLogger("gpt_rag_ui.hosted_agent_client")
 config = get_config()
 
+# Module-level reusable credential — created once to benefit from the SDK's
+# built-in token cache, avoiding redundant token fetches across requests.
+_credential: Optional[ChainedTokenCredential] = None
+
+
+def _get_credential() -> ChainedTokenCredential:
+    global _credential  # noqa: PLW0603
+    if _credential is None:
+        _credential = ChainedTokenCredential(
+            ManagedIdentityCredential(),
+            AzureCliCredential(),
+        )
+    return _credential
+
 
 # ---------------------------------------------------------------------------
 # Exceptions
 # ---------------------------------------------------------------------------
+
 
 class HostedAgentConfigError(Exception):
     """Raised when the hosted-agent configuration is missing or invalid."""
@@ -43,6 +59,7 @@ class HostedAgentConfigError(Exception):
 # ---------------------------------------------------------------------------
 # Configuration helpers
 # ---------------------------------------------------------------------------
+
 
 def _get_hosted_agent_base_url() -> Optional[str]:
     value = os.getenv("HOSTED_AGENT_BASE_URL")
@@ -58,8 +75,37 @@ def _get_hosted_agent_base_url() -> Optional[str]:
     return None
 
 
+def _get_hosted_agent_scope() -> str:
+    """Return the Azure resource scope for managed-identity token acquisition.
+
+    Unlike the orchestrator client, there is intentionally *no default*: the
+    operator must supply the exact data-plane scope of the deployed
+    hosted-agent service (e.g. ``api://<client-id>/.default``).  Defaulting
+    to the ARM audience would silently issue the wrong token.
+    """
+    value = os.getenv("HOSTED_AGENT_RESOURCE_SCOPE")
+    if value:
+        return value
+    try:
+        value = config.get("HOSTED_AGENT_RESOURCE_SCOPE", None, str)
+    except Exception:
+        pass
+    return value or ""
+
+
+def _get_hosted_agent_api_key() -> str:
+    value = os.getenv("HOSTED_AGENT_APP_APIKEY", "")
+    if value:
+        return value
+    try:
+        value = config.get("HOSTED_AGENT_APP_APIKEY", "", str) or ""
+    except Exception:
+        pass
+    return value
+
+
 def validate_hosted_agent_config() -> None:
-    """Validate that the hosted-agent endpoint is configured.
+    """Validate that the hosted-agent endpoint and scope are configured.
 
     Raises :exc:`HostedAgentConfigError` with a clear, actionable message when
     the configuration is missing or invalid.  Call this at startup whenever
@@ -77,11 +123,19 @@ def validate_hosted_agent_config() -> None:
         raise HostedAgentConfigError(
             f"HOSTED_AGENT_BASE_URL must be an absolute HTTP(S) URL, got: {url!r}"
         )
+    scope = _get_hosted_agent_scope()
+    if not scope:
+        raise HostedAgentConfigError(
+            "HOSTED_AGENT_RESOURCE_SCOPE is required when CHAT_BACKEND=hosted_agent. "
+            "Set it to the data-plane scope of the hosted-agent service "
+            "(e.g. 'api://<client-id>/.default').  The ARM audience is not an accepted default."
+        )
 
 
 # ---------------------------------------------------------------------------
 # SSE parsing
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class HostedAgentEvent:
@@ -137,35 +191,16 @@ async def _iter_sse_events(
 # Auth / headers — server-side only
 # ---------------------------------------------------------------------------
 
-def _get_hosted_agent_scope() -> str:
-    """Return the Azure resource scope for managed-identity token acquisition."""
-    value = os.getenv("HOSTED_AGENT_RESOURCE_SCOPE")
-    if value:
-        return value
-    try:
-        value = config.get("HOSTED_AGENT_RESOURCE_SCOPE", None, str)
-    except Exception:
-        pass
-    return value or "https://management.azure.com/.default"
 
-
-def _get_hosted_agent_api_key() -> str:
-    value = os.getenv("HOSTED_AGENT_APP_APIKEY", "")
-    if value:
-        return value
-    try:
-        value = config.get("HOSTED_AGENT_APP_APIKEY", "", str) or ""
-    except Exception:
-        pass
-    return value
-
-
-def _build_hosted_agent_headers(auth_info: dict) -> dict:  # noqa: ARG001
+async def _build_hosted_agent_headers() -> dict:
     """Build request headers for the hosted-agent endpoint.
 
-    Uses a server-side managed-identity token.  The user's delegated access
-    token is intentionally NOT forwarded — see ADR-0001.  Identity context
-    (principal ID and name) is passed in the request payload instead.
+    Acquires a managed-identity token asynchronously (non-blocking via
+    ``asyncio.to_thread``).
+
+    Raises :exc:`HostedAgentConfigError` immediately if ``HOSTED_AGENT_RESOURCE_SCOPE``
+    is absent or if token acquisition fails — requests are *never* sent
+    unauthenticated or with the wrong audience.
     """
     headers: dict = {
         "Content-Type": "application/json",
@@ -180,22 +215,28 @@ def _build_hosted_agent_headers(auth_info: dict) -> dict:  # noqa: ARG001
     if api_key:
         headers["X-API-KEY"] = api_key
 
-    # Managed-identity token — never a user-delegated or browser-forwarded token.
+    scope = _get_hosted_agent_scope()
+    if not scope:
+        raise HostedAgentConfigError(
+            "HOSTED_AGENT_RESOURCE_SCOPE is required but not configured. "
+            "Set it to the data-plane scope of the hosted-agent service "
+            "(e.g. 'api://<client-id>/.default')."
+        )
+
     try:
-        scope = _get_hosted_agent_scope()
-        credential = ChainedTokenCredential(
-            ManagedIdentityCredential(),
-            AzureCliCredential(),
-        )
-        mi_token = credential.get_token(scope).token
-        headers["Authorization"] = "Bearer " + mi_token
+        credential = _get_credential()
+        # Non-blocking: run the synchronous SDK call in a thread-pool worker.
+        token_response = await asyncio.to_thread(credential.get_token, scope)
+        headers["Authorization"] = "Bearer " + token_response.token
         logger.debug("Hosted-agent: managed identity token acquired (scope=%s)", scope)
-    except Exception:
-        logger.warning(
-            "Hosted-agent: could not acquire managed identity token; "
-            "request may be rejected by the backend",
-            exc_info=True,
-        )
+    except HostedAgentConfigError:
+        raise
+    except Exception as exc:
+        raise HostedAgentConfigError(
+            f"Hosted-agent: could not acquire managed identity token (scope={scope!r}). "
+            "Ensure the deployment has a managed identity with the required role assignment. "
+            f"Original error: {exc}"
+        ) from exc
 
     return headers
 
@@ -204,30 +245,34 @@ def _build_hosted_agent_headers(auth_info: dict) -> dict:  # noqa: ARG001
 # Main streaming entry point
 # ---------------------------------------------------------------------------
 
+
 async def call_hosted_agent_stream(
     conversation_id: str,
     question: str,
-    auth_info: dict,
+    auth_info: dict,  # reserved for future policy enforcement; not forwarded
     question_id: Optional[str] = None,
-    hosted_thread_id: Optional[str] = None,
 ) -> AsyncGenerator[tuple[str, dict], None]:
     """Stream ``(text_chunk, metadata)`` pairs from the hosted orchestrator.
+
+    Calls ``POST /invocations`` with the ``InvocationRequest`` contract:
+    ordered ``messages`` ending in the current user ask, optional managed
+    ``conversation_id``, and ``metadata`` containing correlation identifiers.
 
     Yields:
         ``(text_chunk, metadata)`` where *text_chunk* is a piece of text to
         stream to the user and *metadata* is a (possibly empty) ``dict`` that
         may carry:
 
-        * ``"conversation_id"`` — new or confirmed conversation UUID.
-        * ``"thread_id"`` — hosted-agent thread identifier for session continuity.
+        * ``"conversation_id"`` — server-assigned conversation UUID received
+          from ``response.created`` or ``response.completed``.
 
-    Empty text chunks with non-empty metadata signal lifecycle transitions (e.g.
-    thread creation, stream completion) without visible output.
+    Empty text chunks with non-empty metadata signal lifecycle transitions
+    (conversation creation, stream completion) without visible output.
 
     Raises:
-        :exc:`HostedAgentConfigError`: endpoint not configured.
-        :exc:`RuntimeError`: HTTP error or an explicit ``error`` event from the
-            service.
+        :exc:`HostedAgentConfigError`: endpoint or scope not configured, or
+            managed-identity token acquisition failed (fail-fast, no retries).
+        :exc:`RuntimeError`: HTTP error or an explicit ``error`` SSE event.
         ``httpx.ConnectError`` / ``httpx.TimeoutException``: network failures
             (re-raised so the caller can surface a user-facing message).
     """
@@ -238,27 +283,20 @@ async def call_hosted_agent_stream(
             "Set CHAT_BACKEND=orchestrator or configure HOSTED_AGENT_BASE_URL."
         )
 
-    url = f"{base_url}/chat"
-    headers = _build_hosted_agent_headers(auth_info)
+    url = f"{base_url}/invocations"
+
+    # Fail fast on auth before sending any request.
+    headers = await _build_hosted_agent_headers()
 
     payload: dict = {
-        "conversation_id": conversation_id,
-        "question": question,
-        "ask": question,
+        "messages": [{"role": "user", "content": question}],
+        "metadata": {
+            "question_id": question_id or "",
+        },
     }
-    if question_id:
-        payload["question_id"] = question_id
-    if hosted_thread_id:
-        payload["thread_id"] = hosted_thread_id
-
-    # Propagate only the authenticated identity fields permitted by ADR-0001.
-    # Never forward raw access tokens.
-    principal_id = auth_info.get("client_principal_id") or ""
-    principal_name = auth_info.get("client_principal_name") or ""
-    if principal_id and principal_id != "no-auth":
-        payload["client_principal_id"] = principal_id
-    if principal_name and principal_name != "anonymous":
-        payload["client_principal_name"] = principal_name
+    if conversation_id:
+        payload["conversation_id"] = conversation_id
+        payload["metadata"]["conversation_id"] = conversation_id
 
     logger.info(
         "Invoking hosted agent: question_id=%s conversation_id=%s url=%s headers=%s",
@@ -276,7 +314,10 @@ async def call_hosted_agent_stream(
             ),
         )
 
-    timeout = httpx.Timeout(connect=10.0, read=None, write=30.0, pool=10.0)
+    # Finite idle timeout — 120 s between SSE chunks is generous but bounded.
+    # This propagates cancellation: if the caller task is cancelled while
+    # awaiting a chunk, httpx raises CancelledError through the stream.
+    timeout = httpx.Timeout(connect=10.0, read=120.0, write=30.0, pool=10.0)
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             async with client.stream("POST", url, json=payload, headers=headers) as response:
@@ -296,40 +337,62 @@ async def call_hosted_agent_stream(
                         question_id or "n/a",
                     )
 
-                    if event.event_type == "thread.created":
-                        meta: dict = {}
-                        if event.data.get("conversation_id"):
-                            meta["conversation_id"] = event.data["conversation_id"]
-                        if event.data.get("thread_id"):
-                            meta["thread_id"] = event.data["thread_id"]
-                        yield ("", meta)
+                    if event.event_type == "response.created":
+                        # Server-assigned managed conversation_id.
+                        cid = event.data.get("conversation_id") or event.data.get("id")
+                        if cid:
+                            yield ("", {"conversation_id": cid})
 
-                    elif event.event_type == "text.delta":
-                        value = event.data.get("value", "")
-                        if value:
-                            yield (value, {})
+                    elif event.event_type == "response.output_text.delta":
+                        delta = event.data.get("delta", "")
+                        if delta:
+                            yield (delta, {})
 
-                    elif event.event_type == "annotation":
-                        # Citations are embedded in text deltas by the BFF;
-                        # stand-alone annotation events carry extra metadata only.
+                    elif event.event_type == "response.output_text.annotation.added":
+                        # Citation metadata; inline refs are already embedded in deltas.
                         logger.debug(
-                            "Hosted-agent annotation: title=%s url=%s question_id=%s",
+                            "Hosted-agent citation: title=%s url=%s question_id=%s",
                             event.data.get("title", ""),
                             event.data.get("url", ""),
                             question_id or "n/a",
                         )
 
-                    elif event.event_type == "tool.call":
-                        tool_name = event.data.get("type") or event.data.get("tool", "")
-                        status = event.data.get("status", "")
+                    elif event.event_type == "response.function_call_arguments.delta":
                         logger.info(
-                            "Hosted-agent tool activity: tool=%s status=%s "
-                            "question_id=%s conversation_id=%s",
-                            tool_name,
-                            status,
+                            "Hosted-agent tool call delta: name=%s question_id=%s "
+                            "conversation_id=%s",
+                            event.data.get("name") or event.data.get("tool", ""),
                             question_id or "n/a",
                             conversation_id or "new",
                         )
+
+                    elif event.event_type == "response.function_call_arguments.done":
+                        logger.info(
+                            "Hosted-agent tool call done: name=%s question_id=%s "
+                            "conversation_id=%s",
+                            event.data.get("name") or event.data.get("tool", ""),
+                            question_id or "n/a",
+                            conversation_id or "new",
+                        )
+
+                    elif event.event_type == "response.completed":
+                        meta: dict = {}
+                        # conversation_id may be at top level or inside response object.
+                        cid = event.data.get("conversation_id") or (
+                            (event.data.get("response") or {}).get("id")
+                        )
+                        if cid:
+                            meta["conversation_id"] = cid
+                        yield ("", meta)
+                        return
+
+                    elif event.event_type == "response.cancelled":
+                        logger.warning(
+                            "Hosted-agent stream cancelled: question_id=%s conversation_id=%s",
+                            question_id or "n/a",
+                            conversation_id or "new",
+                        )
+                        return
 
                     elif event.event_type == "error":
                         code = event.data.get("code", "")
@@ -344,26 +407,10 @@ async def call_hosted_agent_stream(
                             f"Hosted agent returned an error: {msg} (code={code})"
                         )
 
-                    elif event.event_type == "cancelled":
-                        logger.warning(
-                            "Hosted-agent stream cancelled: question_id=%s conversation_id=%s",
-                            question_id or "n/a",
-                            conversation_id or "new",
-                        )
-                        return
-
-                    elif event.event_type == "done":
-                        meta = {}
-                        if event.data.get("conversation_id"):
-                            meta["conversation_id"] = event.data["conversation_id"]
-                        if event.data.get("thread_id"):
-                            meta["thread_id"] = event.data["thread_id"]
-                        yield ("", meta)
-                        return
-
                     else:
                         logger.debug(
-                            "Hosted-agent unrecognised event type '%s'; ignoring: question_id=%s",
+                            "Hosted-agent unrecognised event type '%s'; ignoring: "
+                            "question_id=%s",
                             event.event_type,
                             question_id or "n/a",
                         )
