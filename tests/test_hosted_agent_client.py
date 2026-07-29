@@ -391,10 +391,12 @@ class TestHostedAgentClient(unittest.IsolatedAsyncioTestCase):
             capture[0]["url"],
             "https://agent.example.com/protocol/invocations",
         )
+        transmitted_authorization = capture[0]["headers"]["authorization"]
         self.assertEqual(
-            capture[0]["headers"]["authorization"],
-            "Bearer server-data-plane-token",
+            transmitted_authorization,
+            f"Bearer {credential.token}",
         )
+        self.assertNotEqual(transmitted_authorization, "******")
         self.assertEqual(
             capture[0]["json"],
             {
@@ -407,6 +409,24 @@ class TestHostedAgentClient(unittest.IsolatedAsyncioTestCase):
                 },
             },
         )
+
+    async def test_transmits_acquired_data_plane_token_with_bearer_scheme(self):
+        capture: list[dict] = []
+        credential = StubCredential(token="fake-acquired-data-plane-token")
+        client = await self._client_for_body(
+            _created("conv-managed") + _completed(),
+            credential=credential,
+            capture=capture,
+        )
+
+        await self._collect(client, [InvocationMessage("user", "hello")])
+
+        transmitted_authorization = capture[0]["headers"]["authorization"]
+        self.assertEqual(
+            transmitted_authorization,
+            f"Bearer {credential.token}",
+        )
+        self.assertNotEqual(transmitted_authorization, "******")
 
     async def test_two_turn_continuity_resends_ordered_history_and_only_managed_id(self):
         captures: list[dict] = []

@@ -170,35 +170,6 @@ def load_hosted_agent_settings() -> HostedAgentSettings:
     )
 
 
-def _get_hosted_agent_scope() -> str:
-    """Return the Azure resource scope for managed-identity token acquisition.
-
-    Unlike the orchestrator client, there is intentionally *no default*: the
-    operator must supply the exact data-plane scope of the deployed
-    hosted-agent service (e.g. ``api://<client-id>/.default``).  Defaulting
-    to the ARM audience would silently issue the wrong token.
-    """
-    value = os.getenv("HOSTED_AGENT_RESOURCE_SCOPE")
-    if value:
-        return value
-    try:
-        value = config.get("HOSTED_AGENT_RESOURCE_SCOPE", None, str)
-    except Exception:
-        pass
-    return value or ""
-
-
-def _get_hosted_agent_api_key() -> str:
-    value = os.getenv("HOSTED_AGENT_APP_APIKEY", "")
-    if value:
-        return value
-    try:
-        value = config.get("HOSTED_AGENT_APP_APIKEY", "", str) or ""
-    except Exception:
-        pass
-    return value
-
-
 def validate_hosted_agent_config() -> None:
     """Fail startup when hosted mode lacks an endpoint or data-plane scope."""
     load_hosted_agent_settings()
