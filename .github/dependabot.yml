@@ -8,3 +8,11 @@ updates:
     labels:
       - "dependencies"
       - "python"
+  - package-ecosystem: "pip"
+    directory: "/.github/scripts"
+    schedule:
+      interval: "weekly"
+    target-branch: "develop"
+    labels:
+      - "dependencies"
+      - "github-actions"
