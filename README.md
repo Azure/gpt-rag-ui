@@ -78,6 +78,38 @@ azd deploy
 > [!IMPORTANT]
 > Run `azd env refresh` with the **same subscription** and **resource group** used in the infrastructure deployment.
 
+### Hosted-agent chat backend
+
+The default `CHAT_BACKEND=orchestrator` behavior is unchanged. To use the
+Microsoft Foundry hosted runtime, set these values in Azure App Configuration
+with the `gpt-rag` label (or as environment variables for local development):
+
+| Setting | Required | Description |
+| --- | --- | --- |
+| `CHAT_BACKEND` | Yes | Set to `hosted_agent`. Any other value except `orchestrator` fails startup; there is no backend fallback. |
+| `HOSTED_AGENT_BASE_URL` | Yes | HTTPS base URL of the deployed hosted orchestrator. The UI sends `POST /invocations` to this URL. |
+| `HOSTED_AGENT_RESOURCE_SCOPE` | Yes | Exact deployed data-plane audience as an Entra scope ending in `/.default`, for example `api://<application-id>/.default`. The Azure Resource Manager scope is rejected. |
+| `HOSTED_AGENT_SSE_IDLE_TIMEOUT_SECONDS` | No | Maximum wait for the next SSE data from the hosted runtime. Defaults to 60 seconds and must be finite and positive. |
+
+The UI acquires the data-plane token on the server through managed identity
+(Azure CLI is available only in the local credential chain). Tokens and caller
+identity fields are never sent by the browser or included in the invocation
+payload. The request contains ordered user/assistant messages, optional managed
+`conversation_id`, and correlation metadata only.
+
+Because only the hosted runtime can issue a managed `conversation_id`, start a
+new hosted conversation with a text message before uploading documents. The UI
+rejects first-turn uploads rather than fabricating an ID. A resumed Chainlit
+thread restores context from its ordered messages and obtains a fresh managed
+ID from the hosted runtime.
+
+Before enabling hosted mode in production, grant the UI managed identity the
+hosted runtime's data-plane role and verify token acquisition using the exact
+configured audience. Live acceptance still requires Basic and isolated
+topology validation, two-turn managed conversation continuity, and a two-user
+negative document-authorization test. These deployment and identity checks
+cannot be proven by the repository unit tests.
+
 ### Deploying the app with a shell script
 
 To deploy using a script, first clone the repository, set the App Configuration endpoint, and then run the deployment script.

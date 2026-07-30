@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 import chainlit as cl
 import httpx
 
+from chat_backend import resolve_chat_backend, select_upload_conversation_id
 from orchestrator_client import call_orchestrator_stream
 from feedback import register_feedback_handlers,create_feedback_actions
 from dependencies import get_config
@@ -31,6 +32,18 @@ logger = logging.getLogger("gpt_rag_ui.app")
 config = get_config()
 
 Telemetry.configure_monitoring(config, APPLICATION_INSIGHTS_CONNECTION_STRING, APP_NAME)
+
+CHAT_BACKEND = resolve_chat_backend(config.get("CHAT_BACKEND", "orchestrator", str))
+
+if CHAT_BACKEND == "hosted_agent":
+    from hosted_agent_client import (  # noqa: E402
+        HostedAgentCancelledError,
+        build_invocation_messages,
+        call_hosted_agent_stream,
+        validate_hosted_agent_config,
+    )
+    validate_hosted_agent_config()
+    logger.info("Chat backend: hosted_agent")
 
 ENABLE_FEEDBACK = config.get("ENABLE_USER_FEEDBACK", False, bool)
 _is_running_in_azure_host = bool(
@@ -622,7 +635,8 @@ if ENABLE_FEEDBACK:
 # Chainlit event handlers
 @cl.on_chat_start
 async def on_chat_start():
-    pass
+    if CHAT_BACKEND == "hosted_agent":
+        cl.user_session.set("hosted_agent_conversation_id", "")
     # app_user = cl.user_session.get("user")
     # if app_user:
         # await cl.Message(content=f"Hello {app_user.metadata.get('user_name')}").send()
@@ -638,6 +652,10 @@ async def on_chat_resume(thread: ThreadDict):
         logger.warning("Blocked unauthorized chat resume: thread=%s", thread["id"])
         raise PermissionError("Thread access denied.")
     cl.user_session.set("conversation_id", thread["id"])
+    if CHAT_BACKEND == "hosted_agent":
+        # A Chainlit thread ID is not proof of a runtime-managed conversation.
+        # Ordered history restores context; the runtime will issue a new managed ID.
+        cl.user_session.set("hosted_agent_conversation_id", "")
     logger.info("Chat resumed: thread=%s", thread["id"])
 
 @cl.on_message
@@ -648,7 +666,17 @@ async def handle_message(message: cl.Message):
         message.id = message.id or str(uuid.uuid4())
         conversation_id = cl.user_session.get("conversation_id") or ""
         existing_conversation_id = str(conversation_id).strip()
+        hosted_conversation_id = (
+            str(cl.user_session.get("hosted_agent_conversation_id") or "").strip()
+            if CHAT_BACKEND == "hosted_agent"
+            else ""
+        )
         response_msg = cl.Message(content="")
+        hosted_history = (
+            cl.chat_context.to_openai()
+            if CHAT_BACKEND == "hosted_agent"
+            else None
+        )
 
         def _trim_for_log(value: str, limit: int = 400) -> str:
             clean_value = (value or "").strip().replace("\n", " ")
@@ -740,15 +768,31 @@ async def handle_message(message: cl.Message):
             rejected.extend([f["name"] + " (too many files)" for f in uploaded_files[max_files:]])
             uploaded_files = uploaded_files[:max_files]
 
-        if uploaded_files and existing_conversation_id:
+        upload_conversation_id = select_upload_conversation_id(
+            CHAT_BACKEND,
+            classic_conversation_id=existing_conversation_id,
+            hosted_conversation_id=hosted_conversation_id,
+        )
+        if uploaded_files and not upload_conversation_id and CHAT_BACKEND == "hosted_agent":
+            rejected.extend(
+                f"{file['name']} (start the hosted conversation with a text message first)"
+                for file in uploaded_files
+            )
+            uploaded_files = []
+
+        if (
+            uploaded_files
+            and CHAT_BACKEND == "orchestrator"
+            and upload_conversation_id
+        ):
             owned_conversation = await get_owned_conversation(
-                existing_conversation_id,
+                upload_conversation_id,
                 auth_info,
             )
             if not owned_conversation:
                 logger.warning(
                     "Blocked upload to missing or unauthorized conversation=%s",
-                    existing_conversation_id,
+                    upload_conversation_id,
                 )
                 rejected.extend(
                     f"{file['name']} (conversation access denied)"
@@ -761,9 +805,11 @@ async def handle_message(message: cl.Message):
             file_reply_parts.append(_skip_msg)
             await response_msg.stream_token(_skip_msg)
 
-        if uploaded_files and not (conversation_id or "").strip():
+        if uploaded_files and not upload_conversation_id:
             conversation_id = str(uuid.uuid4())
             cl.user_session.set("conversation_id", conversation_id)
+        elif uploaded_files:
+            conversation_id = upload_conversation_id
 
         if uploaded_files:
             try:
@@ -797,6 +843,21 @@ async def handle_message(message: cl.Message):
                 await response_msg.stream_token(_ok_msg)
 
         user_ask = (message.content or "").strip()
+        if CHAT_BACKEND == "hosted_agent" and not user_ask:
+            final_text = "".join(file_reply_parts).strip()
+            if not final_text:
+                final_text = "Enter a question to start or continue the hosted conversation."
+            if SHOW_STATISTICS:
+                final_text += f"\n\n*\u23f1 {time.time() - handler_start:.2f}s*"
+            response_msg.content = final_text
+            await response_msg.update()
+            logger.info(
+                "Skipping hosted agent (empty ask): conversation=%s question_id=%s",
+                hosted_conversation_id or "new",
+                message.id,
+            )
+            return
+
         if uploaded_files and not user_ask:
             final_text = "".join(file_reply_parts).strip() or "Files received."
             if SHOW_STATISTICS:
@@ -843,180 +904,352 @@ async def handle_message(message: cl.Message):
         buffer = ""
         full_text = ""
         references = set()
-        logger.info(
-            "Forwarding request to orchestrator: conversation=%s question_id=%s user=%s authorized=%s groups=%d",
-            conversation_id or "new",
-            message.id,
-            principal,
-            auth_info.get("authorized"),
-            len(auth_info.get("client_group_names", [])),
-        )
+        chunk_count = 0
 
-        if logger.isEnabledFor(logging.DEBUG) and auth_info.get("access_token"):
-            logger.debug(
-                "Orchestrator call access token claims (unverified): conversation=%s question_id=%s %s",
+        if CHAT_BACKEND == "hosted_agent":
+            hosted_messages = build_invocation_messages(
+                hosted_history or [],
+                message.content,
+            )
+            logger.info(
+                "Forwarding request to hosted agent: conversation=%s question_id=%s user=%s authorized=%s",
+                hosted_conversation_id or "new",
+                message.id,
+                principal,
+                auth_info.get("authorized"),
+            )
+
+            generator = call_hosted_agent_stream(
+                hosted_messages,
+                conversation_id=hosted_conversation_id,
+                question_id=message.id,
+                correlation_id=message.id,
+            )
+            hosted_citations: list[dict] = []
+
+            try:
+                async for text_chunk, meta in generator:
+                    if meta.get("conversation_id"):
+                        hosted_conversation_id = meta["conversation_id"]
+                        conversation_id = hosted_conversation_id
+                        cl.user_session.set(
+                            "hosted_agent_conversation_id",
+                            hosted_conversation_id,
+                        )
+                    if meta.get("citation"):
+                        hosted_citations.append(meta["citation"])
+                    if meta.get("tool_activity"):
+                        tool = meta["tool_activity"]
+                        logger.info(
+                            "Hosted-agent tool activity: conversation=%s question_id=%s "
+                            "tool=%s status=%s event=%s",
+                            conversation_id or "pending",
+                            message.id,
+                            tool.get("name") or "unknown",
+                            tool.get("status") or "unknown",
+                            tool.get("event_type") or "unknown",
+                        )
+
+                    if not text_chunk:
+                        continue
+
+                    # Rewrite reference links as authenticated download URLs.
+                    chunk_refs: Set[str] = set()
+                    text_chunk = replace_source_reference_links(
+                        text_chunk,
+                        chunk_refs,
+                        conversation_id=conversation_id,
+                        principal_id=str(auth_info.get("principal_id") or ""),
+                        copilot_session_id=str(auth_info.get("copilot_session_id") or ""),
+                    )
+                    if chunk_refs:
+                        references.update(chunk_refs)
+                        logger.info(
+                            "Hosted-agent response references detected: conversation=%s "
+                            "question_id=%s reference_count=%s",
+                            conversation_id or "pending",
+                            message.id,
+                            len(chunk_refs),
+                        )
+
+                    full_text += text_chunk
+                    chunk_count += 1
+                    await response_msg.stream_token(text_chunk)
+
+                if hosted_citations:
+                    citation_lines: list[str] = []
+                    seen_citations: set[tuple[str, str]] = set()
+                    for citation in hosted_citations:
+                        title = str(
+                            citation.get("title")
+                            or citation.get("citation_id")
+                            or "Source"
+                        )
+                        url = str(citation.get("url") or "")
+                        citation_key = (title, url)
+                        if citation_key in seen_citations:
+                            continue
+                        seen_citations.add(citation_key)
+                        line = f"- [{title}]({url})" if url else f"- {title}"
+                        line = replace_source_reference_links(
+                            line,
+                            references,
+                            conversation_id=conversation_id,
+                            principal_id=str(auth_info.get("principal_id") or ""),
+                            copilot_session_id=str(
+                                auth_info.get("copilot_session_id") or ""
+                            ),
+                        )
+                        if line.strip():
+                            citation_lines.append(line)
+                    if citation_lines:
+                        citation_text = "\n\n### Sources\n" + "\n".join(citation_lines)
+                        full_text += citation_text
+                        await response_msg.stream_token(citation_text)
+
+            except HostedAgentCancelledError as exc:
+                logger.warning(
+                    "Hosted agent cancelled response: conversation=%s question_id=%s reason=%s",
+                    conversation_id or "pending",
+                    message.id,
+                    exc,
+                )
+                user_error_message = (
+                    "The hosted agent cancelled this request. "
+                    "Please retry or contact the application support team and share reference "
+                    f"{message.id}."
+                )
+                full_text = user_error_message
+                await response_msg.stream_token(user_error_message)
+
+            except httpx.ConnectError as e:
+                logger.error(
+                    "Hosted agent unreachable (connection error): conversation=%s question_id=%s error=%s",
+                    conversation_id or "pending",
+                    message.id,
+                    e,
+                )
+                user_error_message = (
+                    "We couldn't reach the hosted agent service. "
+                    "Please contact the application support team and share reference "
+                    f"{message.id}."
+                )
+                full_text = user_error_message
+                await response_msg.stream_token(user_error_message)
+
+            except httpx.TimeoutException as e:
+                logger.error(
+                    "Hosted agent request timed out: conversation=%s question_id=%s error=%s",
+                    conversation_id or "pending",
+                    message.id,
+                    e,
+                )
+                user_error_message = (
+                    "The hosted agent service took too long to respond. "
+                    "Please contact the application support team and share reference "
+                    f"{message.id}."
+                )
+                full_text = user_error_message
+                await response_msg.stream_token(user_error_message)
+
+            except Exception:
+                user_error_message = (
+                    "We hit a technical issue while processing your request. "
+                    "Please contact the application support team and share reference "
+                    f"{message.id}."
+                )
+                logger.exception(
+                    "Failed while processing hosted agent response: conversation=%s question_id=%s",
+                    conversation_id or "pending",
+                    message.id,
+                )
+                full_text = user_error_message
+                await response_msg.stream_token(user_error_message)
+
+            finally:
+                try:
+                    await generator.aclose()
+                except RuntimeError as exc:
+                    if "async generator ignored GeneratorExit" not in str(exc):
+                        raise
+
+        else:
+            # ------------------------------------------------------------------
+            # Classic orchestrator path (default: CHAT_BACKEND=orchestrator)
+            # ------------------------------------------------------------------
+            logger.info(
+                "Forwarding request to orchestrator: conversation=%s question_id=%s user=%s authorized=%s groups=%d",
                 conversation_id or "new",
                 message.id,
-                _access_token_debug_summary(str(auth_info.get("access_token"))),
+                principal,
+                auth_info.get("authorized"),
+                len(auth_info.get("client_group_names", [])),
             )
-        logger.debug(
-            "Orchestrator payload preview: conversation=%s question_id=%s preview='%s'",
-            conversation_id or "new",
-            message.id,
-            _trim_for_log(message.content),
-        )
-        generator = call_orchestrator_stream(conversation_id, message.content, auth_info, message.id)
 
-        chunk_count = 0
-        first_content_seen = False
-        is_first_chunk = True
-        uuid_buffer = ""
+            if logger.isEnabledFor(logging.DEBUG) and auth_info.get("access_token"):
+                logger.debug(
+                    "Orchestrator call access token claims (unverified): conversation=%s question_id=%s %s",
+                    conversation_id or "new",
+                    message.id,
+                    _access_token_debug_summary(str(auth_info.get("access_token"))),
+                )
+            logger.debug(
+                "Orchestrator payload preview: conversation=%s question_id=%s preview='%s'",
+                conversation_id or "new",
+                message.id,
+                _trim_for_log(message.content),
+            )
+            generator = call_orchestrator_stream(conversation_id, message.content, auth_info, message.id)
 
-        try:
-            async for raw_chunk in generator:
-                if not raw_chunk:
-                    continue
+            first_content_seen = False
+            is_first_chunk = True
+            uuid_buffer = ""
 
-                if "[ERROR en MAF Streaming]:" in raw_chunk or "[ERROR]:" in raw_chunk:
-                    await cl.ErrorMessage(content=f"Error de Servicio: {raw_chunk.strip()}").send()
-                    break
-
-                if is_first_chunk:
-                    uuid_buffer += raw_chunk
-                    if len(uuid_buffer) >= 37:
-                        is_first_chunk = False
-                        chunk = uuid_buffer
-                        uuid_buffer = ""
-                    else:
+            try:
+                async for raw_chunk in generator:
+                    if not raw_chunk:
                         continue
-                else:
-                    chunk = raw_chunk
 
-                # Extract and update conversation ID
-                extracted_id, cleaned_chunk = extract_conversation_id_from_chunk(chunk)
-                if extracted_id:
-                    conversation_id = extracted_id
+                    if "[ERROR en MAF Streaming]:" in raw_chunk or "[ERROR]:" in raw_chunk:
+                        await cl.ErrorMessage(content=f"Error de Servicio: {raw_chunk.strip()}").send()
+                        break
 
-                cleaned_chunk = cleaned_chunk.replace("\\n", "\n")
+                    if is_first_chunk:
+                        uuid_buffer += raw_chunk
+                        if len(uuid_buffer) >= 37:
+                            is_first_chunk = False
+                            chunk = uuid_buffer
+                            uuid_buffer = ""
+                        else:
+                            continue
+                    else:
+                        chunk = raw_chunk
 
-                normalized_preview = cleaned_chunk.strip().lower()
-                if not first_content_seen and normalized_preview:
-                    if (
-                        normalized_preview.startswith("<!doctype")
-                        or normalized_preview.startswith("<html")
-                        or "<html" in normalized_preview[:120]
-                        or "azure container apps" in normalized_preview
-                    ):
-                        logger.error(
-                            "Received HTML payload from orchestrator: conversation=%s question_id=%s",
+                    # Extract and update conversation ID
+                    extracted_id, cleaned_chunk = extract_conversation_id_from_chunk(chunk)
+                    if extracted_id:
+                        conversation_id = extracted_id
+
+                    cleaned_chunk = cleaned_chunk.replace("\\n", "\n")
+
+                    normalized_preview = cleaned_chunk.strip().lower()
+                    if not first_content_seen and normalized_preview:
+                        if (
+                            normalized_preview.startswith("<!doctype")
+                            or normalized_preview.startswith("<html")
+                            or "<html" in normalized_preview[:120]
+                            or "azure container apps" in normalized_preview
+                        ):
+                            logger.error(
+                                "Received HTML payload from orchestrator: conversation=%s question_id=%s",
+                                conversation_id or "pending",
+                                message.id,
+                            )
+                            raise RuntimeError("orchestrator returned html placeholder")
+                        first_content_seen = True
+
+                    # Track and rewrite references as blob download links
+                    chunk_refs_orch: Set[str] = set()
+                    cleaned_chunk = replace_source_reference_links(
+                        cleaned_chunk,
+                        chunk_refs_orch,
+                        conversation_id=conversation_id,
+                        principal_id=str(auth_info.get("principal_id") or ""),
+                        copilot_session_id=str(
+                            auth_info.get("copilot_session_id") or ""
+                        ),
+                    )
+                    if chunk_refs_orch:
+                        references.update(chunk_refs_orch)
+                        logger.info(
+                            "Streaming response references detected: conversation=%s "
+                            "question_id=%s reference_count=%s",
+                            conversation_id or "pending",
+                            message.id,
+                            len(chunk_refs_orch),
+                        )
+
+                    buffer += cleaned_chunk
+                    full_text += cleaned_chunk
+                    chunk_count += 1
+
+                    # Handle TERMINATE token
+                    token_index = buffer.find(TERMINATE_TOKEN)
+                    if token_index != -1:
+                        if token_index > 0:
+                            await response_msg.stream_token(buffer[:token_index])
+                        logger.debug(
+                            "Terminate token detected, draining remaining orchestrator stream: conversation=%s question_id=%s",
                             conversation_id or "pending",
                             message.id,
                         )
-                        raise RuntimeError("orchestrator returned html placeholder")
-                    first_content_seen = True
+                        async for _ in generator:
+                            pass  # drain
+                        break
 
-                # Track and rewrite references as blob download links
-                chunk_refs: Set[str] = set()
-                cleaned_chunk = replace_source_reference_links(
-                    cleaned_chunk,
-                    chunk_refs,
-                    conversation_id=conversation_id,
-                    principal_id=str(auth_info.get("principal_id") or ""),
-                    copilot_session_id=str(
-                        auth_info.get("copilot_session_id") or ""
-                    ),
+                    # Stream safe part of buffer
+                    if token_index != -1:
+                        safe_flush_length = len(buffer) - (len(TERMINATE_TOKEN) - 1)
+                    else:
+                        safe_flush_length = len(buffer)
+
+                    if safe_flush_length > 0:
+                        await response_msg.stream_token(buffer[:safe_flush_length])
+                        buffer = buffer[safe_flush_length:]
+
+            except httpx.ConnectError as e:
+                logger.error(
+                    "Orchestrator unreachable (connection error): conversation=%s question_id=%s error=%s",
+                    conversation_id or "pending",
+                    message.id,
+                    e,
                 )
-                if chunk_refs:
-                    references.update(chunk_refs)
-                    logger.info(
-                        "Streaming response references detected: conversation=%s "
-                        "question_id=%s reference_count=%s",
-                        conversation_id or "pending",
-                        message.id,
-                        len(chunk_refs),
-                    )
+                user_error_message = (
+                    "We couldn't reach the orchestrator service. "
+                    "Please contact the application support team and share reference "
+                    f"{message.id}."
+                )
+                full_text = user_error_message
+                buffer = ""
+                await response_msg.stream_token(user_error_message)
 
-                buffer += cleaned_chunk
-                full_text += cleaned_chunk
-                chunk_count += 1
+            except httpx.TimeoutException as e:
+                logger.error(
+                    "Orchestrator request timed out: conversation=%s question_id=%s error=%s",
+                    conversation_id or "pending",
+                    message.id,
+                    e,
+                )
+                user_error_message = (
+                    "The orchestrator service took too long to respond. "
+                    "Please contact the application support team and share reference "
+                    f"{message.id}."
+                )
+                full_text = user_error_message
+                buffer = ""
+                await response_msg.stream_token(user_error_message)
 
-                # Handle TERMINATE token
-                token_index = buffer.find(TERMINATE_TOKEN)
-                if token_index != -1:
-                    if token_index > 0:
-                        await response_msg.stream_token(buffer[:token_index])
-                    logger.debug(
-                        "Terminate token detected, draining remaining orchestrator stream: conversation=%s question_id=%s",
-                        conversation_id or "pending",
-                        message.id,
-                    )
-                    async for _ in generator:
-                        pass  # drain
-                    break
+            except Exception as e:
+                user_error_message = (
+                    "We hit a technical issue while processing your request. "
+                    "Please contact the application support team and share reference "
+                    f"{message.id}."
+                )
+                logger.exception(
+                    "Failed while processing orchestrator response: conversation=%s question_id=%s",
+                    conversation_id or "pending",
+                    message.id,
+                )
+                full_text = user_error_message
+                buffer = ""
+                await response_msg.stream_token(user_error_message)
 
-                # Stream safe part of buffer
-                if token_index != -1:
-                    safe_flush_length = len(buffer) - (len(TERMINATE_TOKEN) - 1)
-                else:
-                    safe_flush_length = len(buffer)
-
-                if safe_flush_length > 0:
-                    await response_msg.stream_token(buffer[:safe_flush_length])
-                    buffer = buffer[safe_flush_length:]
-
-        except httpx.ConnectError as e:
-            logger.error(
-                "Orchestrator unreachable (connection error): conversation=%s question_id=%s error=%s",
-                conversation_id or "pending",
-                message.id,
-                e,
-            )
-            user_error_message = (
-                "We couldn't reach the orchestrator service. "
-                "Please contact the application support team and share reference "
-                f"{message.id}."
-            )
-            full_text = user_error_message
-            buffer = ""
-            await response_msg.stream_token(user_error_message)
-
-        except httpx.TimeoutException as e:
-            logger.error(
-                "Orchestrator request timed out: conversation=%s question_id=%s error=%s",
-                conversation_id or "pending",
-                message.id,
-                e,
-            )
-            user_error_message = (
-                "The orchestrator service took too long to respond. "
-                "Please contact the application support team and share reference "
-                f"{message.id}."
-            )
-            full_text = user_error_message
-            buffer = ""
-            await response_msg.stream_token(user_error_message)
-
-        except Exception as e:
-            user_error_message = (
-                "We hit a technical issue while processing your request. "
-                "Please contact the application support team and share reference "
-                f"{message.id}."
-            )
-            logger.exception(
-                "Failed while processing orchestrator response: conversation=%s question_id=%s",
-                conversation_id or "pending",
-                message.id,
-            )
-            full_text = user_error_message
-            buffer = ""
-            await response_msg.stream_token(user_error_message)
-
-        finally:
-            try:
-                await generator.aclose()
-            except RuntimeError as exc:
-                if "async generator ignored GeneratorExit" not in str(exc):
-                    raise
+            finally:
+                try:
+                    await generator.aclose()
+                except RuntimeError as exc:
+                    if "async generator ignored GeneratorExit" not in str(exc):
+                        raise
 
         cl.user_session.set("conversation_id", conversation_id)
         if references:
