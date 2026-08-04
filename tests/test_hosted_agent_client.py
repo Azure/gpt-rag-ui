@@ -23,6 +23,7 @@ from hosted_agent_client import (
     _validate_auth_mode,
     build_invocation_messages,
     load_hosted_agent_settings,
+    validate_hosted_agent_config,
 )
 
 
@@ -133,6 +134,110 @@ class TestConfiguration(unittest.TestCase):
         )
         self.assertEqual(settings.resource_scope, "api://hosted-agent/.default")
         self.assertEqual(settings.idle_timeout_seconds, 45.0)
+
+
+class TestStartupValidation(unittest.TestCase):
+    """Proves validate_hosted_agent_config() fails fast at startup.
+
+    Gap fixed: for the default ``user_delegated`` auth mode, startup
+    validation previously only checked HOSTED_AGENT_BASE_URL /
+    HOSTED_AGENT_RESOURCE_SCOPE / HOSTED_AGENT_AUTH_MODE and did not verify
+    the OAuth confidential-client configuration (OAUTH_AZURE_AD_CLIENT_ID /
+    _CLIENT_SECRET / _TENANT_ID) required for the on-behalf-of exchange. A
+    deployment missing those values would pass startup and only fail on the
+    very first user request. validate_hosted_agent_config() must now also
+    call _resolve_confidential_client_config() whenever auth_mode resolves
+    to "user_delegated" (the default), and must NOT require it when the
+    explicit "service_identity" opt-out is configured.
+    """
+
+    _BASE_VALUES = {
+        "HOSTED_AGENT_BASE_URL": "https://agent.example.com/protocol",
+        "HOSTED_AGENT_RESOURCE_SCOPE": "api://hosted-agent/.default",
+    }
+
+    _FULL_OAUTH_VALUES = {
+        "OAUTH_AZURE_AD_CLIENT_ID": "client-id",
+        "OAUTH_AZURE_AD_CLIENT_SECRET": "client-secret",
+        "OAUTH_AZURE_AD_TENANT_ID": "tenant-id",
+    }
+
+    def _validate(self, values: dict[str, str]):
+        def get_value(key, default=None, _type=str):
+            return values.get(key, default)
+
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("hosted_agent_client.config.get", side_effect=get_value),
+        ):
+            validate_hosted_agent_config()
+
+    def test_user_delegated_default_fails_startup_when_client_id_missing(self):
+        values = {
+            **self._BASE_VALUES,
+            "OAUTH_AZURE_AD_CLIENT_SECRET": "client-secret",
+            "OAUTH_AZURE_AD_TENANT_ID": "tenant-id",
+        }
+        with self.assertRaisesRegex(
+            HostedAgentConfigError, "OAUTH_AZURE_AD_CLIENT_ID"
+        ):
+            self._validate(values)
+
+    def test_user_delegated_default_fails_startup_when_client_secret_missing(self):
+        values = {
+            **self._BASE_VALUES,
+            "OAUTH_AZURE_AD_CLIENT_ID": "client-id",
+            "OAUTH_AZURE_AD_TENANT_ID": "tenant-id",
+        }
+        with self.assertRaisesRegex(
+            HostedAgentConfigError, "OAUTH_AZURE_AD_CLIENT_SECRET"
+        ):
+            self._validate(values)
+
+    def test_user_delegated_default_fails_startup_when_tenant_id_missing(self):
+        values = {
+            **self._BASE_VALUES,
+            "OAUTH_AZURE_AD_CLIENT_ID": "client-id",
+            "OAUTH_AZURE_AD_CLIENT_SECRET": "client-secret",
+        }
+        with self.assertRaisesRegex(
+            HostedAgentConfigError, "OAUTH_AZURE_AD_TENANT_ID"
+        ):
+            self._validate(values)
+
+    def test_user_delegated_default_fails_startup_when_all_oauth_config_missing(self):
+        # HOSTED_AGENT_AUTH_MODE intentionally omitted -- must default to
+        # "user_delegated" and still fail fast, not silently defer the
+        # failure to the first user request.
+        with self.assertRaisesRegex(
+            HostedAgentConfigError, "OAUTH_AZURE_AD_CLIENT_ID"
+        ):
+            self._validate(dict(self._BASE_VALUES))
+
+    def test_user_delegated_default_passes_startup_when_oauth_config_present(self):
+        values = {**self._BASE_VALUES, **self._FULL_OAUTH_VALUES}
+        # Must not raise.
+        self._validate(values)
+
+    def test_explicit_user_delegated_also_requires_oauth_config_at_startup(self):
+        values = {
+            **self._BASE_VALUES,
+            "HOSTED_AGENT_AUTH_MODE": "user_delegated",
+        }
+        with self.assertRaisesRegex(
+            HostedAgentConfigError, "OAUTH_AZURE_AD_CLIENT_ID"
+        ):
+            self._validate(values)
+
+    def test_explicit_service_identity_does_not_require_oauth_config_at_startup(self):
+        values = {
+            **self._BASE_VALUES,
+            "HOSTED_AGENT_AUTH_MODE": "service_identity",
+        }
+        # The gated legacy opt-out never performs an OBO exchange, so it
+        # must not require the OAuth confidential-client configuration.
+        # Must not raise.
+        self._validate(values)
 
 
 class TestBackendSelection(unittest.TestCase):

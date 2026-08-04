@@ -201,8 +201,17 @@ def load_hosted_agent_settings() -> HostedAgentSettings:
 
 
 def validate_hosted_agent_config() -> None:
-    """Fail startup when hosted mode lacks an endpoint or data-plane scope."""
-    load_hosted_agent_settings()
+    """Fail startup when hosted mode lacks an endpoint or data-plane scope.
+
+    For the default ``user_delegated`` auth mode this also validates that the
+    OAuth confidential-client configuration required for the on-behalf-of
+    exchange (``OAUTH_AZURE_AD_CLIENT_ID`` / ``_CLIENT_SECRET`` / ``_TENANT_ID``)
+    is present, so a misconfigured deployment fails fast at startup rather
+    than on the first user request.
+    """
+    settings = load_hosted_agent_settings()
+    if settings.auth_mode == "user_delegated":
+        _resolve_confidential_client_config()
 
 
 def build_invocation_messages(
