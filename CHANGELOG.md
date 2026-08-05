@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Added
+- **Repository-local release agent:** Added a GitHub Copilot `release` custom agent that prepares and validates component release metadata, branch and pull-request targets, sanitized notes, validation evidence, approval boundaries, and rollback handoffs without publishing tags, releases, artifacts, deployments, or Azure changes autonomously.
 - **Contract-accurate Chainlit hosted-agent BFF path ([Azure/GPT-RAG#587](https://github.com/Azure/GPT-RAG/issues/587))**: Added an opt-in `CHAT_BACKEND=hosted_agent` mode that sends ordered messages and the managed `conversation_id` to `POST /invocations`, then consumes the hosted orchestrator's Responses SSE text, citation, tool, completed, cancelled, and error frames. The reusable async client obtains credentials only on the server, requires the deployed data-plane scope explicitly, fails fast on configuration or token acquisition, enforces a finite SSE idle timeout, and closes its HTTP and credential resources at shutdown. Caller-controlled thread, token, and identity fields are excluded from the request. The classic `orchestrator` backend remains the default, and invalid backend values fail instead of silently falling back.
 
 ### Fixed
