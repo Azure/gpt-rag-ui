@@ -90,12 +90,54 @@ with the `gpt-rag` label (or as environment variables for local development):
 | `HOSTED_AGENT_BASE_URL` | Yes | HTTPS base URL of the deployed hosted orchestrator. The UI sends `POST /invocations` to this URL. |
 | `HOSTED_AGENT_RESOURCE_SCOPE` | Yes | Exact deployed data-plane audience as an Entra scope ending in `/.default`, for example `api://<application-id>/.default`. The Azure Resource Manager scope is rejected. |
 | `HOSTED_AGENT_SSE_IDLE_TIMEOUT_SECONDS` | No | Maximum wait for the next SSE data from the hosted runtime. Defaults to 60 seconds and must be finite and positive. |
+| `HOSTED_AGENT_AUTH_MODE` | No | `user_delegated` (default) or `service_identity`. See below — the default is required for Toolbox per-user document authorization ([ADR-0001](https://github.com/Azure/GPT-RAG), [Azure/GPT-RAG#591](https://github.com/Azure/GPT-RAG/issues/591)). |
 
-The UI acquires the data-plane token on the server through managed identity
-(Azure CLI is available only in the local credential chain). Tokens and caller
-identity fields are never sent by the browser or included in the invocation
-payload. The request contains ordered user/assistant messages, optional managed
-`conversation_id`, and correlation metadata only.
+#### Caller identity: on-behalf-of (OBO) by default
+
+By default (`HOSTED_AGENT_AUTH_MODE=user_delegated`, or unset) the UI does
+**not** call the hosted runtime as its own service identity. Instead, on
+every `/invocations` call it exchanges the signed-in Chainlit user's own
+Entra access token for a delegated, hosted-runtime-scoped token using an
+on-behalf-of (OBO) flow (MSAL `acquire_token_on_behalf_of`, reusing the same
+`OAUTH_AZURE_AD_CLIENT_ID` / `OAUTH_AZURE_AD_CLIENT_SECRET` /
+`OAUTH_AZURE_AD_TENANT_ID` confidential-client configuration as Chainlit's own
+Entra ID login) and sends that delegated token as the literal `Authorization`
+bearer. This makes Microsoft Foundry see the actual signed-in user as the
+Hosted Agent caller, which is required for Toolbox's OAuth identity-passthrough
+per-user document-level authorization — the group-filter fallback is not an
+acceptable default. If the current Chainlit session has no valid user access
+token (not signed in, expired, OBO exchange fails), the call fails **before**
+any network request is made — there is no fallback to a service/managed
+identity. Neither the user's access token nor the resulting delegated token is
+ever placed in the invocation payload, `x-client-*` headers, or logs/errors —
+only non-sensitive OBO error codes are logged on failure.
+
+Deployment requirements for the default `user_delegated` mode:
+
+- The Entra app registration behind `OAUTH_AZURE_AD_CLIENT_ID` must have a
+  **delegated** API permission for `HOSTED_AGENT_RESOURCE_SCOPE`'s underlying
+  API, with admin consent granted (OBO requires consent for the delegated
+  scope, not just the client-credentials/application permission).
+- Each signed-in end user (or the group they belong to) must be assigned the
+  Foundry **Agent Consumer** role (or equivalent) on the hosted agent, so the
+  delegated token is authorized once it reaches Foundry.
+- No managed identity role assignment is required for this mode; the
+  previously required "grant the UI managed identity the hosted runtime's
+  data-plane role" step only applies to the `service_identity` opt-out below.
+
+#### Explicit opt-out: `service_identity`
+
+Setting `HOSTED_AGENT_AUTH_MODE=service_identity` restores the legacy
+behavior — the UI's own managed identity (or local Azure CLI credential) is
+used as the `/invocations` bearer, so Foundry sees the UI's service principal
+rather than the end user. This mode must be selected **explicitly**; it is
+never the default and is never used as an implicit fallback when user
+identity is required, so issue #591 cannot silently reoccur. Only use it for
+deployments that have a genuine product reason to bypass per-user
+authorization (for example, service-to-service integrations that don't have
+an interactive end user). When using this mode, grant the UI managed identity
+the hosted runtime's data-plane role and verify token acquisition using the
+exact configured audience.
 
 Because only the hosted runtime can issue a managed `conversation_id`, start a
 new hosted conversation with a text message before uploading documents. The UI
@@ -103,12 +145,10 @@ rejects first-turn uploads rather than fabricating an ID. A resumed Chainlit
 thread restores context from its ordered messages and obtains a fresh managed
 ID from the hosted runtime.
 
-Before enabling hosted mode in production, grant the UI managed identity the
-hosted runtime's data-plane role and verify token acquisition using the exact
-configured audience. Live acceptance still requires Basic and isolated
-topology validation, two-turn managed conversation continuity, and a two-user
-negative document-authorization test. These deployment and identity checks
-cannot be proven by the repository unit tests.
+Live acceptance still requires Basic and isolated topology validation,
+two-turn managed conversation continuity, and a two-user negative
+document-authorization test. These deployment and identity checks cannot be
+proven by the repository unit tests.
 
 ### Deploying the app with a shell script
 

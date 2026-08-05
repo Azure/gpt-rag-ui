@@ -2,7 +2,7 @@ import asyncio
 import json
 import os
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 from azure.core.credentials import AccessToken
@@ -20,8 +20,10 @@ from hosted_agent_client import (
     HostedAgentSettings,
     InvocationMessage,
     _parse_sse_block,
+    _validate_auth_mode,
     build_invocation_messages,
     load_hosted_agent_settings,
+    validate_hosted_agent_config,
 )
 
 
@@ -134,6 +136,110 @@ class TestConfiguration(unittest.TestCase):
         self.assertEqual(settings.idle_timeout_seconds, 45.0)
 
 
+class TestStartupValidation(unittest.TestCase):
+    """Proves validate_hosted_agent_config() fails fast at startup.
+
+    Gap fixed: for the default ``user_delegated`` auth mode, startup
+    validation previously only checked HOSTED_AGENT_BASE_URL /
+    HOSTED_AGENT_RESOURCE_SCOPE / HOSTED_AGENT_AUTH_MODE and did not verify
+    the OAuth confidential-client configuration (OAUTH_AZURE_AD_CLIENT_ID /
+    _CLIENT_SECRET / _TENANT_ID) required for the on-behalf-of exchange. A
+    deployment missing those values would pass startup and only fail on the
+    very first user request. validate_hosted_agent_config() must now also
+    call _resolve_confidential_client_config() whenever auth_mode resolves
+    to "user_delegated" (the default), and must NOT require it when the
+    explicit "service_identity" opt-out is configured.
+    """
+
+    _BASE_VALUES = {
+        "HOSTED_AGENT_BASE_URL": "https://agent.example.com/protocol",
+        "HOSTED_AGENT_RESOURCE_SCOPE": "api://hosted-agent/.default",
+    }
+
+    _FULL_OAUTH_VALUES = {
+        "OAUTH_AZURE_AD_CLIENT_ID": "client-id",
+        "OAUTH_AZURE_AD_CLIENT_SECRET": "client-secret",
+        "OAUTH_AZURE_AD_TENANT_ID": "tenant-id",
+    }
+
+    def _validate(self, values: dict[str, str]):
+        def get_value(key, default=None, _type=str):
+            return values.get(key, default)
+
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("hosted_agent_client.config.get", side_effect=get_value),
+        ):
+            validate_hosted_agent_config()
+
+    def test_user_delegated_default_fails_startup_when_client_id_missing(self):
+        values = {
+            **self._BASE_VALUES,
+            "OAUTH_AZURE_AD_CLIENT_SECRET": "client-secret",
+            "OAUTH_AZURE_AD_TENANT_ID": "tenant-id",
+        }
+        with self.assertRaisesRegex(
+            HostedAgentConfigError, "OAUTH_AZURE_AD_CLIENT_ID"
+        ):
+            self._validate(values)
+
+    def test_user_delegated_default_fails_startup_when_client_secret_missing(self):
+        values = {
+            **self._BASE_VALUES,
+            "OAUTH_AZURE_AD_CLIENT_ID": "client-id",
+            "OAUTH_AZURE_AD_TENANT_ID": "tenant-id",
+        }
+        with self.assertRaisesRegex(
+            HostedAgentConfigError, "OAUTH_AZURE_AD_CLIENT_SECRET"
+        ):
+            self._validate(values)
+
+    def test_user_delegated_default_fails_startup_when_tenant_id_missing(self):
+        values = {
+            **self._BASE_VALUES,
+            "OAUTH_AZURE_AD_CLIENT_ID": "client-id",
+            "OAUTH_AZURE_AD_CLIENT_SECRET": "client-secret",
+        }
+        with self.assertRaisesRegex(
+            HostedAgentConfigError, "OAUTH_AZURE_AD_TENANT_ID"
+        ):
+            self._validate(values)
+
+    def test_user_delegated_default_fails_startup_when_all_oauth_config_missing(self):
+        # HOSTED_AGENT_AUTH_MODE intentionally omitted -- must default to
+        # "user_delegated" and still fail fast, not silently defer the
+        # failure to the first user request.
+        with self.assertRaisesRegex(
+            HostedAgentConfigError, "OAUTH_AZURE_AD_CLIENT_ID"
+        ):
+            self._validate(dict(self._BASE_VALUES))
+
+    def test_user_delegated_default_passes_startup_when_oauth_config_present(self):
+        values = {**self._BASE_VALUES, **self._FULL_OAUTH_VALUES}
+        # Must not raise.
+        self._validate(values)
+
+    def test_explicit_user_delegated_also_requires_oauth_config_at_startup(self):
+        values = {
+            **self._BASE_VALUES,
+            "HOSTED_AGENT_AUTH_MODE": "user_delegated",
+        }
+        with self.assertRaisesRegex(
+            HostedAgentConfigError, "OAUTH_AZURE_AD_CLIENT_ID"
+        ):
+            self._validate(values)
+
+    def test_explicit_service_identity_does_not_require_oauth_config_at_startup(self):
+        values = {
+            **self._BASE_VALUES,
+            "HOSTED_AGENT_AUTH_MODE": "service_identity",
+        }
+        # The gated legacy opt-out never performs an OBO exchange, so it
+        # must not require the OAuth confidential-client configuration.
+        # Must not raise.
+        self._validate(values)
+
+
 class TestBackendSelection(unittest.TestCase):
     def test_classic_is_the_default(self):
         self.assertEqual(resolve_chat_backend(None), "orchestrator")
@@ -223,6 +329,13 @@ class TestHostedAgentClient(unittest.IsolatedAsyncioTestCase):
         base_url="https://agent.example.com/protocol",
         resource_scope="api://hosted-agent/.default",
         idle_timeout_seconds=12.0,
+        # These tests exercise HTTP/SSE protocol handling, not identity
+        # resolution, and never pass user_access_token. Pin auth_mode to the
+        # explicit, non-default service_identity opt-out so StubCredential
+        # continues to satisfy token acquisition without needing every test
+        # to supply a user token. The default user_delegated (OBO) path is
+        # covered separately below in TestUserDelegatedAuth.
+        auth_mode="service_identity",
     )
 
     async def _client_for_body(
@@ -663,6 +776,192 @@ class TestHostedAgentClient(unittest.IsolatedAsyncioTestCase):
             await pending
         await generator.aclose()
         self.assertTrue(stream.closed)
+
+
+class TestUserDelegatedAuth(unittest.IsolatedAsyncioTestCase):
+    """Covers the default (ADR-0001-required) on-behalf-of identity path.
+
+    These tests prove: the exact delegated (OBO) token is transmitted as the
+    literal Authorization bearer; a missing/invalid signed-in user identity
+    fails *before* any network call and never falls back to a service
+    identity; the raw user assertion and delegated token never appear in
+    logs or exception text; and the explicit service_identity opt-out
+    requires deliberate configuration (never selected implicitly).
+    """
+
+    # Default settings: auth_mode intentionally omitted so it resolves to the
+    # required default "user_delegated".
+    settings = HostedAgentSettings(
+        base_url="https://agent.example.com/protocol",
+        resource_scope="api://hosted-agent/.default",
+        idle_timeout_seconds=12.0,
+    )
+
+    def test_default_auth_mode_is_user_delegated_not_service_identity(self):
+        self.assertEqual(self.settings.auth_mode, "user_delegated")
+        self.assertEqual(_validate_auth_mode(None), "user_delegated")
+        self.assertEqual(_validate_auth_mode(""), "user_delegated")
+
+    def test_service_identity_requires_explicit_config_value(self):
+        # The opt-out is only ever selected by an explicit, exact config
+        # value -- never inferred, and never used as a fallback.
+        self.assertEqual(
+            _validate_auth_mode("service_identity"), "service_identity"
+        )
+        with self.assertRaises(HostedAgentConfigError):
+            _validate_auth_mode("something-else")
+
+    async def _client(
+        self, *, capture: list[dict] | None = None, credential=None
+    ) -> HostedAgentClient:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            if capture is not None:
+                capture.append(
+                    {
+                        "headers": dict(request.headers),
+                        "json": json.loads((await request.aread()).decode()),
+                    }
+                )
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                content=(_created("conv-1") + _completed()).encode(),
+            )
+
+        http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        self.addAsyncCleanup(http_client.aclose)
+        return HostedAgentClient(
+            self.settings,
+            credential=credential or StubCredential(),
+            http_client=http_client,
+        )
+
+    async def test_exact_delegated_token_is_sent_as_bearer_and_no_mi_used(self):
+        capture: list[dict] = []
+        credential = StubCredential(token="service-identity-token-should-not-be-used")
+        client = await self._client(capture=capture, credential=credential)
+
+        with patch(
+            "hosted_agent_client._acquire_obo_token",
+            new=AsyncMock(return_value="delegated-data-plane-token"),
+        ) as mocked_obo:
+            results = [
+                item
+                async for item in client.stream(
+                    [InvocationMessage("user", "hello")],
+                    user_access_token="signed-in-user-access-token",
+                )
+            ]
+
+        self.assertTrue(any(meta.get("completed") for _, meta in results))
+        mocked_obo.assert_awaited_once_with(
+            "signed-in-user-access-token", "api://hosted-agent/.default"
+        )
+        transmitted_authorization = capture[0]["headers"]["authorization"]
+        self.assertEqual(
+            transmitted_authorization, "Bearer delegated-data-plane-token"
+        )
+        # The service/managed identity credential must never be consulted on
+        # the default (user_delegated) path.
+        self.assertEqual(credential.scopes, [])
+
+    async def test_missing_user_token_fails_before_any_http_request(self):
+        capture: list[dict] = []
+        credential = StubCredential()
+        client = await self._client(capture=capture, credential=credential)
+
+        with self.assertRaises(HostedAgentAuthenticationError):
+            async for _ in client.stream(
+                [InvocationMessage("user", "hello")], user_access_token=None
+            ):
+                pass
+
+        self.assertEqual(capture, [])
+        self.assertEqual(credential.scopes, [])
+
+    async def test_blank_user_token_fails_before_any_http_request(self):
+        capture: list[dict] = []
+        client = await self._client(capture=capture)
+
+        with self.assertRaises(HostedAgentAuthenticationError):
+            async for _ in client.stream(
+                [InvocationMessage("user", "hello")], user_access_token="   "
+            ):
+                pass
+
+        self.assertEqual(capture, [])
+
+    async def test_obo_failure_never_logs_or_raises_with_token_material(self):
+        client = await self._client()
+        user_token = "super-secret-user-assertion-value"
+
+        async def _fake_obo(user_access_token, resource_scope):
+            # Simulate an MSAL failure path: only a non-sensitive error code
+            # should ever be logged, never the raw assertion/delegated token.
+            logger = __import__("logging").getLogger(
+                "gpt_rag_ui.hosted_agent_client"
+            )
+            logger.warning(
+                "Hosted-agent on-behalf-of token exchange failed: error=%s",
+                "invalid_grant",
+            )
+            raise HostedAgentAuthenticationError(
+                "Unable to exchange the signed-in user's token for a "
+                "hosted-agent data-plane token (on-behalf-of exchange failed)."
+            )
+
+        with (
+            self.assertLogs("gpt_rag_ui.hosted_agent_client", level="WARNING") as logs,
+            patch("hosted_agent_client._acquire_obo_token", new=_fake_obo),
+        ):
+            with self.assertRaises(HostedAgentAuthenticationError) as ctx:
+                async for _ in client.stream(
+                    [InvocationMessage("user", "hello")],
+                    user_access_token=user_token,
+                ):
+                    pass
+
+        self.assertNotIn(user_token, str(ctx.exception))
+        for record in logs.output:
+            self.assertNotIn(user_token, record)
+
+    async def test_service_identity_mode_still_available_when_explicitly_gated(self):
+        gated_settings = HostedAgentSettings(
+            base_url="https://agent.example.com/protocol",
+            resource_scope="api://hosted-agent/.default",
+            idle_timeout_seconds=12.0,
+            auth_mode="service_identity",
+        )
+        capture: list[dict] = []
+        credential = StubCredential(token="explicit-service-identity-token")
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            capture.append({"headers": dict(request.headers)})
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                content=(_created("conv-1") + _completed()).encode(),
+            )
+
+        http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        self.addAsyncCleanup(http_client.aclose)
+        client = HostedAgentClient(
+            gated_settings, credential=credential, http_client=http_client
+        )
+
+        # No user_access_token supplied -- the explicit opt-out must still
+        # work standalone, proving #591 requires a deliberate config change
+        # rather than silently degrading into the service-identity path.
+        results = [
+            item
+            async for item in client.stream([InvocationMessage("user", "hello")])
+        ]
+        self.assertTrue(any(meta.get("completed") for _, meta in results))
+        self.assertEqual(
+            capture[0]["headers"]["authorization"],
+            "Bearer explicit-service-identity-token",
+        )
+        self.assertEqual(credential.scopes, [("api://hosted-agent/.default",)])
 
 
 if __name__ == "__main__":

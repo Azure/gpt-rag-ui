@@ -924,6 +924,7 @@ async def handle_message(message: cl.Message):
                 conversation_id=hosted_conversation_id,
                 question_id=message.id,
                 correlation_id=message.id,
+                user_access_token=auth_info.get("access_token"),
             )
             hosted_citations: list[dict] = []
 

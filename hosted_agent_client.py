@@ -13,6 +13,7 @@ from typing import Any, Literal, Protocol
 from urllib.parse import urlparse
 
 import httpx
+import msal
 from azure.core.credentials import AccessToken
 from azure.core.exceptions import AzureError
 from azure.identity.aio import (
@@ -27,6 +28,20 @@ logger = logging.getLogger("gpt_rag_ui.hosted_agent_client")
 config = get_config()
 
 DEFAULT_SSE_IDLE_TIMEOUT_SECONDS = 60.0
+
+# "user_delegated" (default) performs an OAuth2 On-Behalf-Of exchange of the
+# signed-in Chainlit user's own access token, so Microsoft Foundry resolves the
+# end user as the caller identity. This is required for Toolbox per-user
+# document-level security passthrough (see ADR-0001 in Azure/GPT-RAG), which
+# freezes identity passthrough as the required release path and forbids
+# defaulting to a service/group-filter fallback.
+#
+# "service_identity" is an explicit, non-default opt-out that uses this
+# service's own managed-identity/Azure CLI credential. It must be configured
+# deliberately (HOSTED_AGENT_AUTH_MODE=service_identity) and is never selected
+# implicitly or as a fallback.
+HostedAgentAuthMode = Literal["user_delegated", "service_identity"]
+_VALID_AUTH_MODES: frozenset[str] = frozenset({"user_delegated", "service_identity"})
 
 
 class HostedAgentError(RuntimeError):
@@ -73,6 +88,7 @@ class HostedAgentSettings:
     base_url: str
     resource_scope: str
     idle_timeout_seconds: float = DEFAULT_SSE_IDLE_TIMEOUT_SECONDS
+    auth_mode: HostedAgentAuthMode = "user_delegated"
 
     @property
     def invocations_url(self) -> str:
@@ -155,6 +171,17 @@ def _validate_idle_timeout(value: str | None) -> float:
     return timeout
 
 
+def _validate_auth_mode(value: str | None) -> HostedAgentAuthMode:
+    mode = (value or "user_delegated").strip().lower()
+    if mode not in _VALID_AUTH_MODES:
+        raise HostedAgentConfigError(
+            "HOSTED_AGENT_AUTH_MODE must be 'user_delegated' (default; required for "
+            "per-user Toolbox identity passthrough per ADR-0001) or the explicit "
+            f"opt-out 'service_identity'. Got {value!r}."
+        )
+    return mode  # type: ignore[return-value]
+
+
 def load_hosted_agent_settings() -> HostedAgentSettings:
     return HostedAgentSettings(
         base_url=_validate_base_url(_get_config_value("HOSTED_AGENT_BASE_URL")),
@@ -167,12 +194,24 @@ def load_hosted_agent_settings() -> HostedAgentSettings:
                 str(DEFAULT_SSE_IDLE_TIMEOUT_SECONDS),
             )
         ),
+        auth_mode=_validate_auth_mode(
+            _get_config_value("HOSTED_AGENT_AUTH_MODE", "user_delegated")
+        ),
     )
 
 
 def validate_hosted_agent_config() -> None:
-    """Fail startup when hosted mode lacks an endpoint or data-plane scope."""
-    load_hosted_agent_settings()
+    """Fail startup when hosted mode lacks an endpoint or data-plane scope.
+
+    For the default ``user_delegated`` auth mode this also validates that the
+    OAuth confidential-client configuration required for the on-behalf-of
+    exchange (``OAUTH_AZURE_AD_CLIENT_ID`` / ``_CLIENT_SECRET`` / ``_TENANT_ID``)
+    is present, so a misconfigured deployment fails fast at startup rather
+    than on the first user request.
+    """
+    settings = load_hosted_agent_settings()
+    if settings.auth_mode == "user_delegated":
+        _resolve_confidential_client_config()
 
 
 def build_invocation_messages(
@@ -268,6 +307,68 @@ def _default_credential() -> AsyncCredential:
     )
 
 
+def _resolve_confidential_client_config() -> tuple[str, str, str]:
+    """Return (client_id, client_secret, tenant_id) for the OBO exchange.
+
+    Reuses the same OAUTH_AZURE_AD_* configuration as the Chainlit OAuth login
+    (see auth_oauth.py), since the signed-in user's access token was issued to
+    that same app registration and is therefore the correct assertion for an
+    on-behalf-of exchange against the hosted-agent data-plane scope.
+    """
+    client_id = (_get_config_value("OAUTH_AZURE_AD_CLIENT_ID") or "").strip()
+    client_secret = (_get_config_value("OAUTH_AZURE_AD_CLIENT_SECRET") or "").strip()
+    tenant_id = (_get_config_value("OAUTH_AZURE_AD_TENANT_ID") or "").strip()
+    if not client_id or not client_secret or not tenant_id:
+        raise HostedAgentConfigError(
+            "Hosted-agent user-delegated auth (HOSTED_AGENT_AUTH_MODE=user_delegated, "
+            "the default) requires OAUTH_AZURE_AD_CLIENT_ID, OAUTH_AZURE_AD_CLIENT_SECRET, "
+            "and OAUTH_AZURE_AD_TENANT_ID to perform the on-behalf-of token exchange."
+        )
+    return client_id, client_secret, tenant_id
+
+
+async def _acquire_obo_token(user_access_token: str, resource_scope: str) -> str:
+    """Exchange the signed-in user's token for a hosted-agent data-plane token.
+
+    Uses the OAuth2 On-Behalf-Of flow (MSAL) so Microsoft Foundry's gateway
+    resolves the *end user*, not this service, as the caller identity. This is
+    required for Toolbox per-user document-level security passthrough
+    (ADR-0001 in Azure/GPT-RAG). A fresh confidential client is created for
+    each call (matching the pattern in auth_oauth.py); nothing is cached and
+    the token value is never logged.
+    """
+    client_id, client_secret, tenant_id = _resolve_confidential_client_config()
+    authority = f"https://login.microsoftonline.com/{tenant_id}"
+    msal_app = msal.ConfidentialClientApplication(
+        client_id,
+        authority=authority,
+        client_credential=client_secret,
+    )
+
+    def _run_obo() -> dict[str, Any]:
+        return msal_app.acquire_token_on_behalf_of(
+            user_assertion=user_access_token,
+            scopes=[resource_scope],
+        )
+
+    result = await asyncio.to_thread(_run_obo)
+    if "error" in result:
+        logger.warning(
+            "Hosted-agent on-behalf-of token exchange failed: error=%s",
+            result.get("error"),
+        )
+        raise HostedAgentAuthenticationError(
+            "Unable to exchange the signed-in user's token for a hosted-agent "
+            "data-plane token (on-behalf-of exchange failed)."
+        )
+    delegated_token = result.get("access_token")
+    if not delegated_token:
+        raise HostedAgentAuthenticationError(
+            "The on-behalf-of exchange did not return a hosted-agent access token."
+        )
+    return delegated_token
+
+
 class HostedAgentClient:
     """Reusable authenticated HTTP/SSE client for one hosted endpoint."""
 
@@ -298,6 +399,50 @@ class HostedAgentClient:
         if self._owns_credential:
             await self._credential.close()
 
+    async def _acquire_data_plane_token(
+        self, user_access_token: str | None
+    ) -> AccessToken:
+        """Resolve the bearer token to send as Authorization on /invocations.
+
+        Fail-closed by design: the default ("user_delegated") mode never falls
+        back to a service identity when a user token is missing or invalid.
+        Only an explicit HOSTED_AGENT_AUTH_MODE=service_identity configuration
+        uses the server's own managed-identity/Azure CLI credential.
+        """
+        if self.settings.auth_mode == "service_identity":
+            logger.warning(
+                "Hosted-agent auth_mode=service_identity is active: Microsoft "
+                "Foundry will resolve this service, not the signed-in user, as "
+                "the caller. Per ADR-0001 this must not be the default release "
+                "path and should be scoped to explicit, reviewed exceptions."
+            )
+            try:
+                token = await self._credential.get_token(
+                    self.settings.resource_scope
+                )
+            except AzureError as exc:
+                raise HostedAgentAuthenticationError(
+                    "Unable to acquire a hosted-agent data-plane token."
+                ) from exc
+            if not token.token:
+                raise HostedAgentAuthenticationError(
+                    "The hosted-agent credential returned an empty access token."
+                )
+            return token
+
+        stripped_user_token = (user_access_token or "").strip()
+        if not stripped_user_token:
+            raise HostedAgentAuthenticationError(
+                "A signed-in user access token is required to call the hosted "
+                "agent (HOSTED_AGENT_AUTH_MODE=user_delegated, the default). "
+                "Refusing to fall back to a service identity: ADR-0001 requires "
+                "per-user Toolbox identity passthrough on the hosted path."
+            )
+        delegated_token = await _acquire_obo_token(
+            stripped_user_token, self.settings.resource_scope
+        )
+        return AccessToken(delegated_token, 0)
+
     async def stream(
         self,
         messages: Sequence[InvocationMessage],
@@ -305,24 +450,14 @@ class HostedAgentClient:
         conversation_id: str = "",
         question_id: str | None = None,
         correlation_id: str | None = None,
+        user_access_token: str | None = None,
     ) -> AsyncGenerator[tuple[str, dict[str, Any]], None]:
         if not messages or messages[-1].role != "user" or not messages[-1].content.strip():
             raise HostedAgentProtocolError(
                 "Invocation messages must end in a non-empty user message."
             )
 
-        try:
-            access_token = await self._credential.get_token(
-                self.settings.resource_scope
-            )
-        except AzureError as exc:
-            raise HostedAgentAuthenticationError(
-                "Unable to acquire a hosted-agent data-plane token."
-            ) from exc
-        if not access_token.token:
-            raise HostedAgentAuthenticationError(
-                "The hosted-agent credential returned an empty access token."
-            )
+        access_token = await self._acquire_data_plane_token(user_access_token)
 
         metadata: dict[str, str] = {}
         if question_id:
@@ -465,6 +600,7 @@ async def call_hosted_agent_stream(
     conversation_id: str = "",
     question_id: str | None = None,
     correlation_id: str | None = None,
+    user_access_token: str | None = None,
     client: HostedAgentClient | None = None,
 ) -> AsyncGenerator[tuple[str, dict[str, Any]], None]:
     """Stream parsed Responses events without any classic-backend fallback."""
@@ -474,5 +610,6 @@ async def call_hosted_agent_stream(
         conversation_id=conversation_id,
         question_id=question_id,
         correlation_id=correlation_id,
+        user_access_token=user_access_token,
     ):
         yield item
