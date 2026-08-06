@@ -80,17 +80,34 @@ azd deploy
 
 ### Hosted-agent chat backend
 
-The default `CHAT_BACKEND=orchestrator` behavior is unchanged. To use the
-Microsoft Foundry hosted runtime, set these values in Azure App Configuration
-with the `gpt-rag` label (or as environment variables for local development):
+Fresh deployments use the Microsoft Foundry hosted runtime when `CHAT_BACKEND`
+is absent or blank. Configure these values in Azure App Configuration with the
+`gpt-rag` label (or as environment variables for local development):
 
 | Setting | Required | Description |
 | --- | --- | --- |
-| `CHAT_BACKEND` | Yes | Set to `hosted_agent`. Any other value except `orchestrator` fails startup; there is no backend fallback. |
-| `HOSTED_AGENT_BASE_URL` | Yes | HTTPS base URL of the deployed hosted orchestrator. The UI sends `POST /invocations` to this URL. |
-| `HOSTED_AGENT_RESOURCE_SCOPE` | Yes | Exact deployed data-plane audience as an Entra scope ending in `/.default`, for example `api://<application-id>/.default`. The Azure Resource Manager scope is rejected. |
+| `CHAT_BACKEND` | No | Unset or blank selects `hosted_agent`. Set exactly `orchestrator` for the supported Container Apps fallback. Any other value fails startup. |
+| `HOSTED_AGENT_BASE_URL` | In hosted mode | HTTPS base URL of the deployed hosted orchestrator. The UI sends `POST /invocations` to this URL. |
+| `HOSTED_AGENT_RESOURCE_SCOPE` | In hosted mode | Exact deployed data-plane audience as an Entra scope ending in `/.default`, for example `api://<application-id>/.default`. The Azure Resource Manager scope is rejected. |
 | `HOSTED_AGENT_SSE_IDLE_TIMEOUT_SECONDS` | No | Maximum wait for the next SSE data from the hosted runtime. Defaults to 60 seconds and must be finite and positive. |
 | `HOSTED_AGENT_AUTH_MODE` | No | `user_delegated` (default) or `service_identity`. See below — the default is required for Toolbox per-user document authorization ([ADR-0001](https://github.com/Azure/GPT-RAG), [Azure/GPT-RAG#591](https://github.com/Azure/GPT-RAG/issues/591)). |
+
+Hosted configuration, authentication, connection, timeout, protocol, and
+runtime failures are terminal for that request or startup. The UI never
+silently switches to the orchestrator.
+
+#### Explicit orchestrator fallback and existing deployments
+
+Set `CHAT_BACKEND=orchestrator` to use the supported Container Apps
+orchestrator backend. Hosted-agent prerequisites are not evaluated in this
+explicit mode.
+
+Existing deployments that must retain the orchestrator during an upgrade
+should be pinned by the umbrella deployment through its sticky Azure App
+Configuration value (`CHAT_BACKEND=orchestrator`). The UI deliberately does
+not infer an existing deployment's backend from URLs, missing hosted settings,
+or other legacy configuration; without the explicit sticky value, the new
+hosted default applies and its startup validation fails closed.
 
 #### Caller identity: on-behalf-of (OBO) by default
 

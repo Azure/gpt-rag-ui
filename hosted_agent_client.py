@@ -1,4 +1,4 @@
-"""Async client for the opt-in Microsoft Foundry hosted-agent chat path."""
+"""Async client for the default Microsoft Foundry hosted-agent chat path."""
 
 from __future__ import annotations
 
@@ -380,8 +380,11 @@ class HostedAgentClient:
         http_client: httpx.AsyncClient | None = None,
     ):
         self.settings = settings
-        self._credential = credential or _default_credential()
-        self._owns_credential = credential is None
+        self._credential = credential
+        self._owns_credential = False
+        if self.settings.auth_mode == "service_identity" and self._credential is None:
+            self._credential = _default_credential()
+            self._owns_credential = True
         self._http_client = http_client or httpx.AsyncClient(
             timeout=httpx.Timeout(
                 connect=10.0,
@@ -396,7 +399,7 @@ class HostedAgentClient:
     async def aclose(self) -> None:
         if self._owns_http_client:
             await self._http_client.aclose()
-        if self._owns_credential:
+        if self._owns_credential and self._credential is not None:
             await self._credential.close()
 
     async def _acquire_data_plane_token(
@@ -416,6 +419,10 @@ class HostedAgentClient:
                 "the caller. Per ADR-0001 this must not be the default release "
                 "path and should be scoped to explicit, reviewed exceptions."
             )
+            if self._credential is None:
+                raise HostedAgentAuthenticationError(
+                    "Hosted-agent service identity credential is not configured."
+                )
             try:
                 token = await self._credential.get_token(
                     self.settings.resource_scope

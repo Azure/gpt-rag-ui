@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 import chainlit as cl
 import httpx
 
-from chat_backend import resolve_chat_backend, select_upload_conversation_id
+from chat_backend import load_chat_backend, select_upload_conversation_id
 from orchestrator_client import call_orchestrator_stream
 from feedback import register_feedback_handlers,create_feedback_actions
 from dependencies import get_config
@@ -33,7 +33,7 @@ config = get_config()
 
 Telemetry.configure_monitoring(config, APPLICATION_INSIGHTS_CONNECTION_STRING, APP_NAME)
 
-CHAT_BACKEND = resolve_chat_backend(config.get("CHAT_BACKEND", "orchestrator", str))
+CHAT_BACKEND = load_chat_backend(config)
 
 if CHAT_BACKEND == "hosted_agent":
     from hosted_agent_client import (  # noqa: E402
@@ -44,6 +44,8 @@ if CHAT_BACKEND == "hosted_agent":
     )
     validate_hosted_agent_config()
     logger.info("Chat backend: hosted_agent")
+else:
+    logger.info("Chat backend: orchestrator (explicit fallback)")
 
 ENABLE_FEEDBACK = config.get("ENABLE_USER_FEEDBACK", False, bool)
 _is_running_in_azure_host = bool(
@@ -1076,7 +1078,7 @@ async def handle_message(message: cl.Message):
 
         else:
             # ------------------------------------------------------------------
-            # Classic orchestrator path (default: CHAT_BACKEND=orchestrator)
+            # Explicit classic orchestrator fallback (CHAT_BACKEND=orchestrator)
             # ------------------------------------------------------------------
             logger.info(
                 "Forwarding request to orchestrator: conversation=%s question_id=%s user=%s authorized=%s groups=%d",

@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [v2.6.0] - 2026-08-06
+
+### Added
+- **Repository-local release skill:** Added a reusable GitHub Copilot `release` skill that discovers and reconciles authoritative version evidence, prepares SemVer-aligned release metadata and sanitized notes, validates branch and pull-request targets, and documents rollback paths while requiring explicit human approval before publishing tags, releases, packages, images, deployments, or Azure changes.
+
+### Changed
+- **Microsoft Foundry hosted/no-panel is now the default chat runtime for fresh deployments:** When `CHAT_BACKEND` is absent or blank, the UI now selects `hosted_agent` and validates its explicit base URL, data-plane scope, finite timeout, signed-in user token path, and OBO confidential-client credentials without falling back to the Container Apps orchestrator or a managed identity. `CHAT_BACKEND=orchestrator` remains an explicit supported fallback. Existing deployments retain classic behavior only through the umbrella deployment's sticky Azure App Configuration selection; the UI does not infer a backend from legacy settings.
+
 ## [v2.5.1] - 2026-08-05
 
 ### Fixed
