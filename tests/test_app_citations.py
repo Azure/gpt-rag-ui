@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 os.environ.setdefault("CHAINLIT_AUTH_SECRET", "test-secret")
+os.environ["CHAT_BACKEND"] = "orchestrator"
 
 with (
     patch("telemetry.Telemetry.configure_monitoring"),

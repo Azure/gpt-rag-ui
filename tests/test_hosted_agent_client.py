@@ -2,13 +2,17 @@ import asyncio
 import json
 import os
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import httpx
 from azure.core.credentials import AccessToken
 from azure.core.exceptions import ClientAuthenticationError
 
-from chat_backend import resolve_chat_backend, select_upload_conversation_id
+from chat_backend import (
+    load_chat_backend,
+    resolve_chat_backend,
+    select_upload_conversation_id,
+)
 from hosted_agent_client import (
     HostedAgentAuthenticationError,
     HostedAgentCancelledError,
@@ -214,6 +218,20 @@ class TestStartupValidation(unittest.TestCase):
         ):
             self._validate(dict(self._BASE_VALUES))
 
+    def test_missing_backend_defaults_hosted_and_fails_before_client_creation(self):
+        with (
+            patch("hosted_agent_client.httpx.AsyncClient") as http_client,
+            patch("hosted_agent_client._default_credential") as default_credential,
+        ):
+            self.assertEqual(resolve_chat_backend(None), "hosted_agent")
+            with self.assertRaisesRegex(
+                HostedAgentConfigError, "HOSTED_AGENT_BASE_URL"
+            ):
+                self._validate({})
+
+        http_client.assert_not_called()
+        default_credential.assert_not_called()
+
     def test_user_delegated_default_passes_startup_when_oauth_config_present(self):
         values = {**self._BASE_VALUES, **self._FULL_OAUTH_VALUES}
         # Must not raise.
@@ -241,11 +259,37 @@ class TestStartupValidation(unittest.TestCase):
 
 
 class TestBackendSelection(unittest.TestCase):
-    def test_classic_is_the_default(self):
-        self.assertEqual(resolve_chat_backend(None), "orchestrator")
+    def test_hosted_agent_is_the_default_when_backend_is_missing(self):
+        self.assertEqual(resolve_chat_backend(None), "hosted_agent")
+        self.assertEqual(resolve_chat_backend(""), "hosted_agent")
+        self.assertEqual(resolve_chat_backend("   "), "hosted_agent")
 
-    def test_hosted_mode_is_explicit(self):
+        config = Mock()
+        config.get.return_value = ""
+        self.assertEqual(load_chat_backend(config, environment={}), "hosted_agent")
+        config.get.assert_called_once_with("CHAT_BACKEND", "", str)
+
+    def test_explicit_hosted_mode_is_supported(self):
         self.assertEqual(resolve_chat_backend(" hosted_agent "), "hosted_agent")
+
+    def test_orchestrator_is_an_explicit_supported_fallback(self):
+        self.assertEqual(resolve_chat_backend(" orchestrator "), "orchestrator")
+
+        config = Mock()
+        config.get.return_value = "orchestrator"
+        self.assertEqual(load_chat_backend(config, environment={}), "orchestrator")
+
+    def test_environment_backend_selection_overrides_app_configuration(self):
+        config = Mock()
+        config.get.return_value = "orchestrator"
+        self.assertEqual(
+            load_chat_backend(
+                config,
+                environment={"CHAT_BACKEND": "hosted_agent"},
+            ),
+            "hosted_agent",
+        )
+        config.get.assert_not_called()
 
     def test_unknown_backend_fails_instead_of_falling_back(self):
         with self.assertRaisesRegex(RuntimeError, "Unknown CHAT_BACKEND"):
@@ -810,6 +854,28 @@ class TestUserDelegatedAuth(unittest.IsolatedAsyncioTestCase):
         )
         with self.assertRaises(HostedAgentConfigError):
             _validate_auth_mode("something-else")
+
+    async def test_default_mode_does_not_construct_service_credential(self):
+        requests: list[httpx.Request] = []
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return httpx.Response(500)
+
+        http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        self.addAsyncCleanup(http_client.aclose)
+
+        with patch("hosted_agent_client._default_credential") as default_credential:
+            client = HostedAgentClient(self.settings, http_client=http_client)
+            with self.assertRaises(HostedAgentAuthenticationError):
+                async for _ in client.stream(
+                    [InvocationMessage("user", "hello")],
+                    user_access_token=None,
+                ):
+                    pass
+
+        default_credential.assert_not_called()
+        self.assertEqual(requests, [])
 
     async def _client(
         self, *, capture: list[dict] | None = None, credential=None
