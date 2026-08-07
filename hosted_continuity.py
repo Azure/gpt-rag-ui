@@ -52,12 +52,18 @@ Per turn, in order:
    render an explicit failure rather than treat the already-streamed
    assistant text as a successfully committed turn. An idempotent client
    turn id prevents a duplicate append on retry.
+
+An optional ``on_conversation_created`` hook (issue #611, ADR-0004) lets the
+panel's user-facing surfaces keep a Cosmos-backed owner index in step with
+newly created managed conversations, without this module or the hosted
+container ever touching panel Cosmos itself; see ``HostedContinuityCoordinator``
+below.
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from typing import Any
 
 from auth_common import normalize_guid
@@ -130,6 +136,7 @@ class HostedContinuityCoordinator:
         capability_manager: ConversationCapabilityManager | None = None,
         locks: ConversationLockRegistry | None = None,
         idempotency: ConversationIdempotencyCache | None = None,
+        on_conversation_created: Callable[[str, str], Awaitable[None]] | None = None,
     ) -> None:
         if not settings.enabled:
             raise ValueError(
@@ -145,6 +152,25 @@ class HostedContinuityCoordinator:
         self._capabilities = capability_manager
         self._locks = locks or ConversationLockRegistry()
         self._idempotency = idempotency or ConversationIdempotencyCache()
+        # Optional, panel-only hook (issue #611, ADR-0004): invoked with
+        # ``(oid, conversation_id)`` exactly once, immediately after this
+        # coordinator creates a brand-new managed conversation for the
+        # current authenticated user, so the panel's owner index can be
+        # kept in step with the system of record. Never invoked for a
+        # *presented* (existing) conversation reference, and never given a
+        # caller-supplied conversation id. Best-effort: any exception is
+        # logged and swallowed here so a panel metadata hiccup never fails
+        # the user's turn -- a missed write only yields a stale/absent list
+        # row, never content disclosure (see ADR-0004 consequences).
+        self._on_conversation_created = on_conversation_created
+
+    @property
+    def store(self) -> ConversationStoreClient:
+        """The managed-Conversations system-of-record client this
+        coordinator owns. Exposed so other authenticated-BFF-only surfaces
+        (the panel's user-facing routes, ``panel_routes.py``) can reuse the
+        exact same client/credentials instead of constructing a duplicate."""
+        return self._store
 
     async def _resolve_conversation_id(
         self,
@@ -311,6 +337,7 @@ class HostedContinuityCoordinator:
             raise HostedAgentError("A client turn id is required for idempotent append.")
 
         canonical_oid = normalize_guid(oid, claim_name="oid")
+        is_new_conversation = not capability.strip()
         conversation_id, resolved_owner_ref = await self._resolve_conversation_id(
             owner_ref=capability,
             oid=canonical_oid,
@@ -320,6 +347,17 @@ class HostedContinuityCoordinator:
             "capability": resolved_owner_ref,
             "conversation_id": conversation_id,
         }
+
+        if is_new_conversation and self._on_conversation_created is not None:
+            try:
+                await self._on_conversation_created(canonical_oid, conversation_id)
+            except Exception:
+                logger.exception(
+                    "Panel owner-index write failed for a newly created "
+                    "hosted conversation; continuing the turn (a missed "
+                    "write only yields a stale/absent panel list row, "
+                    "never content disclosure)."
+                )
 
         lock = await self._locks.acquire(conversation_id)
         async with lock:

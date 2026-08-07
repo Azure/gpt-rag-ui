@@ -62,6 +62,27 @@ if CHAT_BACKEND == "hosted_agent":
     HOSTED_CONTINUITY_ENABLED = HOSTED_CONTINUITY_SETTINGS.enabled
     if HOSTED_CONTINUITY_ENABLED:
         logger.info("Hosted-agent cross-version continuity: enabled")
+
+    from panel_config import load_panel_settings  # noqa: E402
+
+    PANEL_SETTINGS = load_panel_settings(config)
+    if PANEL_SETTINGS.user_surfaces_active:
+        logger.info("Administrative panel user-facing history/feedback: enabled")
+
+    async def _panel_owner_index_writer(oid: str, conversation_id: str) -> None:
+        """Best-effort owner-index write for a brand-new hosted conversation
+        (issue #611, ADR-0004). Only registered below when the panel's
+        user-facing surfaces are active; a failure here is logged by the
+        caller (``hosted_continuity.HostedContinuityCoordinator.run_turn``)
+        and never fails the user's turn."""
+        from panel_cosmos import get_panel_cosmos_client
+        from panel_store import upsert_owner_index_row
+
+        client = get_panel_cosmos_client(PANEL_SETTINGS, config)
+        await upsert_owner_index_row(
+            client=client, principal_id=oid, conversation_id=conversation_id
+        )
+
     _hosted_continuity_coordinator: "HostedContinuityCoordinator | None" = None
 
     def _get_hosted_continuity_coordinator() -> HostedContinuityCoordinator:
@@ -84,11 +105,20 @@ if CHAT_BACKEND == "hosted_agent":
                     owner_binding=HOSTED_CONTINUITY_SETTINGS.owner_binding,
                 ),
                 capability_manager=capability_manager,
+                on_conversation_created=(
+                    _panel_owner_index_writer
+                    if PANEL_SETTINGS.user_surfaces_active
+                    else None
+                ),
             )
         return _hosted_continuity_coordinator
 else:
     logger.info("Chat backend: orchestrator (explicit fallback)")
     HOSTED_CONTINUITY_ENABLED = False
+
+    from panel_config import PanelSettings as _PanelSettings  # noqa: E402
+
+    PANEL_SETTINGS = _PanelSettings()
 
 ENABLE_FEEDBACK = config.get("ENABLE_USER_FEEDBACK", False, bool)
 _is_running_in_azure_host = bool(
