@@ -7,6 +7,7 @@ from hosted_conversation_store import (
     ConversationIdempotencyCache,
     ConversationItem,
     ConversationLockRegistry,
+    ConversationStoreAccessDeniedError,
     ConversationStoreAuthenticationError,
     ConversationStoreClient,
     ConversationStoreHTTPError,
@@ -32,10 +33,12 @@ class FakeTransport(httpx.AsyncBaseTransport):
         return self.handler(request)
 
 
-def _client_with(handler) -> tuple[ConversationStoreClient, FakeTransport]:
+def _client_with(handler, *, owner_binding: str = "capability") -> tuple[ConversationStoreClient, FakeTransport]:
     transport = FakeTransport(handler)
     http_client = httpx.AsyncClient(transport=transport)
-    client = ConversationStoreClient(_settings(), http_client=http_client)
+    client = ConversationStoreClient(
+        _settings(), owner_binding=owner_binding, http_client=http_client
+    )
     return client, transport
 
 
@@ -151,7 +154,7 @@ class TestConversationStoreClient(unittest.IsolatedAsyncioTestCase):
 
     async def test_list_items_raises_on_404(self):
         client, _ = _client_with(lambda request: httpx.Response(404))
-        with self.assertRaises(ConversationStoreHTTPError):
+        with self.assertRaises(ConversationStoreAccessDeniedError):
             await client.list_items_ascending(
                 user_access_token="user-token", conversation_id="missing", limit=10
             )
@@ -218,6 +221,146 @@ class TestConversationStoreClient(unittest.IsolatedAsyncioTestCase):
             await client.delete_conversation(
                 user_access_token="user-token", conversation_id="conv-1"
             )
+        await client.aclose()
+
+
+class TestConversationStoreDelegatedOwnerBinding(unittest.IsolatedAsyncioTestCase):
+    """Covers HOSTED_CONVERSATION_OWNER_BINDING=delegated: a trusted
+    middle-tier service-identity bearer plus an x-ms-user-identity header
+    derived only from the caller's validated oid (Azure/GPT-RAG#591,
+    "OQ-OWN")."""
+
+    _OID = "11111111-1111-1111-1111-111111111111"
+
+    async def asyncSetUp(self):
+        patcher = patch(
+            "hosted_conversation_store.acquire_service_identity_token",
+            new=AsyncMock(return_value="service-token"),
+        )
+        self.mock_service_token = patcher.start()
+        self.addCleanup(patcher.stop)
+        obo_patcher = patch(
+            "hosted_conversation_store.acquire_obo_token",
+            new=AsyncMock(side_effect=AssertionError("OBO must not be used in delegated mode")),
+        )
+        obo_patcher.start()
+        self.addCleanup(obo_patcher.stop)
+
+    async def test_create_conversation_uses_service_bearer_and_identity_header(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            self.assertEqual(request.headers["Authorization"], "Bearer service-token")
+            self.assertEqual(request.headers["x-ms-user-identity"], self._OID)
+            return httpx.Response(200, json={"id": "conv-abc"})
+
+        client, _ = _client_with(handler, owner_binding="delegated")
+        conversation_id = await client.create_conversation(oid=self._OID)
+        self.assertEqual(conversation_id, "conv-abc")
+        self.mock_service_token.assert_awaited_once_with("api://hosted-agent/.default")
+        await client.aclose()
+
+    async def test_header_is_derived_only_from_oid_never_from_other_input(self):
+        # Passing an unrelated (and intentionally wrong-shaped) user_access_token
+        # must have zero effect on the header value derived from oid: the
+        # header must never be sourced from any client/browser-controlled
+        # field other than the server-validated oid.
+        captured = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["identity"] = request.headers["x-ms-user-identity"]
+            return httpx.Response(200, json={"id": "conv-abc"})
+
+        client, _ = _client_with(handler, owner_binding="delegated")
+        await client.create_conversation(
+            user_access_token="attacker-controlled-value-should-be-ignored",
+            oid=self._OID,
+        )
+        self.assertEqual(captured["identity"], self._OID)
+        await client.aclose()
+
+    async def test_header_normalizes_oid_casing(self):
+        captured = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["identity"] = request.headers["x-ms-user-identity"]
+            return httpx.Response(200, json={"id": "conv-abc"})
+
+        client, _ = _client_with(handler, owner_binding="delegated")
+        await client.create_conversation(oid=self._OID.upper())
+        self.assertEqual(captured["identity"], self._OID)
+        await client.aclose()
+
+    async def test_missing_oid_is_rejected_before_any_request(self):
+        calls = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append(request)
+            return httpx.Response(200, json={"id": "conv-abc"})
+
+        client, _ = _client_with(handler, owner_binding="delegated")
+        with self.assertRaises(ConversationStoreAuthenticationError):
+            await client.create_conversation(oid="")
+        self.assertEqual(len(calls), 0, "must fail closed before any network call")
+        await client.aclose()
+
+    async def test_malformed_oid_is_rejected(self):
+        client, _ = _client_with(
+            lambda request: httpx.Response(200, json={"id": "conv-abc"}),
+            owner_binding="delegated",
+        )
+        with self.assertRaises(ConversationStoreAuthenticationError):
+            await client.create_conversation(oid="not-a-guid")
+        await client.aclose()
+
+    async def test_cross_user_read_returns_access_denied_not_a_generic_error(self):
+        # Simulates the platform's own per-user ownership enforcement: a
+        # conversation id that does not belong to the currently asserted oid
+        # is denied (404), distinctly from a generic infrastructure failure.
+        client, _ = _client_with(lambda request: httpx.Response(404), owner_binding="delegated")
+        with self.assertRaises(ConversationStoreAccessDeniedError):
+            await client.list_items_ascending(
+                oid=self._OID, conversation_id="someone-elses-conversation", limit=10
+            )
+        await client.aclose()
+
+    async def test_raw_conversation_id_cannot_bypass_platform_enforcement(self):
+        # Even a plausible-looking, guessed/stolen raw conversation id must
+        # not be trusted by this client: the platform itself (simulated here
+        # via a 403) is what enforces ownership, not any local heuristic. No
+        # special-case in this client accepts a caller-asserted "trust me,
+        # this id is mine" claim.
+        client, _ = _client_with(lambda request: httpx.Response(403), owner_binding="delegated")
+        with self.assertRaises(ConversationStoreAccessDeniedError):
+            await client.list_items_ascending(
+                oid=self._OID, conversation_id="raw-guessed-id", limit=10
+            )
+        await client.aclose()
+
+    async def test_non_delegated_missing_header_scenario_is_still_403_surfaced(self):
+        # Defensive: if a deployment's platform ever returns 401 for a
+        # missing/invalid header scenario, it must still surface as
+        # access-denied, not a silent success or an ambiguous generic error.
+        client, _ = _client_with(lambda request: httpx.Response(401), owner_binding="delegated")
+        with self.assertRaises(ConversationStoreAccessDeniedError):
+            await client.list_items_ascending(
+                oid=self._OID, conversation_id="conv-1", limit=10
+            )
+        await client.aclose()
+
+    async def test_append_and_delete_also_use_identity_header(self):
+        seen_headers = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen_headers.append(request.headers.get("x-ms-user-identity"))
+            return httpx.Response(200, json={})
+
+        client, _ = _client_with(handler, owner_binding="delegated")
+        await client.append_items(
+            oid=self._OID,
+            conversation_id="conv-1",
+            items=[{"type": "message", "role": "user", "content": "hi"}],
+        )
+        await client.delete_conversation(oid=self._OID, conversation_id="conv-1")
+        self.assertEqual(seen_headers, [self._OID, self._OID])
         await client.aclose()
 
 

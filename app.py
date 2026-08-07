@@ -66,19 +66,23 @@ if CHAT_BACKEND == "hosted_agent":
     def _get_hosted_continuity_coordinator() -> HostedContinuityCoordinator:
         global _hosted_continuity_coordinator
         if _hosted_continuity_coordinator is None:
+            capability_manager = None
+            if HOSTED_CONTINUITY_SETTINGS.uses_capability_binding:
+                capability_manager = ConversationCapabilityManager(
+                    key=HOSTED_CONTINUITY_SETTINGS.capability_key,
+                    key_id=HOSTED_CONTINUITY_SETTINGS.capability_key_id,
+                    ttl_seconds=HOSTED_CONTINUITY_SETTINGS.capability_ttl_seconds,
+                )
             _hosted_continuity_coordinator = HostedContinuityCoordinator(
                 settings=HOSTED_CONTINUITY_SETTINGS,
                 store=ConversationStoreClient(
                     ConversationStoreSettings(
                         base_url=HOSTED_CONTINUITY_SETTINGS.store_base_url,
                         resource_scope=HOSTED_CONTINUITY_SETTINGS.store_resource_scope,
-                    )
+                    ),
+                    owner_binding=HOSTED_CONTINUITY_SETTINGS.owner_binding,
                 ),
-                capability_manager=ConversationCapabilityManager(
-                    key=HOSTED_CONTINUITY_SETTINGS.capability_key,
-                    key_id=HOSTED_CONTINUITY_SETTINGS.capability_key_id,
-                    ttl_seconds=HOSTED_CONTINUITY_SETTINGS.capability_ttl_seconds,
-                ),
+                capability_manager=capability_manager,
             )
         return _hosted_continuity_coordinator
 else:

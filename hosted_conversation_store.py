@@ -14,6 +14,26 @@ that Azure AI Foundry model endpoints expose alongside the Responses API.
 Validate the exact deployed path and API version against the target Foundry
 resource before enabling ``HOSTED_CONTINUITY_ENABLED`` in a given environment
 (see README.md and the residual risks noted in the pull request).
+
+Owner binding (``HOSTED_CONVERSATION_OWNER_BINDING``, see
+``hosted_continuity_config.py``) controls how every call here authenticates
+and asserts ownership:
+
+* ``delegated`` (preferred/default) — this BFF authenticates as itself (a
+  trusted middle-tier service identity, see
+  ``hosted_agent_client.acquire_service_identity_token``) and attaches an
+  ``x-ms-user-identity`` header carrying only the caller's validated Entra
+  ``oid``. Per live evidence (Azure/GPT-RAG#591, "OQ-OWN"), Azure AI Foundry
+  enforces per-asserted-user ownership of this state when the middle-tier
+  identity also holds the custom ``UserIdentityImpersonation`` data action:
+  a foreign/stale conversation id raises ``ConversationStoreAccessDeniedError``
+  rather than ever silently returning someone else's history. This header is
+  never the on-behalf-of (OBO) token used elsewhere for Toolbox per-user
+  document retrieval (ADR-0001) — the two trust models are intentionally
+  kept separate.
+* ``capability`` (disabled fallback) — every call instead uses the caller's
+  own OBO-delegated token as the bearer, so Foundry authorizes the operation
+  as the actual signed-in end user (no ``x-ms-user-identity`` header).
 """
 
 from __future__ import annotations
@@ -27,11 +47,14 @@ from typing import Literal
 
 import httpx
 
-from hosted_agent_client import acquire_obo_token
+from auth_common import normalize_guid
+from hosted_agent_client import acquire_obo_token, acquire_service_identity_token
 
 logger = logging.getLogger("gpt_rag_ui.hosted_conversation_store")
 
 _MAX_IDEMPOTENCY_CACHE_ENTRIES = 2048
+
+ConversationStoreOwnerBinding = Literal["capability", "delegated"]
 
 
 class ConversationStoreError(RuntimeError):
@@ -44,6 +67,23 @@ class ConversationStoreAuthenticationError(ConversationStoreError):
 
 class ConversationStoreHTTPError(ConversationStoreError):
     """Raised when the Conversations API returns a non-success status."""
+
+
+class ConversationStoreAccessDeniedError(ConversationStoreHTTPError):
+    """Raised when the platform denies access to a managed conversation for
+    the currently asserted identity (HTTP 401/403/404 on a read).
+
+    Under ``HOSTED_CONVERSATION_OWNER_BINDING=delegated`` this is the
+    platform's own per-user ownership enforcement rejecting a foreign, stale,
+    or otherwise inaccessible conversation id under the caller's own
+    asserted oid — it is expected, safe-to-recover-from behavior, not
+    necessarily an infrastructure fault. Callers resolving which conversation
+    to use for a turn must treat this distinctly from a generic
+    ``ConversationStoreHTTPError`` raised elsewhere in the same turn (which
+    still must fail closed): discard the untrusted reference and start a
+    fresh managed conversation under the current user's own identity, the
+    same fail-safe behavior already used for a rejected capability.
+    """
 
 
 @dataclass(frozen=True)
@@ -137,18 +177,26 @@ class ConversationIdempotencyCache:
 
 class ConversationStoreClient:
     """Async client owning create/read/append/delete for the Conversations
-    system-of-record, always using the caller's own delegated identity (never
-    a service identity), so Foundry authorizes each Conversations operation as
-    the actual signed-in end user.
+    system-of-record.
+
+    The authentication/ownership-assertion strategy is fixed at construction
+    time via ``owner_binding`` (see module docstring): ``delegated`` uses this
+    service's own credential plus an ``x-ms-user-identity`` header derived
+    only from the caller's validated oid; ``capability`` uses the caller's
+    own OBO-delegated token as the bearer with no special header. Either way,
+    Foundry ends up authorizing each Conversations operation against a
+    concrete end-user identity, never an anonymous or ambiguous one.
     """
 
     def __init__(
         self,
         settings: ConversationStoreSettings,
         *,
+        owner_binding: ConversationStoreOwnerBinding = "capability",
         http_client: httpx.AsyncClient | None = None,
     ) -> None:
         self.settings = settings
+        self.owner_binding: ConversationStoreOwnerBinding = owner_binding
         self._http_client = http_client or httpx.AsyncClient(
             timeout=httpx.Timeout(connect=10.0, read=30.0, write=30.0, pool=10.0),
             follow_redirects=False,
@@ -159,7 +207,31 @@ class ConversationStoreClient:
         if self._owns_http_client:
             await self._http_client.aclose()
 
-    async def _headers(self, user_access_token: str) -> dict[str, str]:
+    async def _headers(
+        self,
+        *,
+        user_access_token: str | None = None,
+        oid: str | None = None,
+    ) -> dict[str, str]:
+        if self.owner_binding == "delegated":
+            try:
+                canonical_oid = normalize_guid(oid or "", claim_name="oid")
+            except ValueError as exc:
+                raise ConversationStoreAuthenticationError(
+                    "A validated Entra oid is required to derive the "
+                    "x-ms-user-identity header for delegated owner binding."
+                ) from exc
+            service_token = await acquire_service_identity_token(
+                self.settings.resource_scope
+            )
+            return {
+                "Authorization": f"Bearer {service_token}",
+                "Content-Type": "application/json",
+                # Derived exclusively from the server-validated Entra oid
+                # above — never from any client/browser-supplied value.
+                "x-ms-user-identity": canonical_oid,
+            }
+
         stripped = (user_access_token or "").strip()
         if not stripped:
             raise ConversationStoreAuthenticationError(
@@ -172,13 +244,18 @@ class ConversationStoreClient:
             "Content-Type": "application/json",
         }
 
-    async def create_conversation(self, *, user_access_token: str) -> str:
+    async def create_conversation(
+        self,
+        *,
+        user_access_token: str | None = None,
+        oid: str | None = None,
+    ) -> str:
         """Create a brand-new managed conversation under the caller's own
         identity. Callers must only invoke this to start continuity for the
         *current* authenticated user's own request flow, never to materialize
         an arbitrary caller-supplied conversation id.
         """
-        headers = await self._headers(user_access_token)
+        headers = await self._headers(user_access_token=user_access_token, oid=oid)
         url = _conversations_url(self.settings.base_url)
         response = await self._http_client.post(url, json={}, headers=headers)
         if not 200 <= response.status_code < 300:
@@ -201,27 +278,37 @@ class ConversationStoreClient:
     async def list_items_ascending(
         self,
         *,
-        user_access_token: str,
+        user_access_token: str | None = None,
+        oid: str | None = None,
         conversation_id: str,
         limit: int,
     ) -> list[ConversationItem]:
         """Read ordered (oldest-first) items for one managed conversation.
 
-        Raises ``ConversationStoreHTTPError`` on any failure, including a 404
-        — callers must treat a read failure as a hard error and must never
-        silently fall back to starting a fresh, unrelated conversation on a
-        read error (only an invalid/expired/forged capability should do
-        that).
+        Raises ``ConversationStoreAccessDeniedError`` (a subclass of
+        ``ConversationStoreHTTPError``) on HTTP 401/403/404 — under
+        delegated owner binding this is the platform itself denying the
+        currently asserted identity access to this conversation id (a
+        foreign, stale, or otherwise inaccessible reference), and callers
+        resolving which conversation to use for a turn may treat it as safe
+        to recover from by starting a fresh conversation. Any other failure
+        raises the plain ``ConversationStoreHTTPError`` base class and
+        callers must never silently fall back to a fresh conversation for
+        those — only an explicitly access-denied or invalid/expired
+        capability reference may do that.
         """
-        headers = await self._headers(user_access_token)
+        headers = await self._headers(user_access_token=user_access_token, oid=oid)
         url = _conversations_url(self.settings.base_url, conversation_id, "items")
         response = await self._http_client.get(
             url,
             headers=headers,
             params={"order": "asc", "limit": max(1, min(limit, 100))},
         )
-        if response.status_code == 404:
-            raise ConversationStoreHTTPError("The managed conversation was not found.")
+        if response.status_code in (401, 403, 404):
+            raise ConversationStoreAccessDeniedError(
+                "Access to the managed conversation was denied "
+                f"(HTTP {response.status_code})."
+            )
         if not 200 <= response.status_code < 300:
             raise ConversationStoreHTTPError(
                 f"Failed to read the managed conversation (HTTP {response.status_code})."
@@ -256,7 +343,8 @@ class ConversationStoreClient:
     async def append_items(
         self,
         *,
-        user_access_token: str,
+        user_access_token: str | None = None,
+        oid: str | None = None,
         conversation_id: str,
         items: Sequence[dict],
     ) -> None:
@@ -266,7 +354,7 @@ class ConversationStoreClient:
         """
         if not items:
             return
-        headers = await self._headers(user_access_token)
+        headers = await self._headers(user_access_token=user_access_token, oid=oid)
         url = _conversations_url(self.settings.base_url, conversation_id, "items")
         response = await self._http_client.post(
             url,
@@ -281,10 +369,11 @@ class ConversationStoreClient:
     async def delete_conversation(
         self,
         *,
-        user_access_token: str,
+        user_access_token: str | None = None,
+        oid: str | None = None,
         conversation_id: str,
     ) -> None:
-        headers = await self._headers(user_access_token)
+        headers = await self._headers(user_access_token=user_access_token, oid=oid)
         url = _conversations_url(self.settings.base_url, conversation_id)
         response = await self._http_client.delete(url, headers=headers)
         if response.status_code == 404:

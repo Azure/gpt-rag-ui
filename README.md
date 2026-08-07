@@ -180,40 +180,104 @@ When enabled, this UI — not the hosted runtime — exclusively owns the Foundr
 managed Conversation used for continuity:
 
 - This UI creates, reads, appends to, and deletes the managed Conversation
-  system-of-record through the standard Conversations REST surface, always
-  under the caller's own delegated (OBO) identity.
+  system-of-record through the standard Conversations REST surface.
 - The hosted runtime stays stateless and history-blind: it never receives a
   `conversation_id` or `previous_response_id`, and needs no Conversations RBAC.
   Every call sends a complete, ordered, bounded set of messages.
-- Instead of handing the caller a raw conversation id, this UI mints an opaque,
-  signed capability bound to the caller's validated Entra `oid`, the managed
-  conversation id, and a key id. The caller only ever holds this capability;
-  a raw conversation id is never persisted client-side. Signature, active key,
-  expiry, and `oid` are all validated before any read — a bad signature,
-  expired token, retired key, or `oid` mismatch are all rejected identically
-  (a fresh conversation is minted instead), so validation never becomes an
-  existence oracle. A capability is only ever minted around a conversation
-  this UI itself just created for the current authenticated user — never
-  around a caller-supplied id.
 - Every turn acquires a one-in-flight lock per conversation, reads ordered
   history, applies an explicit bounded-history policy, and appends the
   completed turn back to the store. Append is fail-closed: if it does not
   succeed, the turn is never presented as a successfully saved completion.
   An idempotent client turn id prevents a duplicate append on retry.
 
+Two owner-binding models decide how per-user ownership of the managed
+Conversation is enforced, selected with `HOSTED_CONVERSATION_OWNER_BINDING`:
+
+##### `delegated` (preferred, default when continuity is enabled)
+
+Live evidence ([Azure/GPT-RAG#591](https://github.com/Azure/GPT-RAG/issues/591),
+"OQ-OWN") showed that Azure AI Foundry hosted agents running responses
+protocol `>= 2.0.0` platform-enforce per-asserted-user ownership of managed
+Conversation/response state when a trusted middle tier authenticates as
+itself and asserts an `x-ms-user-identity` header derived only from the
+caller's own validated Entra `oid` (never client input) on every
+Conversations/Responses call, **and** that middle-tier identity additionally
+holds the custom
+`Microsoft.CognitiveServices/accounts/AIServices/agents/endpoints/UserIdentityImpersonation/action`
+data action at the agent scope. Under that grant: cross-user
+`previous_response_id` continuation and cross-user reads both return `404`
+(no existence oracle); a caller missing the header on a delegated session (or
+missing the impersonation grant while trying to send the header) gets `403`.
+A caller without the impersonation grant that never sends the header can
+still use the agent normally (`200`) — the header is additive, not a
+blanket authorization requirement.
+
+Because per-user enforcement is thus provided by the platform itself, the
+client-held continuity handle in this mode is simply the real managed
+conversation id — there is nothing to cryptographically wrap locally. A
+stolen or guessed id is useless to another user: the platform (not a
+BFF-issued signature) rejects the mismatched `oid` on every lifecycle call.
+This mode still applies the same complete-bounded-stateless-input,
+one-in-flight, fail-closed-append, and idempotent-retry behavior as the
+`capability` model below.
+
+Because this depends on a specific deployed protocol version and an RBAC
+grant that cannot be discovered at runtime, `delegated` mode fails closed at
+startup — the operational equivalent of a `503` — unless **both**
+`HOSTED_CONVERSATION_OWNER_BINDING_VALIDATED=true` and
+`HOSTED_AGENT_PROTOCOL_VERSION >= 2.0.0` are explicitly set, attesting that
+the operator has reviewed and granted the impersonation data action and
+confirmed the deployed protocol version.
+
+**Residual risk — not yet independently live-verified**: the OQ-OWN evidence
+tested the raw Foundry Responses API (`previous_response_id` continuation,
+`GET responses/{id}`, sessions), not the OpenAI-compatible
+`/conversations/{id}/items` surface this UI's Conversations store client
+actually calls. This implementation assumes the same header + RBAC
+enforcement generalizes to that surface, but this has not been independently
+confirmed against a live Foundry deployment. Validate this live before
+enabling `delegated` mode in a production tenant. Additionally, session
+*membership* itself is not fenced by this mechanism (another delegated user
+can still enter a session this UI created, though they cannot leak or
+continue its response chain), and downstream container-side retrieval data
+(Toolbox) is not platform-partitioned by this header — per-user document-level
+authorization (ADR-0001) remains required regardless of this feature.
+
+The `x-ms-user-identity` header is a completely separate mechanism from the
+on-behalf-of (OBO) token used for Toolbox per-user document retrieval; the two
+are never conflated, and this feature does not add the header to the hosted
+runtime's own `/invocations` call — that call remains stateless/history-blind
+with zero Conversations RBAC, unrelated to the BFF's own direct Conversations
+REST calls.
+
+##### `capability` (disabled fallback)
+
+Instead of handing the caller a raw conversation id, this UI mints an opaque,
+signed capability bound to the caller's validated Entra `oid`, the managed
+conversation id, and a key id. The caller only ever holds this capability;
+a raw conversation id is never persisted client-side. Signature, active key,
+expiry, and `oid` are all validated before any read — a bad signature,
+expired token, retired key, or `oid` mismatch are all rejected identically
+(a fresh conversation is minted instead), so validation never becomes an
+existence oracle. A capability is only ever minted around a conversation
+this UI itself just created for the current authenticated user — never
+around a caller-supplied id. This mode remains fully supported as an explicit
+fallback but is no longer the required primary path.
+
 | Setting | Required | Description |
 | --- | --- | --- |
 | `HOSTED_CONTINUITY_ENABLED` | No | `false` by default. Set `true` to opt in; all other settings below are only evaluated when this is `true`. |
-| `HOSTED_CONVERSATION_OWNER_BINDING` | No | `capability` (default, the only implemented owner-binding model). `delegated` is accepted only when `HOSTED_CONVERSATION_OWNER_BINDING_VALIDATED=true` is also set, and remains inert (rejected at startup) otherwise — it is a reserved name for a future alternative, not yet implemented. |
-| `HOSTED_CONVERSATION_OWNER_BINDING_VALIDATED` | No | `false` by default. Must be explicitly `true` to allow `HOSTED_CONVERSATION_OWNER_BINDING=delegated`. |
+| `HOSTED_CONVERSATION_OWNER_BINDING` | No | `delegated` (preferred, default once continuity is enabled) or `capability` (disabled fallback, still fully supported). `delegated` is only accepted when `HOSTED_CONVERSATION_OWNER_BINDING_VALIDATED=true` and `HOSTED_AGENT_PROTOCOL_VERSION >= 2.0.0` are also both set; it fails closed at startup otherwise. |
+| `HOSTED_CONVERSATION_OWNER_BINDING_VALIDATED` | No | `false` by default. Must be explicitly `true` to allow `HOSTED_CONVERSATION_OWNER_BINDING=delegated`, attesting the middle-tier identity has been granted the custom `UserIdentityImpersonation` data action at the agent scope. |
+| `HOSTED_AGENT_PROTOCOL_VERSION` | In delegated mode | The deployed hosted agent's responses protocol version as `MAJOR.MINOR.PATCH`. Required and must be `>= 2.0.0` when `HOSTED_CONVERSATION_OWNER_BINDING=delegated` (see Azure/GPT-RAG#591). |
 | `HOSTED_CONVERSATION_CAPABILITY_KEY` | In capability mode | Signing key for the opaque capability, at least 32 characters. Provide it via a Key Vault reference in App Configuration — never a literal secret in source, environment files, or logs. |
 | `HOSTED_CONVERSATION_CAPABILITY_KEY_ID` | In capability mode | Identifier for the currently active signing key. A capability signed under a previous key id is rejected once this value is rotated, so key rotation retires old capabilities automatically. |
-| `HOSTED_CONVERSATION_CAPABILITY_TTL_SECONDS` | No | Capability lifetime in seconds. Defaults to `900`; must be between `60` and `86400`. |
+| `HOSTED_CONVERSATION_CAPABILITY_TTL_SECONDS` | No | Capability lifetime in seconds (capability mode only). Defaults to `900`; must be between `60` and `86400`. |
 | `HOSTED_HISTORY_MAX_ITEMS` | No | Maximum number of conversation items kept per turn. Defaults to `40`; must be between `1` and `500`. |
 | `HOSTED_HISTORY_MAX_TOKENS` | No | Maximum estimated token budget for the bounded history sent to the hosted runtime. Defaults to `8000`; must be between `256` and `200000`. |
 | `HOSTED_HISTORY_TRUNCATION` | No | Only `drop_oldest` is supported today (the default): once over `HOSTED_HISTORY_MAX_ITEMS`, history is dropped oldest-first while over `HOSTED_HISTORY_MAX_TOKENS`, never dropping the single most recent item. |
 | `HOSTED_CONVERSATION_STORE_BASE_URL` | In continuity mode | HTTPS base URL of the Foundry Conversations REST surface (for example `https://<resource>.services.ai.azure.com/openai/v1`). Validate the exact deployed path/API version against your Foundry resource before enabling this feature. |
-| `HOSTED_CONVERSATION_STORE_RESOURCE_SCOPE` | In continuity mode | Entra data-plane scope ending in `/.default` used for the delegated Conversations token. Falls back to `HOSTED_AGENT_RESOURCE_SCOPE` if unset. The Azure Resource Manager scope is rejected. |
+| `HOSTED_CONVERSATION_STORE_RESOURCE_SCOPE` | In continuity mode | Entra data-plane scope ending in `/.default` used for the Conversations token (delegated OBO in capability mode; the middle tier's own service-identity token in delegated mode). Falls back to `HOSTED_AGENT_RESOURCE_SCOPE` if unset. The Azure Resource Manager scope is rejected. |
 
 Residual operational notes:
 
@@ -224,6 +288,12 @@ Residual operational notes:
 - Panel-based conversation enumeration/history browsing is out of scope for
   this feature; it is planned as a separate metadata owner index. No Cosmos
   storage is introduced by this feature.
+- See the residual risk callout above `delegated` mode's description before
+  enabling it in production: the header + RBAC enforcement mechanism's
+  generalization from the Responses API (where it was live-tested) to the
+  Conversations/items API (which this UI actually calls) has not been
+  independently live-verified.
+
 
 ### Deploying the app with a shell script
 

@@ -373,11 +373,52 @@ async def acquire_obo_token(user_access_token: str, resource_scope: str) -> str:
     """Public wrapper reusing the OBO exchange for other BFF-owned
     data-plane calls that also require the signed-in user's own delegated
     identity (for example the hosted-continuity Conversations system-of-record
-    in ``hosted_conversation_store.py``). Kept as a thin wrapper so the MSAL
-    on-behalf-of logic and its confidential-client configuration validation
-    stay defined in exactly one place.
+    in ``hosted_conversation_store.py`` when
+    ``HOSTED_CONVERSATION_OWNER_BINDING=capability``). Kept as a thin wrapper
+    so the MSAL on-behalf-of logic and its confidential-client configuration
+    validation stay defined in exactly one place.
+
+    This is a distinct trust model from ``acquire_service_identity_token``
+    below: this function asserts the *signed-in user's own* delegated
+    identity to Foundry (required for ADR-0001 Toolbox passthrough), never a
+    trusted-middle-tier identity asserting another user's oid via a header.
+    Do not conflate the two.
     """
     return await _acquire_obo_token(user_access_token, resource_scope)
+
+
+async def acquire_service_identity_token(resource_scope: str) -> str:
+    """Acquire this service's own managed-identity/Azure CLI credential token
+    for the *trusted middle-tier* delegated-header owner-binding model
+    (``HOSTED_CONVERSATION_OWNER_BINDING=delegated``, see
+    ``hosted_conversation_store.py``): the BFF authenticates as itself and
+    separately asserts the validated end user's oid via the platform's
+    ``x-ms-user-identity`` header, rather than exchanging the user's own
+    token via on-behalf-of.
+
+    This reuses the exact same credential chain as
+    ``HOSTED_AGENT_AUTH_MODE=service_identity`` (``_default_credential``), but
+    is intentionally a separate function from ``acquire_obo_token``: the two
+    represent different trust models and must never be conflated. A fresh
+    credential is created and closed for each call (no caching), matching the
+    OBO helper's pattern; nothing about the returned token is ever logged.
+    """
+    credential = _default_credential()
+    try:
+        try:
+            token = await credential.get_token(resource_scope)
+        except AzureError as exc:
+            raise HostedAgentAuthenticationError(
+                "Unable to acquire a service-identity data-plane token for "
+                "the hosted-continuity delegated owner-binding path."
+            ) from exc
+    finally:
+        await credential.close()
+    if not token.token:
+        raise HostedAgentAuthenticationError(
+            "The service-identity credential returned an empty access token."
+        )
+    return token.token
 
 
 class HostedAgentClient:
