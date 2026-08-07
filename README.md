@@ -298,14 +298,97 @@ Residual operational notes:
   not shared across replicas. A multi-replica deployment that needs
   cross-replica one-in-flight guarantees or idempotency should add a shared
   lock/store; this is a known limitation, not silently solved here.
-- Panel-based conversation enumeration/history browsing is out of scope for
-  this feature; it is planned as a separate metadata owner index. No Cosmos
-  storage is introduced by this feature.
 - See the residual risk callout above `delegated` mode's description before
   enabling it in production: the header + RBAC enforcement mechanism's
   generalization from the Responses API (where it was live-tested) to the
   Conversations/items API (which this UI actually calls) has not been
   independently live-verified.
+
+#### Optional: administrative panel user-facing surfaces (opt-in, default off)
+
+Issue [Azure/GPT-RAG#611](https://github.com/Azure/GPT-RAG/issues/611) and the
+accepted ADR-0004 (in the `Azure/GPT-RAG` platform repository) add optional
+user-facing conversation history, feedback, and deletion endpoints for the
+administrative panel. These are disabled by default and require **both**
+`DEPLOY_ADMINISTRATIVE_PANEL=true` and `PANEL_HISTORY_ENABLED=true`, plus a
+working hosted-agent continuity configuration (`HOSTED_CONTINUITY_ENABLED=true`
+above), since these endpoints read/write the same Foundry managed
+Conversations continuity already owns. The routes are always mounted so a
+disabled deployment answers a genuine `503` rather than a bare `404`.
+
+This UI is the **exclusive** owner of all managed-Conversation
+create/read/append/delete and the panel's Cosmos-backed owner index — the
+hosted runtime never touches any of this and holds zero Conversations RBAC,
+unchanged from the continuity section above.
+
+| Method / path | Purpose |
+| --- | --- |
+| `GET /panel/conversations?cursor=&limit=` | List the caller's own conversations (id, title, timestamps only — no content). |
+| `GET /panel/conversations/{id}/messages?limit=` | Ordered history for one owned conversation. |
+| `POST /panel/conversations/{id}/feedback` | Create feedback metadata (rating, category, sanitized/bounded comment; idempotent by client-supplied `feedback_id`). |
+| `GET /panel/conversations/{id}/feedback` | Read the caller's own feedback for that conversation. |
+| `DELETE /panel/conversations/{id}` | Delete the managed conversation, then panel metadata (owner-index row and feedback). |
+
+Every request must carry a delegated Entra bearer (never a client-supplied
+header or claim) validated against `PANEL_CONVERSATIONS_TOKEN_AUDIENCE`. An
+app-only token (no delegated `scp`, or `idtyp != user`) is rejected with
+`403`. The **only** authorization check before any per-conversation
+read/feedback/delete is a Cosmos-only owner-index lookup asserting
+`principal_id == oid`; the managed-Conversations store is never read before
+that check passes, and a missing conversation or another user's conversation
+both return an identical opaque `404` (no existence oracle).
+
+Panel Cosmos (only provisioned when `DEPLOY_ADMINISTRATIVE_PANEL=true`) is
+metadata-only: an owner index (`panel-conversation-owner-index`, default
+container name) mapping `principal_id` to conversation id/title/timestamps,
+and feedback records (`panel-feedback`, default container name) with rating,
+category, and a bounded/sanitized comment. Neither ever stores message
+bodies, citations, or document content. Both containers are partitioned by
+`/principal_id`, matching the classic-mode `conversations` container
+convention.
+
+Pagination on the list endpoint uses an opaque, signed, `oid`-bound,
+expiring cursor — never a raw offset or Cosmos continuation token. A
+tampered, expired, or cross-user cursor is rejected with `422` (a caller
+input problem, not an authorization failure, since every list query is
+independently re-scoped to the live caller's own `oid` regardless of the
+cursor's validity).
+
+| Setting | Required | Description |
+| --- | --- | --- |
+| `DEPLOY_ADMINISTRATIVE_PANEL` | No | `false` by default (existing key). Provisions the panel Cosmos metadata containers and is one of the two gates for these routes. |
+| `PANEL_HISTORY_ENABLED` | No | `false` by default. The second gate; both this and `DEPLOY_ADMINISTRATIVE_PANEL` must be `true` for these routes to serve anything but `503`. |
+| `PANEL_HISTORY_OWNER_BINDING_VALIDATED` | No | `false` by default. The panel's *own* environment evidence gate for switching the enumeration/read mechanism to `delegated`; independent of the continuity section's `HOSTED_CONVERSATION_OWNER_BINDING_VALIDATED` above. An unmet value never produces an error — the panel simply keeps serving via the Cosmos-backed `owner_index` mechanism. |
+| `PANEL_CONVERSATION_ENUMERATION_MODE` | No | `owner_index` (default, Cosmos-backed) or `delegated` (requires `PANEL_HISTORY_OWNER_BINDING_VALIDATED=true`, not yet implemented in this UI). |
+| `PANEL_CONVERSATIONS_TOKEN_AUDIENCE` | When panel history is enabled | Expected `aud` claim on the delegated bearer callers must present to every panel endpoint. Required whenever `PANEL_HISTORY_ENABLED=true`. |
+| `PANEL_CONVERSATIONS_TENANT_ID` | No | Expected tenant for panel bearers. Falls back to `OAUTH_AZURE_AD_TENANT_ID` (the tenant users already sign in against) when unset. |
+| `PANEL_OWNER_INDEX_DATABASE_CONTAINER` | No | Cosmos container name for the owner index. Defaults to `panel-conversation-owner-index`. |
+| `PANEL_FEEDBACK_DATABASE_CONTAINER` | No | Cosmos container name for feedback metadata. Defaults to `panel-feedback`. |
+| `PANEL_CURSOR_TTL_SECONDS` | No | Pagination cursor lifetime in seconds. Defaults to `600`; must be between `30` and `3600`. |
+| `DATABASE_ACCOUNT_NAME` / `DATABASE_NAME` | When panel history is enabled | Existing Cosmos account/database settings, reused (not duplicated) for the two panel-only containers above. |
+
+Error semantics: `401` missing/invalid bearer; `403` wrong token type/claims
+(app-only, or missing the delegated scope); `404` not-owner or missing
+(identical response either way); `422` malformed request body or pagination
+cursor; `502` the managed-Conversations store or panel Cosmos genuinely
+failing; `503` the panel history surface itself is undeployed/disabled.
+Deletion is a hard delete: the managed conversation is removed first, then
+panel metadata; if metadata cleanup fails after a successful conversation
+delete, the response reports `{"status": "partial"}` with a `detail`
+message — never a plain success — so a caller can retry cleanup.
+
+The BFF-created managed conversation's owner-index row is written by an
+optional `on_conversation_created` hook on `HostedContinuityCoordinator`,
+invoked exactly once per newly created conversation (never for a continued
+one) and only when the panel's user-facing surfaces are active. This write
+is best-effort: a failure is logged and never fails the user's turn — the
+accepted residual risk is a stale or missing panel list row, never content
+disclosure (managed Conversations remains the sole system of record for chat
+content either way).
+
+Operator-facing overview metrics and corpus/document curation are out of
+scope for this UI; per ADR-0004 they belong to the `gpt-rag-ingestion` admin
+app, which has no conversation-content access.
 
 
 ### Deploying the app with a shell script
