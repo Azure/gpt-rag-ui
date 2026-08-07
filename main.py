@@ -680,6 +680,42 @@ def _configure_copilot_upload_validation(chainlit_server) -> None:
     chainlit_server.validate_file_upload = validate_file_upload
 
 
+def _mount_panel_routes(host_app, config: AppConfigClient, chainlit_handlers) -> None:
+    """Mount the panel's user-facing conversation routes (issue #611,
+    ADR-0004) when running the hosted-agent chat backend.
+
+    Never imports or touches ``panel_routes``/``panel_cosmos`` when the
+    classic ``CHAT_BACKEND=orchestrator`` path is active, so the classic
+    deployment carries zero additional dependency surface or behavior
+    change. ``chainlit_handlers`` is the imported ``app`` module (accepted
+    as a parameter, rather than imported here directly, so this function is
+    independently testable with a fake namespace).
+    """
+    if getattr(chainlit_handlers, "CHAT_BACKEND", None) != "hosted_agent":
+        return
+    panel_settings = getattr(chainlit_handlers, "PANEL_SETTINGS", None)
+    if panel_settings is None:
+        return
+
+    from panel_routes import register_panel_routes
+
+    register_panel_routes(
+        host_app,
+        config=config,
+        settings=panel_settings,
+        continuity_active=lambda: bool(
+            getattr(chainlit_handlers, "HOSTED_CONTINUITY_ENABLED", False)
+        ),
+        get_conversation_store=(
+            lambda: chainlit_handlers._get_hosted_continuity_coordinator().store
+        ),
+    )
+    logger.info(
+        "Panel user-facing conversation routes mounted (active=%s)",
+        panel_settings.user_surfaces_active,
+    )
+
+
 def _create_chainlit_app(
     config: AppConfigClient,
     auth_state: AuthState | None = None,
@@ -1023,6 +1059,8 @@ def _create_chainlit_app(
             ),
         }
         return JSONResponse(payload)
+
+    _mount_panel_routes(host_app, config, chainlit_handlers)
 
     if blob_download_app is not None:
         host_app.mount("/api/download", blob_download_app)

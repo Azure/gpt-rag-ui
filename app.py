@@ -37,6 +37,7 @@ CHAT_BACKEND = load_chat_backend(config)
 
 if CHAT_BACKEND == "hosted_agent":
     from hosted_agent_client import (  # noqa: E402
+        HostedAgentAuthenticationError,
         HostedAgentCancelledError,
         build_invocation_messages,
         call_hosted_agent_stream,
@@ -44,8 +45,80 @@ if CHAT_BACKEND == "hosted_agent":
     )
     validate_hosted_agent_config()
     logger.info("Chat backend: hosted_agent")
+
+    from hosted_continuity import (  # noqa: E402
+        ContinuityPersistenceError,
+        ConversationNotFoundError,
+        HostedContinuityCoordinator,
+    )
+    from hosted_continuity_config import load_hosted_continuity_settings  # noqa: E402
+    from hosted_conversation_capability import ConversationCapabilityManager  # noqa: E402
+    from hosted_conversation_store import (  # noqa: E402
+        ConversationStoreClient,
+        ConversationStoreSettings,
+    )
+
+    HOSTED_CONTINUITY_SETTINGS = load_hosted_continuity_settings(config)
+    HOSTED_CONTINUITY_ENABLED = HOSTED_CONTINUITY_SETTINGS.enabled
+    if HOSTED_CONTINUITY_ENABLED:
+        logger.info("Hosted-agent cross-version continuity: enabled")
+
+    from panel_config import load_panel_settings  # noqa: E402
+
+    PANEL_SETTINGS = load_panel_settings(config)
+    if PANEL_SETTINGS.user_surfaces_active:
+        logger.info("Administrative panel user-facing history/feedback: enabled")
+
+    async def _panel_owner_index_writer(oid: str, conversation_id: str) -> None:
+        """Best-effort owner-index write for a brand-new hosted conversation
+        (issue #611, ADR-0004). Only registered below when the panel's
+        user-facing surfaces are active; a failure here is logged by the
+        caller (``hosted_continuity.HostedContinuityCoordinator.run_turn``)
+        and never fails the user's turn."""
+        from panel_cosmos import get_panel_cosmos_client
+        from panel_store import upsert_owner_index_row
+
+        client = get_panel_cosmos_client(PANEL_SETTINGS, config)
+        await upsert_owner_index_row(
+            client=client, principal_id=oid, conversation_id=conversation_id
+        )
+
+    _hosted_continuity_coordinator: "HostedContinuityCoordinator | None" = None
+
+    def _get_hosted_continuity_coordinator() -> HostedContinuityCoordinator:
+        global _hosted_continuity_coordinator
+        if _hosted_continuity_coordinator is None:
+            capability_manager = None
+            if HOSTED_CONTINUITY_SETTINGS.uses_capability_binding:
+                capability_manager = ConversationCapabilityManager(
+                    key=HOSTED_CONTINUITY_SETTINGS.capability_key,
+                    key_id=HOSTED_CONTINUITY_SETTINGS.capability_key_id,
+                    ttl_seconds=HOSTED_CONTINUITY_SETTINGS.capability_ttl_seconds,
+                )
+            _hosted_continuity_coordinator = HostedContinuityCoordinator(
+                settings=HOSTED_CONTINUITY_SETTINGS,
+                store=ConversationStoreClient(
+                    ConversationStoreSettings(
+                        base_url=HOSTED_CONTINUITY_SETTINGS.store_base_url,
+                        resource_scope=HOSTED_CONTINUITY_SETTINGS.store_resource_scope,
+                    ),
+                    owner_binding=HOSTED_CONTINUITY_SETTINGS.owner_binding,
+                ),
+                capability_manager=capability_manager,
+                on_conversation_created=(
+                    _panel_owner_index_writer
+                    if PANEL_SETTINGS.user_surfaces_active
+                    else None
+                ),
+            )
+        return _hosted_continuity_coordinator
 else:
     logger.info("Chat backend: orchestrator (explicit fallback)")
+    HOSTED_CONTINUITY_ENABLED = False
+
+    from panel_config import PanelSettings as _PanelSettings  # noqa: E402
+
+    PANEL_SETTINGS = _PanelSettings()
 
 ENABLE_FEEDBACK = config.get("ENABLE_USER_FEEDBACK", False, bool)
 _is_running_in_azure_host = bool(
@@ -391,6 +464,42 @@ def replace_source_reference_links(
 
     return REFERENCE_REGEX.sub(replacer, text)
 
+
+def format_hosted_citation_sources(
+    citations: list[dict],
+    references: Set[str],
+    *,
+    conversation_id: str,
+    principal_id: str,
+    copilot_session_id: str,
+) -> str:
+    """Render deduplicated hosted-agent citations as a Markdown "Sources"
+    block, reused by both the classic and continuity-aware hosted-agent
+    streaming branches."""
+    citation_lines: list[str] = []
+    seen_citations: set[tuple[str, str]] = set()
+    for citation in citations:
+        title = str(citation.get("title") or citation.get("citation_id") or "Source")
+        url = str(citation.get("url") or "")
+        citation_key = (title, url)
+        if citation_key in seen_citations:
+            continue
+        seen_citations.add(citation_key)
+        line = f"- [{title}]({url})" if url else f"- {title}"
+        line = replace_source_reference_links(
+            line,
+            references,
+            conversation_id=conversation_id,
+            principal_id=principal_id,
+            copilot_session_id=copilot_session_id,
+        )
+        if line.strip():
+            citation_lines.append(line)
+    if not citation_lines:
+        return ""
+    return "\n\n### Sources\n" + "\n".join(citation_lines)
+
+
 def check_authorization() -> dict:
     app_user = cl.user_session.get("user")
     if app_user:
@@ -639,6 +748,8 @@ if ENABLE_FEEDBACK:
 async def on_chat_start():
     if CHAT_BACKEND == "hosted_agent":
         cl.user_session.set("hosted_agent_conversation_id", "")
+        if HOSTED_CONTINUITY_ENABLED:
+            cl.user_session.set("hosted_continuity_capability", "")
     # app_user = cl.user_session.get("user")
     # if app_user:
         # await cl.Message(content=f"Hello {app_user.metadata.get('user_name')}").send()
@@ -658,6 +769,12 @@ async def on_chat_resume(thread: ThreadDict):
         # A Chainlit thread ID is not proof of a runtime-managed conversation.
         # Ordered history restores context; the runtime will issue a new managed ID.
         cl.user_session.set("hosted_agent_conversation_id", "")
+        if HOSTED_CONTINUITY_ENABLED:
+            # Same reasoning: a resumed Chainlit thread id is not proof of
+            # ownership of a hosted-continuity managed conversation, so the
+            # opaque capability is dropped too. The next turn mints a fresh
+            # managed conversation and capability for the current oid.
+            cl.user_session.set("hosted_continuity_capability", "")
     logger.info("Chat resumed: thread=%s", thread["id"])
 
 @cl.on_message
@@ -908,7 +1025,217 @@ async def handle_message(message: cl.Message):
         references = set()
         chunk_count = 0
 
-        if CHAT_BACKEND == "hosted_agent":
+        if CHAT_BACKEND == "hosted_agent" and HOSTED_CONTINUITY_ENABLED:
+            # ------------------------------------------------------------------
+            # Hosted-agent cross-version continuity (HOSTED_CONTINUITY_ENABLED)
+            # ------------------------------------------------------------------
+            # This BFF, not the hosted runtime, owns the managed Conversation:
+            # history is read/appended here and the hosted runtime receives a
+            # complete, bounded, stateless Responses input with no top-level
+            # conversation reference. Continuity across turns is bound to the
+            # caller's opaque capability (never a raw conversation id).
+            object_id = str(auth_info.get("object_id") or "").strip()
+            stored_capability = str(
+                cl.user_session.get("hosted_continuity_capability") or ""
+            ).strip()
+            logger.info(
+                "Forwarding request to hosted agent (continuity): question_id=%s user=%s authorized=%s",
+                message.id,
+                principal,
+                auth_info.get("authorized"),
+            )
+            hosted_citations = []
+            generator = None
+
+            try:
+                if not object_id:
+                    raise HostedAgentAuthenticationError(
+                        "Hosted-agent continuity requires a validated Entra oid; "
+                        "the current session is anonymous."
+                    )
+                coordinator = _get_hosted_continuity_coordinator()
+                generator = coordinator.run_turn(
+                    capability=stored_capability,
+                    oid=object_id,
+                    user_ask=message.content,
+                    client_turn_id=message.id,
+                    question_id=message.id,
+                    correlation_id=message.id,
+                    user_access_token=auth_info.get("access_token"),
+                )
+                async for text_chunk, meta in generator:
+                    if meta.get("capability"):
+                        cl.user_session.set(
+                            "hosted_continuity_capability", meta["capability"]
+                        )
+                    if meta.get("conversation_id"):
+                        conversation_id = meta["conversation_id"]
+                    if meta.get("citation"):
+                        hosted_citations.append(meta["citation"])
+                    if meta.get("tool_activity"):
+                        tool = meta["tool_activity"]
+                        logger.info(
+                            "Hosted-agent tool activity: conversation=%s question_id=%s "
+                            "tool=%s status=%s event=%s",
+                            conversation_id or "pending",
+                            message.id,
+                            tool.get("name") or "unknown",
+                            tool.get("status") or "unknown",
+                            tool.get("event_type") or "unknown",
+                        )
+
+                    if not text_chunk:
+                        continue
+
+                    chunk_refs: Set[str] = set()
+                    text_chunk = replace_source_reference_links(
+                        text_chunk,
+                        chunk_refs,
+                        conversation_id=conversation_id,
+                        principal_id=str(auth_info.get("principal_id") or ""),
+                        copilot_session_id=str(auth_info.get("copilot_session_id") or ""),
+                    )
+                    if chunk_refs:
+                        references.update(chunk_refs)
+
+                    full_text += text_chunk
+                    chunk_count += 1
+                    await response_msg.stream_token(text_chunk)
+
+                citation_text = format_hosted_citation_sources(
+                    hosted_citations,
+                    references,
+                    conversation_id=conversation_id,
+                    principal_id=str(auth_info.get("principal_id") or ""),
+                    copilot_session_id=str(auth_info.get("copilot_session_id") or ""),
+                )
+                if citation_text:
+                    full_text += citation_text
+                    await response_msg.stream_token(citation_text)
+
+            except ContinuityPersistenceError as exc:
+                # The turn may already have streamed an answer to the user,
+                # but it was not durably saved. Never present this as a
+                # successfully committed turn.
+                logger.error(
+                    "Hosted-agent continuity turn could not be durably saved: "
+                    "conversation=%s question_id=%s error=%s",
+                    conversation_id or "pending",
+                    message.id,
+                    exc,
+                )
+                user_error_message = (
+                    "We couldn't reliably save this turn, so it may not be there "
+                    "next time you return. Please retry your last message and "
+                    f"share reference {message.id} if this continues."
+                )
+                full_text = user_error_message
+                await response_msg.stream_token(user_error_message)
+
+            except ConversationNotFoundError as exc:
+                # A client-presented conversation handle failed validation
+                # for the current identity (cross-user, forged, malformed,
+                # missing, or an arbitrary guess -- all indistinguishable
+                # here by design). Fail closed: no conversation was created,
+                # the hosted agent was never invoked, and nothing was
+                # persisted for this turn. Never present this as an
+                # assistant answer or start a new thread automatically.
+                logger.warning(
+                    "Hosted-agent continuity conversation reference was "
+                    "rejected for the current identity: question_id=%s error=%s",
+                    message.id,
+                    exc,
+                )
+                user_error_message = (
+                    "We couldn't find that conversation. Please start a new "
+                    "chat and try again, and share reference "
+                    f"{message.id} if this continues."
+                )
+                full_text = user_error_message
+                await response_msg.stream_token(user_error_message)
+
+            except HostedAgentAuthenticationError as exc:
+                logger.warning(
+                    "Hosted-agent continuity authentication failed: question_id=%s error=%s",
+                    message.id,
+                    exc,
+                )
+                user_error_message = (
+                    "You need to be signed in to continue this hosted conversation. "
+                    "Please sign in and try again."
+                )
+                full_text = user_error_message
+                await response_msg.stream_token(user_error_message)
+
+            except HostedAgentCancelledError as exc:
+                logger.warning(
+                    "Hosted agent cancelled response: conversation=%s question_id=%s reason=%s",
+                    conversation_id or "pending",
+                    message.id,
+                    exc,
+                )
+                user_error_message = (
+                    "The hosted agent cancelled this request. "
+                    "Please retry or contact the application support team and share reference "
+                    f"{message.id}."
+                )
+                full_text = user_error_message
+                await response_msg.stream_token(user_error_message)
+
+            except httpx.ConnectError as e:
+                logger.error(
+                    "Hosted agent unreachable (connection error): conversation=%s question_id=%s error=%s",
+                    conversation_id or "pending",
+                    message.id,
+                    e,
+                )
+                user_error_message = (
+                    "We couldn't reach the hosted agent service. "
+                    "Please contact the application support team and share reference "
+                    f"{message.id}."
+                )
+                full_text = user_error_message
+                await response_msg.stream_token(user_error_message)
+
+            except httpx.TimeoutException as e:
+                logger.error(
+                    "Hosted agent request timed out: conversation=%s question_id=%s error=%s",
+                    conversation_id or "pending",
+                    message.id,
+                    e,
+                )
+                user_error_message = (
+                    "The hosted agent service took too long to respond. "
+                    "Please contact the application support team and share reference "
+                    f"{message.id}."
+                )
+                full_text = user_error_message
+                await response_msg.stream_token(user_error_message)
+
+            except Exception:
+                user_error_message = (
+                    "We hit a technical issue while processing your request. "
+                    "Please contact the application support team and share reference "
+                    f"{message.id}."
+                )
+                logger.exception(
+                    "Failed while processing hosted agent continuity response: "
+                    "conversation=%s question_id=%s",
+                    conversation_id or "pending",
+                    message.id,
+                )
+                full_text = user_error_message
+                await response_msg.stream_token(user_error_message)
+
+            finally:
+                if generator is not None:
+                    try:
+                        await generator.aclose()
+                    except RuntimeError as exc:
+                        if "async generator ignored GeneratorExit" not in str(exc):
+                            raise
+
+        elif CHAT_BACKEND == "hosted_agent":
             hosted_messages = build_invocation_messages(
                 hosted_history or [],
                 message.content,
@@ -979,36 +1306,16 @@ async def handle_message(message: cl.Message):
                     chunk_count += 1
                     await response_msg.stream_token(text_chunk)
 
-                if hosted_citations:
-                    citation_lines: list[str] = []
-                    seen_citations: set[tuple[str, str]] = set()
-                    for citation in hosted_citations:
-                        title = str(
-                            citation.get("title")
-                            or citation.get("citation_id")
-                            or "Source"
-                        )
-                        url = str(citation.get("url") or "")
-                        citation_key = (title, url)
-                        if citation_key in seen_citations:
-                            continue
-                        seen_citations.add(citation_key)
-                        line = f"- [{title}]({url})" if url else f"- {title}"
-                        line = replace_source_reference_links(
-                            line,
-                            references,
-                            conversation_id=conversation_id,
-                            principal_id=str(auth_info.get("principal_id") or ""),
-                            copilot_session_id=str(
-                                auth_info.get("copilot_session_id") or ""
-                            ),
-                        )
-                        if line.strip():
-                            citation_lines.append(line)
-                    if citation_lines:
-                        citation_text = "\n\n### Sources\n" + "\n".join(citation_lines)
-                        full_text += citation_text
-                        await response_msg.stream_token(citation_text)
+                citation_text = format_hosted_citation_sources(
+                    hosted_citations,
+                    references,
+                    conversation_id=conversation_id,
+                    principal_id=str(auth_info.get("principal_id") or ""),
+                    copilot_session_id=str(auth_info.get("copilot_session_id") or ""),
+                )
+                if citation_text:
+                    full_text += citation_text
+                    await response_msg.stream_token(citation_text)
 
             except HostedAgentCancelledError as exc:
                 logger.warning(
