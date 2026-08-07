@@ -48,6 +48,7 @@ if CHAT_BACKEND == "hosted_agent":
 
     from hosted_continuity import (  # noqa: E402
         ContinuityPersistenceError,
+        ConversationNotFoundError,
         HostedContinuityCoordinator,
     )
     from hosted_continuity_config import load_hosted_continuity_settings  # noqa: E402
@@ -1097,6 +1098,28 @@ async def handle_message(message: cl.Message):
                     "We couldn't reliably save this turn, so it may not be there "
                     "next time you return. Please retry your last message and "
                     f"share reference {message.id} if this continues."
+                )
+                full_text = user_error_message
+                await response_msg.stream_token(user_error_message)
+
+            except ConversationNotFoundError as exc:
+                # A client-presented conversation handle failed validation
+                # for the current identity (cross-user, forged, malformed,
+                # missing, or an arbitrary guess -- all indistinguishable
+                # here by design). Fail closed: no conversation was created,
+                # the hosted agent was never invoked, and nothing was
+                # persisted for this turn. Never present this as an
+                # assistant answer or start a new thread automatically.
+                logger.warning(
+                    "Hosted-agent continuity conversation reference was "
+                    "rejected for the current identity: question_id=%s error=%s",
+                    message.id,
+                    exc,
+                )
+                user_error_message = (
+                    "We couldn't find that conversation. Please start a new "
+                    "chat and try again, and share reference "
+                    f"{message.id} if this continues."
                 )
                 full_text = user_error_message
                 await response_msg.stream_token(user_error_message)

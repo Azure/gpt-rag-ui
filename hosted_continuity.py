@@ -8,22 +8,34 @@ runs and the existing per-turn hosted-agent behavior in ``app.py`` /
 Per turn, in order:
 
 1. Resolve the managed conversation id for this turn according to the active
-   owner-binding mode (``hosted_continuity_config.HostedContinuitySettings``):
-   * ``delegated`` (preferred/default) — the caller's previously issued
-     conversation id (if any) is re-validated by asking the Conversations
-     store to read from it under the *current* caller's own validated Entra
-     ``oid``, asserted only via the platform-trusted ``x-ms-user-identity``
-     header (never a raw client-supplied claim of ownership). If the
-     platform denies access (``ConversationStoreAccessDeniedError`` — a
-     foreign, stale, or otherwise inaccessible reference), a brand-new
-     managed conversation is created under the current user's own flow
-     instead of ever reusing or trusting the untrusted reference.
-   * ``capability`` (disabled fallback) — the caller-held opaque signed
-     capability is validated against the caller's validated Entra oid
+   owner-binding mode (``hosted_continuity_config.HostedContinuitySettings``).
+   In both modes, only a genuinely *absent* client-presented handle (a
+   legitimate new chat) may create a brand-new managed conversation. Any
+   *presented* handle is re-validated for the current caller's own identity,
+   and *any* validation failure — a cross-user id, a malformed id, a
+   missing/deleted resource, an arbitrary guessed id, a forged/expired
+   capability, a retired signing key, or an oid mismatch — raises the single
+   opaque ``ConversationNotFoundError``. Callers MUST fail closed on this: no
+   new conversation is created, the hosted agent is never invoked, and
+   nothing is appended for that turn. This is deliberate: silently minting a
+   fresh conversation on a rejected supplied handle would produce a
+   success-shaped response that hides an attempted IDOR/BOLA probe and would
+   let "did this look like a fresh conversation?" become an existence
+   oracle.
+   * ``delegated`` (preferred/default) — a presented conversation id is
+     re-validated with a lightweight read probe against the Conversations
+     store under the *current* caller's own validated Entra ``oid``, asserted
+     only via the platform-trusted ``x-ms-user-identity`` header (never a raw
+     client-supplied claim of ownership). The platform's own access-denied
+     response (``ConversationStoreAccessDeniedError`` — HTTP 401/403/404)
+     is mapped to ``ConversationNotFoundError``, never trusted or silently
+     replaced with a fresh conversation.
+   * ``capability`` (disabled fallback) — a presented caller-held opaque
+     signed capability is validated against the caller's validated Entra oid
      (``hosted_conversation_capability.py``). Any failure — missing, forged,
-     expired, retired key, or wrong oid — is treated identically: a
-     brand-new managed conversation is created and a fresh capability is
-     minted around it.
+     expired, retired key, or wrong oid — is mapped to the same
+     ``ConversationNotFoundError``, never silently replaced with a fresh
+     conversation.
    Neither mode ever mints/returns a handle around a caller-supplied
    conversation id that this BFF did not itself just create or re-validate.
 2. Acquire a one-in-flight lock for the resolved managed conversation id.
@@ -66,6 +78,16 @@ from hosted_conversation_store import (
 
 logger = logging.getLogger("gpt_rag_ui.hosted_continuity")
 
+# Single, invariant message used for every reason a client-presented
+# conversation handle can be rejected (cross-user id, malformed id, missing
+# resource, arbitrary guessed id, forged/expired/oid-mismatched capability,
+# retired signing key, ...). Never vary this text, an HTTP-equivalent status,
+# or response timing by rejection reason -- doing so re-creates an existence
+# oracle that lets an attacker distinguish "wrong owner" from "doesn't exist"
+# from "malformed", which is exactly what ADR-0003 requires this module to
+# not do.
+_NOT_FOUND_MESSAGE = "The referenced conversation could not be found."
+
 
 class ContinuityPersistenceError(RuntimeError):
     """Raised when a turn could not be durably committed to the Conversations
@@ -75,6 +97,24 @@ class ContinuityPersistenceError(RuntimeError):
     Callers MUST treat this as a hard failure: render an explicit error and
     never present the assistant text that already streamed as a successfully
     completed, durably saved turn.
+    """
+
+
+class ConversationNotFoundError(RuntimeError):
+    """Raised when a client-presented conversation handle (a delegated-mode
+    conversation id or a capability-mode token) fails validation for the
+    current caller's identity.
+
+    This is intentionally the *only* public error raised for every one of: a
+    cross-user conversation id, a malformed/garbage conversation id, a
+    reference to a resource that does not exist, an arbitrary/guessed
+    conversation id, and a missing/expired/forged/oid-mismatched capability.
+    Callers (``app.py``) MUST map this to a single opaque HTTP/UI
+    404-equivalent response and MUST NOT create a new conversation, invoke
+    the hosted agent, or append anything to the Conversations
+    system-of-record for the turn that raised it. A genuinely *absent*
+    handle on a legitimate new chat is not this error — only a *presented*
+    handle that fails validation is.
     """
 
 
@@ -132,27 +172,38 @@ class HostedContinuityCoordinator:
     ) -> tuple[str, str]:
         """Capability-mode resolution (disabled fallback).
 
-        Mints a fresh managed conversation (and capability) whenever the
-        caller has no capability yet, or it fails validation for *any*
-        reason. Never mints a capability around a caller-supplied
-        conversation id — the only conversation id ever bound here is one
-        this method itself just created.
+        Only a genuinely *absent* capability (a legitimate new chat) mints a
+        fresh managed conversation and a fresh capability around it. Any
+        *presented* capability that fails validation for *any* reason —
+        missing signature, forged, expired, a retired signing key, or an
+        oid mismatch — raises the single opaque ``ConversationNotFoundError``
+        instead of silently minting a replacement conversation: the caller
+        must fail closed (no new conversation, no hosted-agent invocation)
+        rather than turn an attempted IDOR/BOLA probe into a success-shaped
+        response. Never mints a capability around a caller-supplied
+        conversation id either way — the only conversation id ever bound
+        here is one this method itself just created.
         """
         assert self._capabilities is not None  # enforced in __init__
-        if capability:
-            try:
-                validated = self._capabilities.validate(capability, oid=oid)
-                return validated.conversation_id, capability
-            except ConversationCapabilityError:
-                logger.info(
-                    "Hosted-continuity capability rejected; starting a new "
-                    "managed conversation for this turn."
-                )
-        conversation_id = await self._store.create_conversation(
-            user_access_token=user_access_token,
-        )
-        new_capability = self._capabilities.mint(oid=oid, conversation_id=conversation_id)
-        return conversation_id, new_capability
+        stripped = capability.strip()
+        if not stripped:
+            conversation_id = await self._store.create_conversation(
+                user_access_token=user_access_token,
+            )
+            new_capability = self._capabilities.mint(
+                oid=oid, conversation_id=conversation_id
+            )
+            return conversation_id, new_capability
+        try:
+            validated = self._capabilities.validate(stripped, oid=oid)
+        except ConversationCapabilityError as exc:
+            logger.info(
+                "Hosted-continuity capability rejected; failing closed with "
+                "an opaque not-found error rather than creating a new "
+                "conversation."
+            )
+            raise ConversationNotFoundError(_NOT_FOUND_MESSAGE) from exc
+        return validated.conversation_id, stripped
 
     async def _resolve_conversation_id_delegated(
         self,
@@ -167,33 +218,48 @@ class HostedContinuityCoordinator:
         id — there is nothing to cryptographically validate locally, because
         ownership is enforced by the platform itself via the
         ``x-ms-user-identity`` header (derived only from ``oid``, never from
-        the caller-supplied ``owner_ref``) on every Conversations call. A raw,
-        unsigned, even guessed or stolen conversation id is therefore safe to
-        hold client-side: replaying it under a *different* user's oid is
-        rejected by the platform (``ConversationStoreAccessDeniedError``),
-        never silently served. This is confirmed with a lightweight read
-        probe before returning the reference as valid for this turn.
+        the caller-supplied ``owner_ref``) on every Conversations call.
+
+        Only a genuinely *absent* ``owner_ref`` (a legitimate new chat) may
+        create a brand-new managed conversation. Any *presented* ``owner_ref``
+        is re-validated with a lightweight read probe under the current
+        caller's own asserted oid first. A platform denial
+        (``ConversationStoreAccessDeniedError`` — HTTP 401/403/404, covering a
+        cross-user id, a stale/deleted id, a malformed id, and an arbitrary
+        guessed id alike) is never treated as "start a fresh conversation
+        instead": doing so would create a success-shaped response for what
+        may be an attempted IDOR/BOLA probe and would let an attacker use
+        "did I get a fresh conversation?" as an existence oracle. It instead
+        raises the single opaque ``ConversationNotFoundError``; the caller
+        must fail closed (surface an explicit not-found failure, never
+        create a new conversation, and never invoke the hosted agent for
+        this turn). Generic transport/5xx failures from the probe are not
+        caught here and propagate as the plain ``ConversationStoreError``
+        base class — those remain explicit dependency/persistence failures,
+        never a 404-equivalent and never a fresh conversation.
         """
         canonical_oid = normalize_guid(oid, claim_name="oid")
         candidate = owner_ref.strip()
-        if candidate:
-            try:
-                await self._store.list_items_ascending(
-                    oid=canonical_oid,
-                    conversation_id=candidate,
-                    limit=1,
-                )
-                return candidate, candidate
-            except ConversationStoreAccessDeniedError:
-                logger.info(
-                    "Hosted-continuity delegated conversation reference was "
-                    "rejected by the platform for the current identity; "
-                    "starting a new managed conversation for this turn."
-                )
-        conversation_id = await self._store.create_conversation(
-            user_access_token=user_access_token, oid=canonical_oid
-        )
-        return conversation_id, conversation_id
+        if not candidate:
+            conversation_id = await self._store.create_conversation(
+                user_access_token=user_access_token, oid=canonical_oid
+            )
+            return conversation_id, conversation_id
+        try:
+            await self._store.list_items_ascending(
+                oid=canonical_oid,
+                conversation_id=candidate,
+                limit=1,
+            )
+        except ConversationStoreAccessDeniedError as exc:
+            logger.info(
+                "Hosted-continuity delegated conversation reference was "
+                "rejected by the platform for the current identity; "
+                "failing closed with an opaque not-found error rather than "
+                "creating a new conversation."
+            )
+            raise ConversationNotFoundError(_NOT_FOUND_MESSAGE) from exc
+        return candidate, candidate
 
     async def run_turn(
         self,
@@ -226,6 +292,13 @@ class HostedContinuityCoordinator:
         later frames is intentionally stripped, since the hosted runtime's
         own ephemeral identifier is unrelated to the Conversations
         system-of-record this module owns.
+
+        Raises ``ConversationNotFoundError`` before any hosted-agent
+        invocation or persistence write if a *presented* ``capability``
+        (a delegated-mode conversation id or a capability-mode token) fails
+        validation for the current caller's identity; callers must map this
+        to a single opaque 404-equivalent and must not create a new
+        conversation or invoke the hosted agent for this turn.
 
         Raises ``ContinuityPersistenceError`` if the completed turn could not
         be durably appended (or a duplicate client turn id is detected);

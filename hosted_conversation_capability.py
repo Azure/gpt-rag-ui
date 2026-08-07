@@ -10,10 +10,13 @@ never be minted around a caller-supplied conversation id.
 
 Validation of an untrusted capability never reveals *which* check failed —
 bad signature, expired token, retired/rotated signing key, or oid mismatch
-all raise the same ``ConversationCapabilityError``. Callers (e.g.
-``hosted_continuity.py``) must treat every failure identically: fail closed
-and start a fresh managed conversation, exactly as if the capability simply
-did not exist. This avoids the capability doubling as an existence oracle.
+all raise the same ``ConversationCapabilityError``. Per ADR-0003, callers
+(e.g. ``hosted_continuity.py``) must treat every failure identically: fail
+closed with a single opaque not-found error and never mint a new
+conversation around a rejected *presented* capability, exactly as if the
+capability were a cross-user or forged reference. Only a genuinely *absent*
+capability on a legitimate new chat may create a fresh managed conversation.
+This avoids the capability doubling as an existence oracle.
 """
 
 from __future__ import annotations
