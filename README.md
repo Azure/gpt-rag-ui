@@ -167,6 +167,64 @@ two-turn managed conversation continuity, and a two-user negative
 document-authorization test. These deployment and identity checks cannot be
 proven by the repository unit tests.
 
+#### Optional: hosted-agent cross-version continuity (opt-in, default off)
+
+`HOSTED_CONTINUITY_ENABLED` (default `false`) turns on an alternative,
+BFF-owned continuity model for the hosted-agent backend that keeps working
+across hosted-runtime version upgrades. While disabled, the classic behavior
+above (a Foundry-issued `conversation_id` round-tripped by the hosted runtime
+itself and full history resent by the Chainlit client each turn) is completely
+unchanged and none of the settings below are evaluated.
+
+When enabled, this UI — not the hosted runtime — exclusively owns the Foundry
+managed Conversation used for continuity:
+
+- This UI creates, reads, appends to, and deletes the managed Conversation
+  system-of-record through the standard Conversations REST surface, always
+  under the caller's own delegated (OBO) identity.
+- The hosted runtime stays stateless and history-blind: it never receives a
+  `conversation_id` or `previous_response_id`, and needs no Conversations RBAC.
+  Every call sends a complete, ordered, bounded set of messages.
+- Instead of handing the caller a raw conversation id, this UI mints an opaque,
+  signed capability bound to the caller's validated Entra `oid`, the managed
+  conversation id, and a key id. The caller only ever holds this capability;
+  a raw conversation id is never persisted client-side. Signature, active key,
+  expiry, and `oid` are all validated before any read — a bad signature,
+  expired token, retired key, or `oid` mismatch are all rejected identically
+  (a fresh conversation is minted instead), so validation never becomes an
+  existence oracle. A capability is only ever minted around a conversation
+  this UI itself just created for the current authenticated user — never
+  around a caller-supplied id.
+- Every turn acquires a one-in-flight lock per conversation, reads ordered
+  history, applies an explicit bounded-history policy, and appends the
+  completed turn back to the store. Append is fail-closed: if it does not
+  succeed, the turn is never presented as a successfully saved completion.
+  An idempotent client turn id prevents a duplicate append on retry.
+
+| Setting | Required | Description |
+| --- | --- | --- |
+| `HOSTED_CONTINUITY_ENABLED` | No | `false` by default. Set `true` to opt in; all other settings below are only evaluated when this is `true`. |
+| `HOSTED_CONVERSATION_OWNER_BINDING` | No | `capability` (default, the only implemented owner-binding model). `delegated` is accepted only when `HOSTED_CONVERSATION_OWNER_BINDING_VALIDATED=true` is also set, and remains inert (rejected at startup) otherwise — it is a reserved name for a future alternative, not yet implemented. |
+| `HOSTED_CONVERSATION_OWNER_BINDING_VALIDATED` | No | `false` by default. Must be explicitly `true` to allow `HOSTED_CONVERSATION_OWNER_BINDING=delegated`. |
+| `HOSTED_CONVERSATION_CAPABILITY_KEY` | In capability mode | Signing key for the opaque capability, at least 32 characters. Provide it via a Key Vault reference in App Configuration — never a literal secret in source, environment files, or logs. |
+| `HOSTED_CONVERSATION_CAPABILITY_KEY_ID` | In capability mode | Identifier for the currently active signing key. A capability signed under a previous key id is rejected once this value is rotated, so key rotation retires old capabilities automatically. |
+| `HOSTED_CONVERSATION_CAPABILITY_TTL_SECONDS` | No | Capability lifetime in seconds. Defaults to `900`; must be between `60` and `86400`. |
+| `HOSTED_HISTORY_MAX_ITEMS` | No | Maximum number of conversation items kept per turn. Defaults to `40`; must be between `1` and `500`. |
+| `HOSTED_HISTORY_MAX_TOKENS` | No | Maximum estimated token budget for the bounded history sent to the hosted runtime. Defaults to `8000`; must be between `256` and `200000`. |
+| `HOSTED_HISTORY_TRUNCATION` | No | Only `drop_oldest` is supported today (the default): once over `HOSTED_HISTORY_MAX_ITEMS`, history is dropped oldest-first while over `HOSTED_HISTORY_MAX_TOKENS`, never dropping the single most recent item. |
+| `HOSTED_CONVERSATION_STORE_BASE_URL` | In continuity mode | HTTPS base URL of the Foundry Conversations REST surface (for example `https://<resource>.services.ai.azure.com/openai/v1`). Validate the exact deployed path/API version against your Foundry resource before enabling this feature. |
+| `HOSTED_CONVERSATION_STORE_RESOURCE_SCOPE` | In continuity mode | Entra data-plane scope ending in `/.default` used for the delegated Conversations token. Falls back to `HOSTED_AGENT_RESOURCE_SCOPE` if unset. The Azure Resource Manager scope is rejected. |
+
+Residual operational notes:
+
+- The one-in-flight lock and idempotency cache are process-local (in-memory),
+  not shared across replicas. A multi-replica deployment that needs
+  cross-replica one-in-flight guarantees or idempotency should add a shared
+  lock/store; this is a known limitation, not silently solved here.
+- Panel-based conversation enumeration/history browsing is out of scope for
+  this feature; it is planned as a separate metadata owner index. No Cosmos
+  storage is introduced by this feature.
+
 ### Deploying the app with a shell script
 
 To deploy using a script, first clone the repository, set the App Configuration endpoint, and then run the deployment script.
