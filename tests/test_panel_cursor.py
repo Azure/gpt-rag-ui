@@ -22,7 +22,17 @@ class PanelCursorManagerTests(unittest.TestCase):
 
     def test_tampered_cursor_is_rejected(self):
         token = self.manager.mint(oid=OID_A, skip=40)
-        tampered = token[:-1] + ("a" if token[-1] != "a" else "b")
+        # Flip a character in the middle of the token rather than the very
+        # last one: base64's final symbol can carry unused padding bits
+        # (e.g. a 32-byte HMAC-SHA256 signature has 2 padding bits in its
+        # last base64 symbol), so a last-character flip can occasionally
+        # decode to the exact same bytes and leave the signature genuinely
+        # unchanged -- flaky rather than a real tamper. A middle character
+        # always encodes fully "real" bits.
+        mid = len(token) // 2
+        tampered = (
+            token[:mid] + ("a" if token[mid] != "a" else "b") + token[mid + 1 :]
+        )
         with self.assertRaises(PanelCursorError):
             self.manager.resolve(tampered, oid=OID_A)
 

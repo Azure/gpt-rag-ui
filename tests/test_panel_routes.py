@@ -424,6 +424,23 @@ class TwoUserIsolationTests(unittest.TestCase):
         self.assertEqual(self.harness.store.list_calls, [])
 
 
+class CursorSigningSecretUnavailableTests(unittest.TestCase):
+    """A missing/empty CHAINLIT_AUTH_SECRET at request time is a server
+    misconfiguration, not a caller input problem -- it must map to an
+    explicit 502, never an unhandled 500."""
+
+    def test_missing_signing_secret_is_502_not_500(self):
+        harness = _Harness()
+        try:
+            with patch.dict(os.environ, {"CHAINLIT_AUTH_SECRET": ""}, clear=False):
+                response = harness.client.get(
+                    "/panel/conversations", headers=harness.auth(OID_A)
+                )
+            self.assertEqual(response.status_code, 502)
+        finally:
+            harness.close()
+
+
 class CursorSecurityTests(unittest.TestCase):
     def setUp(self):
         self.harness = _Harness()

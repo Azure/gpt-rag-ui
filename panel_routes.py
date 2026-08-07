@@ -188,9 +188,21 @@ def register_panel_routes(
 
     def _cursor_manager() -> PanelCursorManager:
         secret = os.environ.get("CHAINLIT_AUTH_SECRET", "")
-        return PanelCursorManager(
-            secret=secret, ttl_seconds=settings.cursor_ttl_seconds
-        )
+        try:
+            return PanelCursorManager(
+                secret=secret, ttl_seconds=settings.cursor_ttl_seconds
+            )
+        except ValueError as exc:
+            # A missing/invalid signing secret at this point is a server
+            # misconfiguration (CHAINLIT_AUTH_SECRET is otherwise a hard
+            # startup requirement elsewhere in this app), not a caller
+            # input problem -- surface it as an explicit downstream
+            # failure rather than an unhandled 500.
+            logger.error("[panel_routes] cursor signing secret unavailable")
+            raise HTTPException(
+                status_code=502,
+                detail="Panel pagination is temporarily unavailable.",
+            ) from exc
 
     async def _owner_gate(
         principal: PanelPrincipal, conversation_id: str
