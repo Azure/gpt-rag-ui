@@ -9,10 +9,25 @@ from hosted_continuity_config import (
 
 
 class TestHostedContinuityConfig(unittest.TestCase):
+    # Explicit capability-mode fixture: capability mode needs no protocol
+    # version/impersonation gate, so it remains the simplest fixture for
+    # exercising the history/store validation shared by both modes.
     _VALID_VALUES = {
         "HOSTED_CONTINUITY_ENABLED": "true",
+        "HOSTED_CONVERSATION_OWNER_BINDING": "capability",
         "HOSTED_CONVERSATION_CAPABILITY_KEY": "a" * 32,
         "HOSTED_CONVERSATION_CAPABILITY_KEY_ID": "key-1",
+        "HOSTED_CONVERSATION_STORE_BASE_URL": "https://agent.example.com/openai/v1",
+        "HOSTED_CONVERSATION_STORE_RESOURCE_SCOPE": "api://hosted-agent/.default",
+    }
+
+    # Delegated-mode fixture: the preferred/default mode once the live
+    # evidence gate (Azure/GPT-RAG#591, "OQ-OWN") is attested.
+    _VALID_DELEGATED_VALUES = {
+        "HOSTED_CONTINUITY_ENABLED": "true",
+        "HOSTED_CONVERSATION_OWNER_BINDING": "delegated",
+        "HOSTED_CONVERSATION_OWNER_BINDING_VALIDATED": "true",
+        "HOSTED_AGENT_PROTOCOL_VERSION": "2.0.0",
         "HOSTED_CONVERSATION_STORE_BASE_URL": "https://agent.example.com/openai/v1",
         "HOSTED_CONVERSATION_STORE_RESOURCE_SCOPE": "api://hosted-agent/.default",
     }
@@ -68,19 +83,73 @@ class TestHostedContinuityConfig(unittest.TestCase):
             settings.store_resource_scope, "api://hosted-agent-fallback/.default"
         )
 
+    def test_delegated_is_the_default_owner_binding_when_enabled(self):
+        # Preferred/default per the OQ-OWN pivot: leaving
+        # HOSTED_CONVERSATION_OWNER_BINDING unset while enabling continuity
+        # resolves to 'delegated', not 'capability'.
+        values = dict(self._VALID_DELEGATED_VALUES)
+        del values["HOSTED_CONVERSATION_OWNER_BINDING"]
+        settings = self._load(values)
+        self.assertEqual(settings.owner_binding, "delegated")
+        self.assertTrue(settings.uses_delegated_binding)
+
     def test_delegated_binding_is_inert_until_explicitly_validated(self):
-        values = dict(self._VALID_VALUES)
-        values["HOSTED_CONVERSATION_OWNER_BINDING"] = "delegated"
+        values = dict(self._VALID_DELEGATED_VALUES)
+        del values["HOSTED_CONVERSATION_OWNER_BINDING_VALIDATED"]
         with self.assertRaisesRegex(HostedContinuityConfigError, "inert"):
             self._load(values)
 
-    def test_delegated_binding_activates_once_validated_flag_set(self):
-        values = dict(self._VALID_VALUES)
-        values["HOSTED_CONVERSATION_OWNER_BINDING"] = "delegated"
-        values["HOSTED_CONVERSATION_OWNER_BINDING_VALIDATED"] = "true"
+    def test_delegated_binding_requires_protocol_version(self):
+        values = dict(self._VALID_DELEGATED_VALUES)
+        del values["HOSTED_AGENT_PROTOCOL_VERSION"]
+        with self.assertRaisesRegex(
+            HostedContinuityConfigError, "HOSTED_AGENT_PROTOCOL_VERSION"
+        ):
+            self._load(values)
+
+    def test_delegated_binding_rejects_protocol_version_below_minimum(self):
+        values = dict(self._VALID_DELEGATED_VALUES)
+        values["HOSTED_AGENT_PROTOCOL_VERSION"] = "1.9.9"
+        with self.assertRaisesRegex(
+            HostedContinuityConfigError, "HOSTED_AGENT_PROTOCOL_VERSION"
+        ):
+            self._load(values)
+
+    def test_delegated_binding_rejects_malformed_protocol_version(self):
+        values = dict(self._VALID_DELEGATED_VALUES)
+        values["HOSTED_AGENT_PROTOCOL_VERSION"] = "not-a-version"
+        with self.assertRaisesRegex(
+            HostedContinuityConfigError, "HOSTED_AGENT_PROTOCOL_VERSION"
+        ):
+            self._load(values)
+
+    def test_delegated_binding_accepts_higher_protocol_version(self):
+        values = dict(self._VALID_DELEGATED_VALUES)
+        values["HOSTED_AGENT_PROTOCOL_VERSION"] = "2.1.0"
         settings = self._load(values)
         self.assertTrue(settings.uses_delegated_binding)
+
+    def test_delegated_binding_activates_once_validated_flag_and_protocol_set(self):
+        settings = self._load(dict(self._VALID_DELEGATED_VALUES))
+        self.assertTrue(settings.uses_delegated_binding)
         self.assertFalse(settings.uses_capability_binding)
+        self.assertEqual(settings.protocol_version, "2.0.0")
+
+    def test_delegated_binding_does_not_require_capability_key(self):
+        # Delegated mode never mints/validates a signed capability, so it
+        # must not require the capability signing key/key id at all.
+        values = dict(self._VALID_DELEGATED_VALUES)
+        settings = self._load(values)
+        self.assertEqual(settings.capability_key, "")
+        self.assertEqual(settings.capability_key_id, "")
+
+    def test_capability_binding_remains_selectable_as_explicit_fallback(self):
+        settings = self._load(dict(self._VALID_VALUES))
+        self.assertEqual(settings.owner_binding, "capability")
+        self.assertTrue(settings.uses_capability_binding)
+        self.assertFalse(settings.uses_delegated_binding)
+        # Capability mode does not require the delegated-mode gate at all.
+        self.assertEqual(settings.protocol_version, "")
 
     def test_rejects_unknown_owner_binding(self):
         values = dict(self._VALID_VALUES)

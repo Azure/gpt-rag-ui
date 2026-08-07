@@ -24,8 +24,24 @@ _HOSTED_AGENT_ENV = {
 _CONTINUITY_ENV = {
     **_HOSTED_AGENT_ENV,
     "HOSTED_CONTINUITY_ENABLED": "true",
+    # Explicit capability mode: the disabled fallback owner-binding mode,
+    # preserved here as a distinct scenario from the preferred/default
+    # delegated mode covered by _DELEGATED_CONTINUITY_ENV below.
+    "HOSTED_CONVERSATION_OWNER_BINDING": "capability",
     "HOSTED_CONVERSATION_CAPABILITY_KEY": "k" * 32,
     "HOSTED_CONVERSATION_CAPABILITY_KEY_ID": "key-1",
+    "HOSTED_CONVERSATION_STORE_BASE_URL": "https://agent.example.com/openai/v1",
+    "HOSTED_CONVERSATION_STORE_RESOURCE_SCOPE": "api://hosted-agent/.default",
+}
+
+_DELEGATED_CONTINUITY_ENV = {
+    **_HOSTED_AGENT_ENV,
+    "HOSTED_CONTINUITY_ENABLED": "true",
+    # Preferred/default owner-binding mode (Azure/GPT-RAG#591, "OQ-OWN"):
+    # gated on an explicit protocol-version + validated-flag attestation.
+    "HOSTED_CONVERSATION_OWNER_BINDING": "delegated",
+    "HOSTED_CONVERSATION_OWNER_BINDING_VALIDATED": "true",
+    "HOSTED_AGENT_PROTOCOL_VERSION": "2.0.0",
     "HOSTED_CONVERSATION_STORE_BASE_URL": "https://agent.example.com/openai/v1",
     "HOSTED_CONVERSATION_STORE_RESOURCE_SCOPE": "api://hosted-agent/.default",
 }
@@ -73,13 +89,42 @@ class TestHostedContinuityAppWiring(unittest.TestCase):
         # across turns/messages within one running process).
         self.assertIs(coordinator, app._get_hosted_continuity_coordinator())
 
+    def test_delegated_continuity_builds_coordinator_without_capability_manager(self):
+        """Preferred/default owner-binding mode (Azure/GPT-RAG#591): the
+        factory must build a working coordinator with no capability manager
+        dependency, and app.py's settings must reflect delegated mode."""
+        app = _reload_app_with_env(_DELEGATED_CONTINUITY_ENV)
+        self.assertTrue(app.HOSTED_CONTINUITY_ENABLED)
+        self.assertEqual(app.HOSTED_CONTINUITY_SETTINGS.owner_binding, "delegated")
+        self.assertTrue(app.HOSTED_CONTINUITY_SETTINGS.uses_delegated_binding)
+        coordinator = app._get_hosted_continuity_coordinator()
+        self.assertIsInstance(coordinator, app.HostedContinuityCoordinator)
+        self.assertIs(coordinator, app._get_hosted_continuity_coordinator())
+
     def test_invalid_continuity_config_fails_fast_at_import(self):
         bad_env = {
             **_HOSTED_AGENT_ENV,
             "HOSTED_CONTINUITY_ENABLED": "true",
+            "HOSTED_CONVERSATION_OWNER_BINDING": "capability",
             # Deliberately omit HOSTED_CONVERSATION_CAPABILITY_KEY so startup
             # must fail fast rather than defer to the first user turn.
             "HOSTED_CONVERSATION_STORE_BASE_URL": "https://agent.example.com/openai/v1",
+        }
+        with self.assertRaises(Exception):
+            _reload_app_with_env(bad_env)
+
+    def test_delegated_continuity_ungated_fails_fast_at_import(self):
+        """Delegated mode without the explicit validated-flag + protocol
+        version attestation must fail closed at startup (the practical
+        equivalent of a 503: the process never comes up misconfigured)."""
+        bad_env = {
+            **_HOSTED_AGENT_ENV,
+            "HOSTED_CONTINUITY_ENABLED": "true",
+            "HOSTED_CONVERSATION_OWNER_BINDING": "delegated",
+            "HOSTED_CONVERSATION_STORE_BASE_URL": "https://agent.example.com/openai/v1",
+            "HOSTED_CONVERSATION_STORE_RESOURCE_SCOPE": "api://hosted-agent/.default",
+            # Deliberately omit HOSTED_CONVERSATION_OWNER_BINDING_VALIDATED
+            # and HOSTED_AGENT_PROTOCOL_VERSION.
         }
         with self.assertRaises(Exception):
             _reload_app_with_env(bad_env)
