@@ -75,14 +75,17 @@ class ConversationStoreAccessDeniedError(ConversationStoreHTTPError):
 
     Under ``HOSTED_CONVERSATION_OWNER_BINDING=delegated`` this is the
     platform's own per-user ownership enforcement rejecting a foreign, stale,
-    or otherwise inaccessible conversation id under the caller's own
-    asserted oid — it is expected, safe-to-recover-from behavior, not
-    necessarily an infrastructure fault. Callers resolving which conversation
-    to use for a turn must treat this distinctly from a generic
-    ``ConversationStoreHTTPError`` raised elsewhere in the same turn (which
-    still must fail closed): discard the untrusted reference and start a
-    fresh managed conversation under the current user's own identity, the
-    same fail-safe behavior already used for a rejected capability.
+    malformed, or otherwise inaccessible conversation id under the caller's
+    own asserted oid. Per ADR-0003, callers resolving which conversation to
+    use for a turn must treat this as a fail-closed rejection of the
+    *presented* reference: raise a single opaque not-found error and never
+    silently create a fresh conversation, invoke the hosted agent, or append
+    anything for that turn — doing so would turn an attempted
+    cross-user/forged/guessed-id probe (IDOR/BOLA) into a success-shaped
+    response. Callers must treat this distinctly from a generic
+    ``ConversationStoreHTTPError`` raised elsewhere in the same turn, which
+    still must fail closed as an explicit dependency/persistence error (not
+    a 404-equivalent, and not a fresh conversation either).
     """
 
 
@@ -289,13 +292,14 @@ class ConversationStoreClient:
         ``ConversationStoreHTTPError``) on HTTP 401/403/404 — under
         delegated owner binding this is the platform itself denying the
         currently asserted identity access to this conversation id (a
-        foreign, stale, or otherwise inaccessible reference), and callers
-        resolving which conversation to use for a turn may treat it as safe
-        to recover from by starting a fresh conversation. Any other failure
-        raises the plain ``ConversationStoreHTTPError`` base class and
-        callers must never silently fall back to a fresh conversation for
-        those — only an explicitly access-denied or invalid/expired
-        capability reference may do that.
+        foreign, stale, malformed, or otherwise inaccessible reference).
+        Callers resolving which conversation to use for a turn must map this
+        to a single opaque not-found failure and fail closed (never create a
+        new conversation, invoke the hosted agent, or persist anything for
+        that turn). Any other failure raises the plain
+        ``ConversationStoreHTTPError`` base class and remains an explicit
+        dependency/persistence error — never a 404-equivalent and never a
+        fresh conversation.
         """
         headers = await self._headers(user_access_token=user_access_token, oid=oid)
         url = _conversations_url(self.settings.base_url, conversation_id, "items")

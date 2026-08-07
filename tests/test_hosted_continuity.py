@@ -2,7 +2,11 @@ import unittest
 import unittest.mock
 
 from hosted_agent_client import HostedAgentError, InvocationMessage
-from hosted_continuity import ContinuityPersistenceError, HostedContinuityCoordinator
+from hosted_continuity import (
+    ContinuityPersistenceError,
+    ConversationNotFoundError,
+    HostedContinuityCoordinator,
+)
 from hosted_continuity_config import HostedContinuitySettings
 from hosted_conversation_capability import (
     ConversationCapabilityError,
@@ -284,66 +288,117 @@ class TestCrossVersionStatelessRequest(ContinuityTestCase):
 
 
 class TestCapabilityRejection(ContinuityTestCase):
-    async def test_forged_capability_falls_back_to_a_new_conversation(self):
-        coordinator, store, _ = await self._make_coordinator()
-        stream_fn, _ = await _fake_stream_factory([("answer", {})])
-        frames = await self._run(coordinator, stream_fn, capability="forged-garbage")
-        self.assertEqual(len(store.create_calls), 1)
-        self.assertIn("capability", frames[0][1])
+    """A *presented* (non-empty) capability that fails validation must be
+    rejected with the single opaque ``ConversationNotFoundError`` and must
+    never mint a replacement conversation, invoke the hosted agent, or
+    append anything -- only a genuinely absent capability may create a new
+    conversation (see ``TestCreateAndMint``)."""
 
-    async def test_cross_user_stolen_capability_is_rejected_and_not_reused(self):
+    async def test_forged_capability_is_rejected_without_creating_a_conversation(self):
+        coordinator, store, _ = await self._make_coordinator()
+        stream_fn, calls = await _fake_stream_factory([("answer", {})])
+        with self.assertRaises(ConversationNotFoundError):
+            await self._run(coordinator, stream_fn, capability="forged-garbage")
+        self.assertEqual(store.create_calls, [])
+        self.assertEqual(store.list_calls, [])
+        self.assertEqual(store.append_calls, [])
+        self.assertEqual(calls, [])
+
+    async def test_cross_user_stolen_capability_is_rejected_without_creating_a_conversation(self):
         coordinator, store, capabilities = await self._make_coordinator()
         stream_fn, _ = await _fake_stream_factory([("answer", {})])
         victim_frames = await self._run(coordinator, stream_fn, oid=OID_A)
         stolen_capability = victim_frames[0][1]["capability"]
-        stolen_conversation_id = victim_frames[0][1]["conversation_id"]
+        create_calls_before = len(store.create_calls)
 
-        attacker_stream_fn, _ = await _fake_stream_factory([("answer2", {})])
-        attacker_frames = await self._run(
-            coordinator,
-            attacker_stream_fn,
-            capability=stolen_capability,
-            oid=OID_B,
-            client_turn_id="turn-attacker",
-        )
-        # A brand-new conversation must be minted for the attacker; the
-        # victim's conversation id must never be returned/reused.
-        self.assertNotEqual(
-            attacker_frames[0][1]["conversation_id"], stolen_conversation_id
-        )
-        self.assertEqual(len(store.create_calls), 2)
+        attacker_stream_fn, attacker_calls = await _fake_stream_factory([("answer2", {})])
+        with self.assertRaises(ConversationNotFoundError):
+            await self._run(
+                coordinator,
+                attacker_stream_fn,
+                capability=stolen_capability,
+                oid=OID_B,
+                client_turn_id="turn-attacker",
+            )
+        # No new conversation was minted for the attacker, and the hosted
+        # agent was never invoked for this turn.
+        self.assertEqual(len(store.create_calls), create_calls_before)
+        self.assertEqual(attacker_calls, [])
 
-    async def test_expired_capability_falls_back_to_a_new_conversation(self):
+    async def test_expired_capability_is_rejected_without_creating_a_conversation(self):
         coordinator, store, capabilities = await self._make_coordinator(
             capability_ttl_seconds=60
         )
         stream_fn, _ = await _fake_stream_factory([("answer", {})])
         frames = await self._run(coordinator, stream_fn)
         capability = frames[0][1]["capability"]
+        create_calls_before = len(store.create_calls)
 
         import time
         from unittest.mock import patch
 
         with patch("time.time", return_value=time.time() + 120):
-            stream_fn2, _ = await _fake_stream_factory([("answer2", {})])
-            frames2 = await self._run(
-                coordinator, stream_fn2, capability=capability, client_turn_id="turn-2"
-            )
-        self.assertEqual(len(store.create_calls), 2)
-        self.assertNotEqual(
-            frames2[0][1]["conversation_id"], frames[0][1]["conversation_id"]
-        )
+            stream_fn2, calls2 = await _fake_stream_factory([("answer2", {})])
+            with self.assertRaises(ConversationNotFoundError):
+                await self._run(
+                    coordinator, stream_fn2, capability=capability, client_turn_id="turn-2"
+                )
+        self.assertEqual(len(store.create_calls), create_calls_before)
+        self.assertEqual(calls2, [])
 
-    async def test_capability_signed_under_retired_key_is_rejected(self):
+    async def test_capability_signed_under_retired_key_is_rejected_without_creating_a_conversation(self):
         coordinator, store, _ = await self._make_coordinator()
         old_manager = ConversationCapabilityManager(
             key="o" * 32, key_id="old-retired-key", ttl_seconds=900
         )
         stale_capability = old_manager.mint(oid=OID_A, conversation_id="conv-old")
+        stream_fn, calls = await _fake_stream_factory([("answer", {})])
+        with self.assertRaises(ConversationNotFoundError):
+            await self._run(coordinator, stream_fn, capability=stale_capability)
+        self.assertEqual(store.create_calls, [])
+        self.assertEqual(calls, [])
+
+    async def test_all_rejection_reasons_raise_the_identical_public_error(self):
+        """Signature forgery, cross-user, expiry, and retired-key rejections
+        must be indistinguishable to the caller: same exception type, same
+        message. Varying either would leak which failure mode occurred."""
+        coordinator, store, capabilities = await self._make_coordinator()
         stream_fn, _ = await _fake_stream_factory([("answer", {})])
-        frames = await self._run(coordinator, stream_fn, capability=stale_capability)
+        victim_frames = await self._run(coordinator, stream_fn, oid=OID_A)
+        stolen_capability = victim_frames[0][1]["capability"]
+
+        old_manager = ConversationCapabilityManager(
+            key="o" * 32, key_id="old-retired-key", ttl_seconds=900
+        )
+        stale_capability = old_manager.mint(oid=OID_A, conversation_id="conv-old")
+
+        presented_bad_handles = [
+            "forged-garbage",
+            stale_capability,
+        ]
+        messages: set[str] = set()
+        for handle in presented_bad_handles:
+            fn, _ = await _fake_stream_factory([("answer", {})])
+            with self.assertRaises(ConversationNotFoundError) as ctx:
+                await self._run(coordinator, fn, capability=handle)
+            messages.add(str(ctx.exception))
+
+        fn, _ = await _fake_stream_factory([("answer", {})])
+        with self.assertRaises(ConversationNotFoundError) as ctx:
+            await self._run(
+                coordinator, fn, capability=stolen_capability, oid=OID_B,
+                client_turn_id="turn-attacker",
+            )
+        messages.add(str(ctx.exception))
+
+        self.assertEqual(len(messages), 1, f"messages differed: {messages}")
+
+    async def test_only_absent_capability_creates_a_new_conversation(self):
+        coordinator, store, _ = await self._make_coordinator()
+        stream_fn, _ = await _fake_stream_factory([("answer", {})])
+        frames = await self._run(coordinator, stream_fn, capability="")
         self.assertEqual(len(store.create_calls), 1)
-        self.assertNotEqual(frames[0][1]["conversation_id"], "conv-old")
+        self.assertIn("capability", frames[0][1])
 
 
 class TestReadAppendErrors(ContinuityTestCase):
@@ -543,41 +598,45 @@ class TestDelegatedOwnerBinding(ContinuityTestCase):
         self.assertIn("first-answer", contents)
         self.assertIn("follow up question", contents)
 
-    async def test_cross_user_raw_id_is_rejected_and_a_fresh_conversation_is_minted(self):
+    async def test_cross_user_raw_id_is_rejected_without_creating_a_conversation(self):
         """A stolen/guessed raw conversation id cannot bypass platform
         enforcement: replaying it under a *different* oid must not resolve
         to the original conversation -- the platform (simulated here by
-        FakeStore's owner-mismatch check) denies it, and the coordinator
-        must fail safe by minting a brand-new conversation rather than ever
-        trusting the caller-supplied reference."""
+        FakeStore's owner-mismatch check) denies it, and per ADR-0003 the
+        coordinator must fail closed with the opaque not-found error rather
+        than ever minting a fresh conversation or invoking the hosted
+        agent for the attacker's turn."""
         coordinator, store = await self._make_delegated_coordinator()
         stream_fn, _ = await _fake_stream_factory([("answer", {})])
         victim_frames = await self._run(coordinator, stream_fn, oid=OID_A)
         stolen_id = victim_frames[0][1]["conversation_id"]
+        create_calls_before = len(store.create_calls)
+        append_calls_before = len(store.append_calls)
 
-        attacker_stream_fn, _ = await _fake_stream_factory([("answer2", {})])
-        attacker_frames = await self._run(
-            coordinator,
-            attacker_stream_fn,
-            capability=stolen_id,
-            oid=OID_B,
-            client_turn_id="turn-attacker",
-        )
-        self.assertNotEqual(attacker_frames[0][1]["conversation_id"], stolen_id)
-        self.assertEqual(len(store.create_calls), 2)
+        attacker_stream_fn, attacker_calls = await _fake_stream_factory([("answer2", {})])
+        with self.assertRaises(ConversationNotFoundError):
+            await self._run(
+                coordinator,
+                attacker_stream_fn,
+                capability=stolen_id,
+                oid=OID_B,
+                client_turn_id="turn-attacker",
+            )
+        self.assertEqual(len(store.create_calls), create_calls_before)
+        self.assertEqual(len(store.append_calls), append_calls_before)
+        self.assertEqual(attacker_calls, [])
 
     async def test_arbitrary_caller_supplied_id_that_was_never_created_is_rejected(self):
         """A raw id the BFF never created (pure guess, not even stolen from
         a real prior turn) must also be rejected rather than trusted -- the
         read probe against the platform is what decides validity, never the
-        mere shape of the client-supplied string."""
+        mere shape of the client-supplied string. It must not mint a new
+        conversation or invoke the hosted agent either."""
         coordinator, store = await self._make_delegated_coordinator()
         store.fail_list_for.add("guessed-conv-id")
         # Force the probe read to look like a platform denial rather than a
         # generic transient error, matching real ConversationStoreAccessDeniedError
         # behavior on a nonexistent/foreign id.
-        import hosted_continuity as hc
-
         original = store.list_items_ascending
 
         async def deny_unknown(*, conversation_id, **kwargs):
@@ -587,12 +646,113 @@ class TestDelegatedOwnerBinding(ContinuityTestCase):
 
         store.list_items_ascending = deny_unknown  # type: ignore[method-assign]
 
+        stream_fn, calls = await _fake_stream_factory([("answer", {})])
+        with self.assertRaises(ConversationNotFoundError):
+            await self._run(
+                coordinator, stream_fn, capability="guessed-conv-id", oid=OID_A
+            )
+        self.assertEqual(store.create_calls, [])
+        self.assertEqual(store.append_calls, [])
+        self.assertEqual(calls, [])
+
+    async def test_malformed_id_is_rejected_the_same_way_as_cross_user_id(self):
+        """A malformed/garbage presented id (not even a plausible id shape)
+        must be rejected through the exact same opaque error and code path
+        as a cross-user id -- the platform read probe is the only source of
+        truth, and the failure must be indistinguishable either way."""
+        coordinator, store = await self._make_delegated_coordinator()
+        store.fail_list_for.add("!!!not-a-real-id???")
+
+        original = store.list_items_ascending
+
+        async def deny_malformed(*, conversation_id, **kwargs):
+            if conversation_id == "!!!not-a-real-id???":
+                raise ConversationStoreAccessDeniedError("malformed id")
+            return await original(conversation_id=conversation_id, **kwargs)
+
+        store.list_items_ascending = deny_malformed  # type: ignore[method-assign]
+
+        stream_fn, calls = await _fake_stream_factory([("answer", {})])
+        with self.assertRaises(ConversationNotFoundError):
+            await self._run(
+                coordinator, stream_fn, capability="!!!not-a-real-id???", oid=OID_A
+            )
+        self.assertEqual(store.create_calls, [])
+        self.assertEqual(calls, [])
+
+    async def test_cross_user_and_guessed_id_raise_the_identical_public_error(self):
+        """Cross-user and pure-guess rejections must be indistinguishable to
+        the caller -- same exception type, same message -- so a client can
+        never use response differences as an existence oracle."""
+        coordinator, store = await self._make_delegated_coordinator()
         stream_fn, _ = await _fake_stream_factory([("answer", {})])
-        frames = await self._run(
-            coordinator, stream_fn, capability="guessed-conv-id", oid=OID_A
-        )
-        self.assertNotEqual(frames[0][1]["conversation_id"], "guessed-conv-id")
+        victim_frames = await self._run(coordinator, stream_fn, oid=OID_A)
+        stolen_id = victim_frames[0][1]["conversation_id"]
+
+        store.fail_list_for.add("guessed-conv-id")
+        original = store.list_items_ascending
+
+        async def deny_unknown(*, conversation_id, **kwargs):
+            if conversation_id == "guessed-conv-id":
+                raise ConversationStoreAccessDeniedError("unknown conversation")
+            return await original(conversation_id=conversation_id, **kwargs)
+
+        store.list_items_ascending = deny_unknown  # type: ignore[method-assign]
+
+        messages: set[str] = set()
+
+        fn1, _ = await _fake_stream_factory([("answer", {})])
+        with self.assertRaises(ConversationNotFoundError) as ctx1:
+            await self._run(
+                coordinator, fn1, capability=stolen_id, oid=OID_B,
+                client_turn_id="turn-attacker",
+            )
+        messages.add(str(ctx1.exception))
+
+        fn2, _ = await _fake_stream_factory([("answer", {})])
+        with self.assertRaises(ConversationNotFoundError) as ctx2:
+            await self._run(
+                coordinator, fn2, capability="guessed-conv-id", oid=OID_A,
+                client_turn_id="turn-guess",
+            )
+        messages.add(str(ctx2.exception))
+
+        self.assertEqual(len(messages), 1, f"messages differed: {messages}")
+
+    async def test_only_absent_owner_ref_creates_a_new_conversation(self):
+        """Restates the create path from the top of this class as an
+        explicit contrast with the fail-closed presented-handle tests
+        above: only a genuinely empty owner_ref may create."""
+        coordinator, store = await self._make_delegated_coordinator()
+        stream_fn, _ = await _fake_stream_factory([("answer", {})])
+        frames = await self._run(coordinator, stream_fn, capability="")
         self.assertEqual(len(store.create_calls), 1)
+        self.assertEqual(frames[0][1]["capability"], frames[0][1]["conversation_id"])
+
+    async def test_generic_transient_read_error_during_probe_is_not_a_404(self):
+        """A generic transport/5xx failure surfaced by the probe read must
+        remain an explicit dependency/persistence error -- never silently
+        mapped to the opaque not-found error, and never treated as license
+        to mint a fresh conversation."""
+        coordinator, store = await self._make_delegated_coordinator()
+        stream_fn, _ = await _fake_stream_factory([("answer", {})])
+        victim_frames = await self._run(coordinator, stream_fn, oid=OID_A)
+        conversation_id = victim_frames[0][1]["conversation_id"]
+        create_calls_before = len(store.create_calls)
+
+        store.fail_list_for.add(conversation_id)
+        stream_fn2, calls2 = await _fake_stream_factory([("answer2", {})])
+        with self.assertRaises(ConversationStoreError) as ctx:
+            await self._run(
+                coordinator, stream_fn2, capability=conversation_id, oid=OID_A,
+                client_turn_id="turn-2",
+            )
+        # A generic transient error is a plain ConversationStoreError, never
+        # the opaque not-found error used for rejected identity/ownership
+        # checks.
+        self.assertNotIsInstance(ctx.exception, ConversationNotFoundError)
+        self.assertEqual(len(store.create_calls), create_calls_before)
+        self.assertEqual(calls2, [])
 
     async def test_header_identity_is_always_the_normalized_canonical_oid(self):
         """The identity asserted on every store call must be derived only
@@ -675,13 +835,14 @@ class TestNoSecretOrRawIdLeakageInLogs(ContinuityTestCase):
             # Also drive a rejected (forged) capability path, which logs an
             # informational message -- this must still never leak secrets.
             stream_fn2, _ = await _fake_stream_factory([("answer2", {})])
-            await self._run(
-                coordinator,
-                stream_fn2,
-                capability="forged-" + capability,
-                client_turn_id="turn-2",
-                user_access_token=user_token,
-            )
+            with self.assertRaises(ConversationNotFoundError):
+                await self._run(
+                    coordinator,
+                    stream_fn2,
+                    capability="forged-" + capability,
+                    client_turn_id="turn-2",
+                    user_access_token=user_token,
+                )
         finally:
             for lg in loggers:
                 lg.removeHandler(handler)

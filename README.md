@@ -217,6 +217,16 @@ client-held continuity handle in this mode is simply the real managed
 conversation id — there is nothing to cryptographically wrap locally. A
 stolen or guessed id is useless to another user: the platform (not a
 BFF-issued signature) rejects the mismatched `oid` on every lifecycle call.
+Per ADR-0003 (accepted platform decision on hosted-agent continuity
+identifier handling), that platform rejection (a cross-user,
+stale, malformed, or otherwise inaccessible id) is never treated as license
+to silently start a fresh conversation instead — doing so would turn an
+attempted IDOR/BOLA probe into a success-shaped response and let "did I get
+a fresh conversation?" become an existence oracle. The coordinator instead
+raises a single opaque `ConversationNotFoundError`; the UI surfaces this as
+an explicit not-found failure, never creates a new conversation, and never
+invokes the hosted agent for that turn. Only a genuinely *absent*
+client-held handle on a legitimate new chat creates a fresh conversation.
 This mode still applies the same complete-bounded-stateless-input,
 one-in-flight, fail-closed-append, and idempotent-retry behavior as the
 `capability` model below.
@@ -257,12 +267,15 @@ signed capability bound to the caller's validated Entra `oid`, the managed
 conversation id, and a key id. The caller only ever holds this capability;
 a raw conversation id is never persisted client-side. Signature, active key,
 expiry, and `oid` are all validated before any read — a bad signature,
-expired token, retired key, or `oid` mismatch are all rejected identically
-(a fresh conversation is minted instead), so validation never becomes an
-existence oracle. A capability is only ever minted around a conversation
-this UI itself just created for the current authenticated user — never
-around a caller-supplied id. This mode remains fully supported as an explicit
-fallback but is no longer the required primary path.
+expired token, retired key, or `oid` mismatch are all rejected identically.
+Per ADR-0003, a *presented* capability that fails any of these checks raises
+the same opaque `ConversationNotFoundError` as the `delegated` mode above —
+it never silently mints a fresh conversation — so validation can never
+become an existence oracle. A capability is only ever minted around a
+conversation this UI itself just created for the current authenticated
+user's genuinely *absent*-handle new chat — never around a caller-supplied
+id. This mode remains fully supported as an explicit fallback but is no
+longer the required primary path.
 
 | Setting | Required | Description |
 | --- | --- | --- |

@@ -101,6 +101,43 @@ class TestHostedContinuityAppWiring(unittest.TestCase):
         self.assertIsInstance(coordinator, app.HostedContinuityCoordinator)
         self.assertIs(coordinator, app._get_hosted_continuity_coordinator())
 
+    def test_conversation_not_found_error_is_the_same_class_as_hosted_continuity(self):
+        """Wiring correctness: app.py's except clause for the rejected
+        client-presented-handle path must catch the exact exception class
+        hosted_continuity.py raises, not an accidental re-import/shadow."""
+        import hosted_continuity
+
+        app = _reload_app_with_env(_DELEGATED_CONTINUITY_ENV)
+        self.assertIs(
+            app.ConversationNotFoundError,
+            hosted_continuity.ConversationNotFoundError,
+        )
+
+    def test_handle_message_maps_conversation_not_found_to_explicit_failure(self):
+        """Source-level regression guard (ADR-0003): the hosted-agent
+        continuity turn handler must have an explicit except clause for
+        ConversationNotFoundError, distinct from and preceding the generic
+        catch-all, so a denied client-presented handle is always rendered as
+        an explicit failure rather than silently falling through to a
+        success-shaped reply, a new conversation, or a hosted-agent call."""
+        import inspect
+
+        app = _reload_app_with_env(_DELEGATED_CONTINUITY_ENV)
+        source = inspect.getsource(app.handle_message)
+        self.assertIn("except ConversationNotFoundError as exc:", source)
+        # Scope the ordering check to the hosted-continuity turn block only
+        # (there are separate "except Exception:" catch-alls further down
+        # for the non-continuity hosted-agent and orchestrator code paths).
+        continuity_block_start = source.index(
+            'if CHAT_BACKEND == "hosted_agent" and HOSTED_CONTINUITY_ENABLED:'
+        )
+        continuity_block_end = source.index('elif CHAT_BACKEND == "hosted_agent":')
+        continuity_block = source[continuity_block_start:continuity_block_end]
+        self.assertIn("except ConversationNotFoundError as exc:", continuity_block)
+        not_found_index = continuity_block.index("except ConversationNotFoundError")
+        generic_index = continuity_block.index("except Exception:")
+        self.assertLess(not_found_index, generic_index)
+
     def test_invalid_continuity_config_fails_fast_at_import(self):
         bad_env = {
             **_HOSTED_AGENT_ENV,
