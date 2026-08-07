@@ -369,6 +369,17 @@ async def _acquire_obo_token(user_access_token: str, resource_scope: str) -> str
     return delegated_token
 
 
+async def acquire_obo_token(user_access_token: str, resource_scope: str) -> str:
+    """Public wrapper reusing the OBO exchange for other BFF-owned
+    data-plane calls that also require the signed-in user's own delegated
+    identity (for example the hosted-continuity Conversations system-of-record
+    in ``hosted_conversation_store.py``). Kept as a thin wrapper so the MSAL
+    on-behalf-of logic and its confidential-client configuration validation
+    stay defined in exactly one place.
+    """
+    return await _acquire_obo_token(user_access_token, resource_scope)
+
+
 class HostedAgentClient:
     """Reusable authenticated HTTP/SSE client for one hosted endpoint."""
 
