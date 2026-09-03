@@ -144,6 +144,99 @@ class AppCitationTests(unittest.TestCase):
         self.assertEqual("https://storage.example.com/file.pdf", citation)
         legacy.assert_called_once_with("documents/file.pdf")
 
+    def test_absolute_same_account_citation_is_signed_in_legacy_mode(self):
+        signed = (
+            "https://acct.blob.core.windows.net/documents/f.pdf?sig=token"
+        )
+        sas = Mock(return_value=signed)
+        with (
+            patch.object(app, "STORAGE_ACCOUNT_NAME", "acct"),
+            patch.object(app, "DOCUMENTS_CONTAINER", "documents"),
+            patch.object(app, "CONVERSATION_DOCUMENTS_CONTAINER", ""),
+            patch.object(app, "generate_blob_sas_url", sas),
+        ):
+            citation = app._resolve_legacy_reference_href(
+                "https://acct.blob.core.windows.net/documents/f.pdf"
+            )
+
+        self.assertEqual(signed, citation)
+        sas.assert_called_once_with("documents", "f.pdf")
+
+    def test_external_absolute_citation_is_left_untouched(self):
+        sas = Mock()
+        external = "https://contoso.example.com/documents/f.pdf"
+        with (
+            patch.object(app, "STORAGE_ACCOUNT_NAME", "acct"),
+            patch.object(app, "generate_blob_sas_url", sas),
+        ):
+            self.assertEqual(
+                external, app._resolve_legacy_reference_href(external)
+            )
+        sas.assert_not_called()
+
+    def test_already_signed_same_account_citation_is_left_untouched(self):
+        sas = Mock()
+        signed = (
+            "https://acct.blob.core.windows.net/documents/f.pdf?sig=abc"
+        )
+        with (
+            patch.object(app, "STORAGE_ACCOUNT_NAME", "acct"),
+            patch.object(app, "generate_blob_sas_url", sas),
+        ):
+            self.assertEqual(
+                signed, app._resolve_legacy_reference_href(signed)
+            )
+        sas.assert_not_called()
+
+    def test_absolute_same_account_citation_uses_download_grant(self):
+        manager = Mock(public_url="https://portal.example.com/gpt-rag")
+        manager.issue.return_value = (
+            "https://portal.example.com/gpt-rag/api/download/grant-2"
+        )
+        with (
+            patch.object(app, "STORAGE_ACCOUNT_NAME", "acct"),
+            patch.object(app, "DOCUMENTS_CONTAINER", "documents"),
+            patch.object(app, "CONVERSATION_DOCUMENTS_CONTAINER", ""),
+            patch.object(app, "SHARED_DOWNLOAD_CONTAINERS", {"documents"}),
+            patch("app.get_download_tokens", return_value=manager),
+        ):
+            citation = app._resolve_secure_reference_href(
+                (
+                    "https://acct.blob.core.windows.net/"
+                    "documents/folder/file.pdf"
+                ),
+                conversation_id="thread-1",
+                principal_id="tenant:object",
+                copilot_session_id="opaque-session",
+            )
+
+        self.assertEqual(
+            "https://portal.example.com/gpt-rag/api/download/grant-2",
+            citation,
+        )
+        manager.issue.assert_called_once_with(
+            principal_id="tenant:object",
+            session_id="opaque-session",
+            conversation_id="thread-1",
+            container="documents",
+            blob_name="folder/file.pdf",
+        )
+
+    def test_external_absolute_citation_is_dropped_when_secured(self):
+        manager = Mock(public_url="https://portal.example.com/gpt-rag")
+        with (
+            patch.object(app, "STORAGE_ACCOUNT_NAME", "acct"),
+            patch("app.get_download_tokens", return_value=manager),
+        ):
+            self.assertIsNone(
+                app._resolve_secure_reference_href(
+                    "https://contoso.example.com/documents/f.pdf",
+                    conversation_id="thread-1",
+                    principal_id="tenant:object",
+                    copilot_session_id="opaque-session",
+                )
+            )
+        manager.issue.assert_not_called()
     def test_anonymous_copilot_feedback_is_hidden(self):
         self.assertFalse(
             app._feedback_is_available(
