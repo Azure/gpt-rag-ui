@@ -1,5 +1,23 @@
 # Changelog
 
+## [v2.6.2] - 2026-09-03
+
+### Fixed
+
+- **Citations returned as absolute URLs for the solution's own storage account
+  were dropped.** The legacy resolution path returned such a URL unsigned,
+  producing a broken link, and the secured path discarded the citation
+  entirely. Both paths now normalize the URL back to a container-relative path
+  before resolution, so the legacy path signs it with a SAS and the secured
+  path issues a session-bound `/api/download/` grant after its existing
+  per-document authorization check. URLs pointing at external hosts, and URLs
+  that already carry a signature, are left untouched.
+
+### Validation
+
+- `unit-tests` workflow green on the release commit: 410 tests, up from 405,
+  the five new ones covering both resolution paths plus the external-host and
+  already-signed cases.
 ## [v2.6.1] - 2026-09-03
 
 ### Changed
