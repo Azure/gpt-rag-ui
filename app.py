@@ -240,6 +240,30 @@ def generate_blob_sas_url(
         return blob_url
 
 
+def _normalize_same_account_blob_href(href: str) -> Optional[str]:
+    """Map an absolute URL that points at the solution's own storage account
+    back to a container-relative path, so the regular citation resolution
+    applies. Returns None when the URL is external or already signed."""
+    if not STORAGE_ACCOUNT_NAME:
+        return None
+
+    split_href = urllib.parse.urlsplit(href)
+    if split_href.scheme not in {"http", "https"}:
+        return None
+
+    host = split_href.netloc.split("@")[-1].split(":")[0].lower()
+    if host != f"{STORAGE_ACCOUNT_NAME}.blob.core.windows.net".lower():
+        return None
+    if "sig=" in (split_href.query or "").lower():
+        return None
+
+    path = split_href.path.lstrip("/")
+    if not path:
+        return None
+
+    fragment = f"#{split_href.fragment}" if split_href.fragment else ""
+    return f"{path}{fragment}"
+
 def _resolve_legacy_reference_href(raw_href: str) -> Optional[str]:
     href = (raw_href or "").strip()
     if not href:
@@ -247,7 +271,11 @@ def _resolve_legacy_reference_href(raw_href: str) -> Optional[str]:
 
     split_href = urllib.parse.urlsplit(href)
     if split_href.scheme or split_href.netloc:
-        return href
+        normalized = _normalize_same_account_blob_href(href)
+        if normalized is None:
+            return href
+        href = normalized
+        split_href = urllib.parse.urlsplit(href)
     if href.startswith("/api/download/") or href.startswith("api/download/"):
         return href
 
@@ -326,13 +354,17 @@ def _resolve_secure_reference_href(
 
     split_href = urllib.parse.urlsplit(href)
     if split_href.scheme or split_href.netloc:
-        try:
-            download_prefix = (
-                f"{get_download_tokens().public_url}/api/download/"
-            )
-        except RuntimeError:
-            return None
-        return href if href.startswith(download_prefix) else None
+        normalized = _normalize_same_account_blob_href(href)
+        if normalized is None:
+            try:
+                download_prefix = (
+                    f"{get_download_tokens().public_url}/api/download/"
+                )
+            except RuntimeError:
+                return None
+            return href if href.startswith(download_prefix) else None
+        href = normalized
+        split_href = urllib.parse.urlsplit(href)
 
     if href.startswith("/api/download/") or href.startswith("api/download/"):
         return None
