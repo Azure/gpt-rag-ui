@@ -1,5 +1,21 @@
 # Changelog
 
+## [v2.6.1] - 2026-09-03
+
+### Changed
+
+- **Dependency maintenance release.** No application behavior changed; this
+  release only refreshes pinned runtime dependencies on top of v2.6.0.
+  - `chainlit` 2.9.4 -> 2.11.0
+  - `uvicorn` 0.35.0 -> 0.52.4
+  - `azure-identity` 1.23.0 -> 1.25.3
+  - `azure-appconfiguration-provider` 2.1.0 -> 2.5.0
+  - `azure-monitor-opentelemetry-exporter` bumped to its current release
+
+### Validation
+
+- Repository test workflow green on `develop` at the release commit.
+
 ## [v2.6.0] - 2026-08-07
 
 ### Added
