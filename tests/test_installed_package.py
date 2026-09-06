@@ -21,10 +21,13 @@ class InstalledPackageTests(unittest.TestCase):
         cls.addClassCleanup(cls.temporary.cleanup)
         cls.root = Path(cls.temporary.name)
         cls.environment = cls.root / "environment"
-        # Reuse only runtime dependencies. Every UI file must resolve from this
-        # environment's non-editable wheel, never a system editable installation.
-        venv.EnvBuilder(with_pip=True, system_site_packages=True).create(cls.environment)
+        venv.EnvBuilder(with_pip=True).create(cls.environment)
         cls.python = cls.environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+        cls.run_command([
+            str(cls.python), "-m", "pip", "install", "--quiet",
+            "-r", str(ROOT / "requirements.txt"),
+        ], timeout=600)
+        cls.run_command([str(cls.python), "-m", "pip", "check"])
         cls.wheels = cls.root / "wheels"
         cls.wheels.mkdir()
         cls.run_command([sys.executable, "-m", "pip", "wheel", "--no-deps", "--wheel-dir", str(cls.wheels), str(ROOT)])
@@ -39,10 +42,21 @@ class InstalledPackageTests(unittest.TestCase):
         cls.cwd = cls.root / "unrelated-cwd"
         cls.cwd.mkdir()
         cls.inventory = json.loads((ROOT / ".quality/migration.json").read_text(encoding="utf-8"))
+        cls.behavioral_tests = cls.root / "behavioral-tests"
+        # The other three modules inspect/build the source tree and already run
+        # separately. Reuse the behavioral suite without copying application code.
+        shutil.copytree(
+            ROOT / "tests",
+            cls.behavioral_tests,
+            ignore=shutil.ignore_patterns(
+                "__pycache__", "test_installed_package.py",
+                "test_module_compatibility.py", "test_quality_policy.py",
+            ),
+        )
 
     @classmethod
-    def run_command(cls, command, **kwargs):
-        result = subprocess.run(command, text=True, capture_output=True, timeout=300, **kwargs)
+    def run_command(cls, command, *, timeout=300, **kwargs):
+        result = subprocess.run(command, text=True, capture_output=True, timeout=timeout, **kwargs)
         if result.returncode:
             raise AssertionError(f"Command failed: {command[:4]}\n{result.stdout}\n{result.stderr}")
         return result
@@ -63,6 +77,9 @@ import importlib, os, sys
 checkout = Path({str(ROOT)!r}).resolve()
 installed = Path({str(self.environment)!r}).resolve()
 assert not Path.cwd().is_relative_to(checkout)
+assert Path(sys.prefix).resolve() == installed
+assert sys.prefix != sys.base_prefix
+assert all(not Path(path).resolve().is_relative_to(checkout) for path in sys.path)
 def assert_installed(module):
     path = Path(module.__file__).resolve()
     assert path.is_relative_to(installed), (module.__name__, str(path))
@@ -79,6 +96,19 @@ def assert_installed(module):
             self.assertIn(entry["path"].removeprefix("src/"), files)
         self.assertIn("gpt_rag_ui/config/resources.py", files)
         self.assertFalse(any(path.startswith((".chainlit/", "public/")) for path in files))
+
+    def test_behavioral_suite_uses_the_installed_distribution(self):
+        self.run_installed(f"""
+import unittest
+suite = unittest.defaultTestLoader.discover({str(self.behavioral_tests)!r})
+assert suite.countTestCases() >= 410, suite.countTestCases()
+result = unittest.TextTestRunner(verbosity=1).run(suite)
+assert result.wasSuccessful()
+assert not result.skipped, result.skipped
+for name, module in list(sys.modules.items()):
+    if (name == "gpt_rag_ui" or name.startswith("gpt_rag_ui.")) and getattr(module, "__file__", None):
+        assert_installed(module)
+""")
 
     def test_both_import_orders_have_one_owner_and_one_registration(self):
         pairs = [(m["id"], m["import_name"]) for m in self.inventory["modules"] if m["id"] != "connectors"]
