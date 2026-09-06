@@ -149,6 +149,10 @@ orchestrator.
   runner `.github/scripts/run-unittest.py`; pass its same-run report through
   `--test-evidence`. See `docs/python-development.md` for `QUALITY_RUN_ID`,
   exact-source receipt requirements and protected aggregation.
+- The quality evaluator uses a separate environment built from protected
+  requirements/tool pins and does not install candidate application code.
+  Keep isolated static-tool execution intact. Candidate exception proposals
+  are review requests, never active approvals or blanket inherited waivers.
 - `container-tests` builds an ephemeral Linux image and runs the explicit
   offline `tests/container_smoke.py` helper with read-only mounted tests.
   `quality-gate` requires its real result; no image is published or deployed.

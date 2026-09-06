@@ -1145,7 +1145,7 @@
         "ConfigurationError"
       ],
       "legacy_aliases": [],
-      "source_revision": "653660e31daa2de8219bf38a571e8bd97f227a8a",
+      "source_revision": "1ef7539d7a04e388afe850b09e53f5fb12be3a76",
       "responsibilities": "configuration lookup failure contract",
       "private_modules": [],
       "allowed_importers": [],

@@ -4,6 +4,12 @@
 
 ### Changed
 
+- **Preserve dependency failures without masking implementation defects.**
+  Narrow configuration, HTTP/JSON, Blob, JWT, logging and VERSION handlers to
+  their concrete failure contracts. Fix the unbound retry notification and
+  avoid retrying absent in-memory settings. Record retained application
+  boundaries individually as unapproved proposals with failure-test evidence.
+
 - **Separate Chainlit history adaptation from history operations.** Put the
   data-layer callbacks, factory and consume-once session bridge in `api.history`;
   keep history authorization, orchestrator operations and the single user cache
@@ -17,6 +23,11 @@
   Chainlit assets; install the package in the existing container build.
 
 ### Added
+
+- **Isolate protected quality-tool execution.** Run static tools without
+  candidate module shadowing or candidate package/build-backend installation
+  in the evaluator; analyze the explicit source graph in an isolated worker.
+  Add executable shadowing and installation-isolation regression fixtures.
 
 - **Proposed protected-base Python quality gates.** Add pinned development-only
   Ruff, mypy and import tooling, individual typing debt records, full static

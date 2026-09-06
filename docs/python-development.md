@@ -27,6 +27,22 @@ deployment uses `python -m pip install --no-deps .`. Docker still runs from
 backend wire contracts, authentication defaults or frontend assets change.
 `VERSION` is deliberately unchanged, including its existing value.
 
+Expected dependency failures retain their established UI outcomes. Missing
+configuration uses its declared default immediately; Azure provider failures
+use the existing bounded retries and an observable default on exhaustion.
+`config.errors.ConfigurationError` identifies a missing required setting or
+invalid conversion. Unexpected provider defects (including unrelated nested
+`RetryError`) propagate instead of becoming a missing setting. The retry
+notification is a static callback, fixing the previously masked unbound-method
+failure on the first retry.
+
+Conversation HTTP/JSON failures retain empty/absent/false results, while
+unexpected implementation errors propagate. Blob, diagnostic JWT, VERSION and
+optional logging boundaries catch their documented dependency/validation
+failures rather than arbitrary defects. Existing standalone download, chat,
+feedback, socket invalidation and optional citation/panel-hook outcomes remain
+explicit application boundaries; their proposed exceptions are not approvals.
+
 ## Ownership and imports
 
 `src/gpt_rag_ui/bootstrap.py` owns ASGI composition and the application instance.
@@ -198,7 +214,14 @@ remain the trust boundary. `--pattern` on the unittest runner supports focused
 local work, but the CI aggregate requires full `test_*.py` discovery.
 
 The existing workflow extracts the protected-base runner, checker, aggregator
-and tool pins when policy exists. The quality matrix consumes the separate
+and tool pins when policy exists. It installs protected runtime requirements
+and tool pins in a separate evaluator environment, never the candidate package,
+editable metadata, dependency manifest or build backend. Ruff and mypy run in
+Python isolated mode. Grimp and Import Linter analyze the explicit candidate
+source directory in an isolated worker without importing application code or
+adding the candidate checkout to the evaluator import path. This rejects
+candidate `mypy.py`, `grimp.py`, `sitecustomize.py` and `PYTHONPATH` shadowing.
+The quality matrix consumes the separate
 unittest artifact, and `quality-gate` requires the real matrix, unittest and
 `container-tests` results plus every fresh artifact. The container job builds
 an ephemeral Ubuntu Docker image and runs `tests/container_smoke.py` with
@@ -222,16 +245,23 @@ without being described as full-repository typing coverage.
 
 Ruff selects F821, E722, BLE001, PGH003, PGH004 and RUF100. The supplementary
 AST handler inventory includes logged and re-raised broad handlers that BLE001
-exempts. `.quality/handler-inventory.json` records inherited sites;
-`exceptions.json` intentionally contains no approved exceptions. In particular,
-configuration-default fallbacks, classic conversation-list empty responses and
-legacy SAS fallback need explicit compatibility/error-policy decisions.
-Logging alone does not approve them. The initial gate therefore remains red;
-do not merge this checkpoint as a completed quality-policy adoption.
+exempts. `.quality/handler-inventory.json` records the remaining sites.
+`exceptions.json` contains individual **proposed**, not approved, boundaries:
+each identifies its exact operation/catch fingerprint, rationale, diagnostic
+path, observable outcome and executed failure-test selector. Proposals expire
+on 2026-10-06 and require review before the blocking stage. No blanket inherited
+handler waiver is granted. Narrowing removes 35 of the original 63 broad sites;
+the remaining 28 preserve application-level translation, cleanup/propagation
+or contractual best-effort behavior. Logging alone does not approve them.
 
-Before adoption, complete the handler classification/narrowing and exact
-failure-behavior evidence, remaining installed security/resource cases and
-Linux container evidence. The quality fixtures now include disposable Git
+Before adoption, maintainers must review each proposed boundary and the
+protected policy through PRs; only protected active, unexpired records with
+same-source passing evidence can authorize an exception. The initial gate
+therefore remains red, rather than reporting candidate proposals as accepted.
+Installed acceptance covers real auth order, upload writes/cleanup and
+standalone download/OpenAPI failures outside the checkout. Linux acceptance
+is supplied by the actual `container-tests` job for the PR head, not inferred
+from local Windows results. The quality fixtures include disposable Git
 repositories and real unittest/aggregate subprocesses for protected-policy,
 receipt and false-green mutations; they do not substitute for controlled
 required-check acceptance PRs. Obtain maintainer review of the concrete policy.
@@ -249,6 +279,19 @@ as a repository administrator before adding CODEOWNERS. No settings were
 applied. Workflow YAML, approval strings and a green local command cannot prove
 required merge enforcement; bootstrap administration and controlled negative
 PR evidence remain separate acceptance activities.
+
+### Implementation and failure-fixture map
+
+| Scope | Implementation and executable evidence |
+| --- | --- |
+| T004/T008/T011/T014/T017/T020/T023/T026/T029 | Protected checker, four governance records, pinned tools and fail-closed workflow; `test_quality_policy.py` covers schemas, policy tampering, moves/splits, suppressions, dynamic bindings, debt, exact evidence, isolated execution and independent aggregation. |
+| T031-T034 | Setuptools discovery, canonical config/util/auth/client/service owners, shared citations and bounded `api.history`/`services.history` split; `test_module_compatibility.py`, `test_history_boundary.py`, datalayer/citation and original security suites. |
+| T035/T036 | API callbacks/routes, telemetry, bootstrap, thin legacy adapters, conditional initialization and staged roots; installed import-order/single-registration and actual startup acceptance. |
+| T030/T038 | Canonical private test seams and dedicated legacy assertions; `test_installed_package.py` creates a clean non-editable environment, copies only behavioral tests and checks real auth/startup, staged resources and writable upload cleanup without runtime source leakage. |
+| T037 | Docker package installation, unchanged Uvicorn startup, ephemeral image build and offline `container_smoke.py`; real aggregate dependency and image behavioral suite. |
+| T041 / UI part of T045 | This contributor guide, `AGENTS.md`, PR #110 evidence and coordinated documentation/umbrella handoff. |
+| Dependency failures | `test_failure_contracts.py` exercises real retry/connection parsing and concrete Azure, HTTPX, JWT and logging errors alongside unexpected-defect propagation. |
+| Retained application boundaries | `test_boundary_failures.py`, the socket failure cases in `test_embed_security.py`, existing secure-download/panel-hook tests and installed startup failure acceptance; exact selectors are recorded per proposed site. |
 
 ## Recovery and coordinated documentation
 

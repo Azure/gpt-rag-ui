@@ -1,4 +1,566 @@
 {
   "schema_version": 1,
-  "entries": []
+  "entries": [
+    {
+      "id": "ui-boundary-01",
+      "module_id": "gpt_rag_ui.api.download_routes",
+      "symbol": "register_secure_download_route.download_blob_file",
+      "review": "Proposed in Azure/gpt-rag-ui#110; pending maintainer review coordinated in Azure/GPT-RAG#689. Not approved.",
+      "handler_fingerprint": "b756bff96eda34351f57aba6b1c3fe329e1d500e669db581dcdb139a1e6e0a2d",
+      "caught_types": [
+        "Exception"
+      ],
+      "boundary": "Authorized download operation and injected downloader",
+      "reason": "Unexpected authorized resolver/downloader failures must become generic HTTP 500, not disclose backend diagnostics or return file content.",
+      "failure_outcome": "failure-translation",
+      "diagnostic_path": "logger.exception; generic 500 response with no-store",
+      "evidence_tests": [
+        "tests/test_download_security.py::DownloadSecurityTests.test_secure_download_route_fails_closed"
+      ],
+      "state": "proposed",
+      "review_by_stage": "blocking",
+      "expires_on": "2026-10-06"
+    },
+    {
+      "id": "ui-boundary-02",
+      "module_id": "gpt_rag_ui.api.feedback",
+      "symbol": "register_feedback_handlers.handle_feedback",
+      "review": "Proposed in Azure/gpt-rag-ui#110; pending maintainer review coordinated in Azure/GPT-RAG#689. Not approved.",
+      "handler_fingerprint": "960a5e976e25e1e71e579ca4d06749b5e3ec868e375ff47353f60884ddf28fd4",
+      "caught_types": [
+        "Exception"
+      ],
+      "boundary": "Chainlit feedback action callback",
+      "reason": "The callback composes injected auth and backend operations; arbitrary failures must remove stale feedback UI and emit an error toast, never a success acknowledgement.",
+      "failure_outcome": "failure-translation",
+      "diagnostic_path": "logging.exception; error toast",
+      "evidence_tests": [
+        "tests/test_boundary_failures.py::BoundaryFailureTests.test_feedback_boundary_emits_failure_toast_not_success"
+      ],
+      "state": "proposed",
+      "review_by_stage": "blocking",
+      "expires_on": "2026-10-06"
+    },
+    {
+      "id": "ui-boundary-03",
+      "module_id": "embed_auth",
+      "symbol": "CopilotSessionStore._notify_invalidated",
+      "review": "Proposed in Azure/gpt-rag-ui#110; pending maintainer review coordinated in Azure/GPT-RAG#689. Not approved.",
+      "handler_fingerprint": "ee84c052306e126a4806e67c8e15feffcf73a63294804d629ae0c1e59d693b62",
+      "caught_types": [
+        "Exception"
+      ],
+      "boundary": "Per-session invalidation notification callback",
+      "reason": "Session invalidation is already committed; a failed injected socket callback must be logged while remaining invalidations continue. Cancellation is not swallowed.",
+      "failure_outcome": "contractual-best-effort",
+      "diagnostic_path": "logger.exception; subsequent callback invocation",
+      "evidence_tests": [
+        "tests/test_boundary_failures.py::BoundaryFailureTests.test_invalidation_callback_failure_does_not_skip_other_sessions",
+        "tests/test_boundary_failures.py::BoundaryFailureTests.test_cancellation_is_not_converted_to_successful_invalidation"
+      ],
+      "state": "proposed",
+      "review_by_stage": "blocking",
+      "expires_on": "2026-10-06"
+    },
+    {
+      "id": "ui-boundary-04",
+      "module_id": "embed_security",
+      "symbol": "CopilotSocketRegistry.bind_connection",
+      "review": "Proposed in Azure/gpt-rag-ui#110; pending maintainer review coordinated in Azure/GPT-RAG#689. Not approved.",
+      "handler_fingerprint": "6e6629412e9cc7c57e4a00e23d815331c9645753f8c54b583b2e494c18931a78",
+      "caught_types": [
+        "Exception"
+      ],
+      "boundary": "Bounded socket replacement teardown",
+      "reason": "Replacement must not steal the old association when an injected teardown callback fails; preserve tracking and reject the replacement for retry.",
+      "failure_outcome": "failure-translation",
+      "diagnostic_path": "logger.exception; rejected binding",
+      "evidence_tests": [
+        "tests/test_embed_security.py::BridgeGuardTests.test_failed_replacement_disconnect_keeps_old_association"
+      ],
+      "state": "proposed",
+      "review_by_stage": "blocking",
+      "expires_on": "2026-10-06"
+    },
+    {
+      "id": "ui-boundary-05",
+      "module_id": "embed_security",
+      "symbol": "CopilotSocketRegistry.disconnect_session",
+      "review": "Proposed in Azure/gpt-rag-ui#110; pending maintainer review coordinated in Azure/GPT-RAG#689. Not approved.",
+      "handler_fingerprint": "4c0b76598807ea2c2354b694e6dfa8231207d104845e22dd2234d142d5c83a37",
+      "caught_types": [
+        "Exception"
+      ],
+      "boundary": "Invalidated session per-socket teardown",
+      "reason": "Deny the binding before teardown, continue independent socket cleanup on arbitrary callback failure and count only actual disconnects; retain failed associations as inactive.",
+      "failure_outcome": "contractual-best-effort",
+      "diagnostic_path": "logger.exception; inactive retained socket and successful-only count",
+      "evidence_tests": [
+        "tests/test_embed_security.py::BridgeGuardTests.test_failed_session_disconnect_retains_denied_binding"
+      ],
+      "state": "proposed",
+      "review_by_stage": "blocking",
+      "expires_on": "2026-10-06"
+    },
+    {
+      "id": "ui-boundary-06",
+      "module_id": "embed_security",
+      "symbol": "_target_has_copilot_sockets",
+      "review": "Proposed in Azure/gpt-rag-ui#110; pending maintainer review coordinated in Azure/GPT-RAG#689. Not approved.",
+      "handler_fingerprint": "f32bcc076c9df5109e20369857d83491585c57dfcaff7fbfd856f9fbc2462095",
+      "caught_types": [
+        "Exception"
+      ],
+      "boundary": "Socket.IO recipient enumeration safety check",
+      "reason": "An unknown manager failure cannot prove the room excludes Copilot clients; conservatively retain the Copilot restriction when any protected sockets exist.",
+      "failure_outcome": "failure-translation",
+      "diagnostic_path": "logger.exception; conservative protected-recipient result",
+      "evidence_tests": [
+        "tests/test_embed_security.py::BridgeGuardTests.test_bridge_recipient_lookup_failure_is_conservative"
+      ],
+      "state": "proposed",
+      "review_by_stage": "blocking",
+      "expires_on": "2026-10-06"
+    },
+    {
+      "id": "ui-boundary-07",
+      "module_id": "embed_security",
+      "symbol": "disconnect_copilot_session",
+      "review": "Proposed in Azure/gpt-rag-ui#110; pending maintainer review coordinated in Azure/GPT-RAG#689. Not approved.",
+      "handler_fingerprint": "2a8561cb32d5bc9bbd7d8a97ed77033906a84087036941eb24a435f460d59d61",
+      "caught_types": [
+        "Exception"
+      ],
+      "boundary": "Invalidated session Engine.IO transport cleanup",
+      "reason": "Invalidation already denies the session; one failed transport closure must not abort cleanup of other reserved transports or claim a successful disconnect.",
+      "failure_outcome": "contractual-best-effort",
+      "diagnostic_path": "logger.exception; preserved invalidation and actual disconnect count",
+      "evidence_tests": [
+        "tests/test_embed_security.py::BridgeGuardTests.test_invalidation_transport_failures_are_logged_without_counting_success"
+      ],
+      "state": "proposed",
+      "review_by_stage": "blocking",
+      "expires_on": "2026-10-06"
+    },
+    {
+      "id": "ui-boundary-08",
+      "module_id": "embed_security",
+      "symbol": "disconnect_copilot_session",
+      "review": "Proposed in Azure/gpt-rag-ui#110; pending maintainer review coordinated in Azure/GPT-RAG#689. Not approved.",
+      "handler_fingerprint": "767f30df3d2c994058add75878ffceb0b5647093ee1fe4a5d70a9d55c88b135e",
+      "caught_types": [
+        "Exception"
+      ],
+      "boundary": "Legacy per-socket invalidation without registry",
+      "reason": "When no registry exists, close every known socket independently and count only successful callbacks; arbitrary callback failures remain observable.",
+      "failure_outcome": "contractual-best-effort",
+      "diagnostic_path": "logger.exception; successful-only disconnect count",
+      "evidence_tests": [
+        "tests/test_embed_security.py::BridgeGuardTests.test_invalidation_transport_failures_are_logged_without_counting_success"
+      ],
+      "state": "proposed",
+      "review_by_stage": "blocking",
+      "expires_on": "2026-10-06"
+    },
+    {
+      "id": "ui-boundary-09",
+      "module_id": "embed_security",
+      "symbol": "_terminate_socket",
+      "review": "Proposed in Azure/gpt-rag-ui#110; pending maintainer review coordinated in Azure/GPT-RAG#689. Not approved.",
+      "handler_fingerprint": "3c54455817d43acb6b53599c65f8068719f50f7cbd87d4a8b7772cd507ef61ce",
+      "caught_types": [
+        "Exception"
+      ],
+      "boundary": "Rejected socket physical teardown",
+      "reason": "Do not untrack an invalidated socket while its arbitrary disconnect callback has failed; return false so callers retain denial and retry capacity.",
+      "failure_outcome": "failure-translation",
+      "diagnostic_path": "logger.exception; false result and retained inactive association",
+      "evidence_tests": [
+        "tests/test_embed_security.py::BridgeGuardTests.test_failed_termination_retains_invalidated_association"
+      ],
+      "state": "proposed",
+      "review_by_stage": "blocking",
+      "expires_on": "2026-10-06"
+    },
+    {
+      "id": "ui-boundary-10",
+      "module_id": "embed_security",
+      "symbol": "_terminate_socket",
+      "review": "Proposed in Azure/gpt-rag-ui#110; pending maintainer review coordinated in Azure/GPT-RAG#689. Not approved.",
+      "handler_fingerprint": "4be83a749d9b20b8afcb438353ab909c8a7a8ff11b952de879ff1acea435e8a8",
+      "caught_types": [
+        "Exception"
+      ],
+      "boundary": "Orphaned Chainlit session deletion after disconnect",
+      "reason": "The socket is already disconnected; a framework session deletion failure must be logged while finally unbinding the dead socket. The session stays marked for clearing.",
+      "failure_outcome": "contractual-best-effort",
+      "diagnostic_path": "logger.exception; finally unbind_socket",
+      "evidence_tests": [
+        "tests/test_embed_security.py::BridgeGuardTests.test_failed_session_delete_still_unbinds_terminated_socket"
+      ],
+      "state": "proposed",
+      "review_by_stage": "blocking",
+      "expires_on": "2026-10-06"
+    },
+    {
+      "id": "ui-boundary-11",
+      "module_id": "embed_security",
+      "symbol": "configure_copilot_bridge_guards.disconnect_socket",
+      "review": "Proposed in Azure/gpt-rag-ui#110; pending maintainer review coordinated in Azure/GPT-RAG#689. Not approved.",
+      "handler_fingerprint": "f33d760a3bd5d791b6b43556292ecd9a6982463b182f4fd59381af6fb6580161",
+      "caught_types": [
+        "Exception"
+      ],
+      "boundary": "Chainlit/Socket.IO teardown callback",
+      "reason": "Arbitrary callback failure must close the associated Engine.IO transport before re-raising the original error; the enclosing invalidation boundary decides retry policy.",
+      "failure_outcome": "cleanup-propagation",
+      "diagnostic_path": "re-raise after _close_engineio_transport; enclosing invalidation logger.exception",
+      "evidence_tests": [
+        "tests/test_embed_security.py::BridgeGuardTests.test_disconnect_callback_failure_closes_transport_then_propagates"
+      ],
+      "state": "proposed",
+      "review_by_stage": "blocking",
+      "expires_on": "2026-10-06"
+    },
+    {
+      "id": "ui-boundary-12",
+      "module_id": "embed_security",
+      "symbol": "configure_copilot_bridge_guards.close_rejected_socket",
+      "review": "Proposed in Azure/gpt-rag-ui#110; pending maintainer review coordinated in Azure/GPT-RAG#689. Not approved.",
+      "handler_fingerprint": "db80c8a03d2058c018fb9d7fc1e0a316c3acb5a507ab8fff57657f35d2f07659",
+      "caught_types": [
+        "Exception"
+      ],
+      "boundary": "Transport cleanup after connection rejection",
+      "reason": "Cleanup failure must not replace or undo the established connection denial; log failed closure and retain the Socket.IO refusal.",
+      "failure_outcome": "contractual-best-effort",
+      "diagnostic_path": "logger.exception; SocketIOConnectionRefusedError",
+      "evidence_tests": [
+        "tests/test_embed_security.py::BridgeGuardTests.test_rejected_socket_remains_denied_if_transport_close_fails"
+      ],
+      "state": "proposed",
+      "review_by_stage": "blocking",
+      "expires_on": "2026-10-06"
+    },
+    {
+      "id": "ui-boundary-13",
+      "module_id": "embed_security",
+      "symbol": "configure_copilot_bridge_guards.guarded_engineio_connect",
+      "review": "Proposed in Azure/gpt-rag-ui#110; pending maintainer review coordinated in Azure/GPT-RAG#689. Not approved.",
+      "handler_fingerprint": "6f3cb7b0bb2d3b8fe7a19bc2559160c28ba9aa1887bf38fad362232b30592595",
+      "caught_types": [
+        "BaseException"
+      ],
+      "boundary": "Engine.IO admission reservation",
+      "reason": "Release the just-reserved transport slot on every unsuccessful callback exit, including asyncio cancellation, then propagate the same BaseException.",
+      "failure_outcome": "cleanup-propagation",
+      "diagnostic_path": "release_engineio_transport; unchanged re-raise to Engine.IO caller",
+      "evidence_tests": [
+        "tests/test_embed_security.py::BridgeGuardTests.test_engineio_admission_failure_releases_reservation_and_propagates"
+      ],
+      "state": "proposed",
+      "review_by_stage": "blocking",
+      "expires_on": "2026-10-06"
+    },
+    {
+      "id": "ui-boundary-14",
+      "module_id": "embed_security",
+      "symbol": "configure_copilot_bridge_guards.guarded_engineio_disconnect",
+      "review": "Proposed in Azure/gpt-rag-ui#110; pending maintainer review coordinated in Azure/GPT-RAG#689. Not approved.",
+      "handler_fingerprint": "46c8675c61b6caf2e6e8d12cb8589d6bddac1f01a44764cbdfbc2921add13c05",
+      "caught_types": [
+        "Exception"
+      ],
+      "boundary": "Engine.IO original disconnect handler",
+      "reason": "An arbitrary original disconnect failure triggers explicit namespace cleanup rather than abandoning the reserved transport slot.",
+      "failure_outcome": "contractual-best-effort",
+      "diagnostic_path": "logger.exception; namespace fallback and release_engineio_transport",
+      "evidence_tests": [
+        "tests/test_embed_security.py::BridgeGuardTests.test_engineio_cleanup_dependency_failures_release_transport_reservation"
+      ],
+      "state": "proposed",
+      "review_by_stage": "blocking",
+      "expires_on": "2026-10-06"
+    },
+    {
+      "id": "ui-boundary-15",
+      "module_id": "embed_security",
+      "symbol": "configure_copilot_bridge_guards.guarded_engineio_disconnect",
+      "review": "Proposed in Azure/gpt-rag-ui#110; pending maintainer review coordinated in Azure/GPT-RAG#689. Not approved.",
+      "handler_fingerprint": "7ed9c1f24af71facb62bbf72f2bcddb5902b989ffa7b59b4004320b7fe0d218d",
+      "caught_types": [
+        "Exception"
+      ],
+      "boundary": "Socket.IO namespace enumeration during failed teardown",
+      "reason": "The physical transport is ending; failed manager enumeration is logged and reservation release still occurs instead of retaining a capacity leak.",
+      "failure_outcome": "contractual-best-effort",
+      "diagnostic_path": "logger.exception; release_engineio_transport despite enumeration failure",
+      "evidence_tests": [
+        "tests/test_embed_security.py::BridgeGuardTests.test_engineio_cleanup_dependency_failures_release_transport_reservation"
+      ],
+      "state": "proposed",
+      "review_by_stage": "blocking",
+      "expires_on": "2026-10-06"
+    },
+    {
+      "id": "ui-boundary-16",
+      "module_id": "embed_security",
+      "symbol": "configure_copilot_bridge_guards.guarded_engineio_disconnect",
+      "review": "Proposed in Azure/gpt-rag-ui#110; pending maintainer review coordinated in Azure/GPT-RAG#689. Not approved.",
+      "handler_fingerprint": "1abdf18fb4f6b76ab843ebf18b2ea6b0b951603cc8ed5e1e80bf92760f76f55d",
+      "caught_types": [
+        "Exception"
+      ],
+      "boundary": "Per-namespace Socket.IO ID resolution during teardown",
+      "reason": "One manager lookup failure must be logged without stopping independent namespace cleanup or final transport reservation release.",
+      "failure_outcome": "contractual-best-effort",
+      "diagnostic_path": "logger.exception; continue namespace cleanup and release transport",
+      "evidence_tests": [
+        "tests/test_embed_security.py::BridgeGuardTests.test_engineio_cleanup_dependency_failures_release_transport_reservation"
+      ],
+      "state": "proposed",
+      "review_by_stage": "blocking",
+      "expires_on": "2026-10-06"
+    },
+    {
+      "id": "ui-boundary-17",
+      "module_id": "embed_security",
+      "symbol": "configure_copilot_bridge_guards.guarded_engineio_disconnect",
+      "review": "Proposed in Azure/gpt-rag-ui#110; pending maintainer review coordinated in Azure/GPT-RAG#689. Not approved.",
+      "handler_fingerprint": "ceb8bbe7ef1967073771e38ea5f53368cee4e33defd71f090a3f8688d7ebf9e6",
+      "caught_types": [
+        "Exception"
+      ],
+      "boundary": "Per-namespace manager disconnect fallback",
+      "reason": "An arbitrary fallback manager failure must remain observable while registry unbinding and transport reservation release still execute.",
+      "failure_outcome": "contractual-best-effort",
+      "diagnostic_path": "logger.exception; registry unbind and reservation release",
+      "evidence_tests": [
+        "tests/test_embed_security.py::BridgeGuardTests.test_engineio_cleanup_dependency_failures_release_transport_reservation"
+      ],
+      "state": "proposed",
+      "review_by_stage": "blocking",
+      "expires_on": "2026-10-06"
+    },
+    {
+      "id": "ui-boundary-18",
+      "module_id": "embed_security",
+      "symbol": "configure_copilot_bridge_guards.guarded_connect",
+      "review": "Proposed in Azure/gpt-rag-ui#110; pending maintainer review coordinated in Azure/GPT-RAG#689. Not approved.",
+      "handler_fingerprint": "6023a5c3b914404c725fb2ccb659e0080e9855a8972b24ea78c54e4e881b33b3",
+      "caught_types": [
+        "Exception"
+      ],
+      "boundary": "Authorized Chainlit connect callback",
+      "reason": "Failure of the framework's session construction must tear down the bound socket and become a connection refusal, never leave an accepted orphan.",
+      "failure_outcome": "failure-translation",
+      "diagnostic_path": "logger.exception; _terminate_socket and SocketIOConnectionRefusedError",
+      "evidence_tests": [
+        "tests/test_embed_security.py::BridgeGuardTests.test_chainlit_connect_failure_disconnects_before_untracking"
+      ],
+      "state": "proposed",
+      "review_by_stage": "blocking",
+      "expires_on": "2026-10-06"
+    },
+    {
+      "id": "ui-boundary-19",
+      "module_id": "embed_security",
+      "symbol": "configure_copilot_bridge_guards.guarded_disconnect",
+      "review": "Proposed in Azure/gpt-rag-ui#110; pending maintainer review coordinated in Azure/GPT-RAG#689. Not approved.",
+      "handler_fingerprint": "7ee3c2cc97faa8c215207137892fee1838625a03721792843ddfb6a41e2857a9",
+      "caught_types": [
+        "Exception"
+      ],
+      "boundary": "Chainlit disconnect callback completion",
+      "reason": "Arbitrary callback failure must complete any teardown waiter exceptionally and propagate without incorrectly untracking a still-associated session.",
+      "failure_outcome": "propagation",
+      "diagnostic_path": "completion.set_exception; re-raise to teardown caller",
+      "evidence_tests": [
+        "tests/test_embed_security.py::BridgeGuardTests.test_failed_disconnect_handler_retains_association"
+      ],
+      "state": "proposed",
+      "review_by_stage": "blocking",
+      "expires_on": "2026-10-06"
+    },
+    {
+      "id": "ui-boundary-20",
+      "module_id": "main",
+      "symbol": "_create_chainlit_app.handle_file_download",
+      "review": "Proposed in Azure/gpt-rag-ui#110; pending maintainer review coordinated in Azure/GPT-RAG#689. Not approved.",
+      "handler_fingerprint": "3c9d182751070ab794e358cbda085758a40232508aa6834d6510b420075e37df",
+      "caught_types": [
+        "Exception"
+      ],
+      "boundary": "Existing standalone legacy download endpoint",
+      "reason": "Preserve the existing non-Copilot 404 BlobNotFound and 500 text response contract for arbitrary client failures. This does not authorize that route for Copilot sessions.",
+      "failure_outcome": "failure-translation",
+      "diagnostic_path": "logger.exception; existing standalone 404/500 response",
+      "evidence_tests": [
+        "tests/test_installed_package.py::InstalledPackageTests.test_installed_startup_preserves_documented_failure_boundaries"
+      ],
+      "state": "proposed",
+      "review_by_stage": "blocking",
+      "expires_on": "2026-10-06"
+    },
+    {
+      "id": "ui-boundary-21",
+      "module_id": "main",
+      "symbol": "_create_chainlit_app._safe_openapi",
+      "review": "Proposed in Azure/gpt-rag-ui#110; pending maintainer review coordinated in Azure/GPT-RAG#689. Not approved.",
+      "handler_fingerprint": "362e2634ddc54a64a9ccb55ce7f04722bd7d0d1e1d18f53b6bcae77484367205",
+      "caught_types": [
+        "Exception"
+      ],
+      "boundary": "Optional framework OpenAPI generation",
+      "reason": "Failure of generated schema introspection must be logged while retaining application startup; the existing cached fallback exposes metadata with no paths, not fabricated operations.",
+      "failure_outcome": "contractual-best-effort",
+      "diagnostic_path": "logger.exception; cached empty-path OpenAPI schema",
+      "evidence_tests": [
+        "tests/test_installed_package.py::InstalledPackageTests.test_installed_startup_preserves_documented_failure_boundaries"
+      ],
+      "state": "proposed",
+      "review_by_stage": "blocking",
+      "expires_on": "2026-10-06"
+    },
+    {
+      "id": "ui-boundary-22",
+      "module_id": "app",
+      "symbol": "get_auth_info",
+      "review": "Proposed in Azure/gpt-rag-ui#110; pending maintainer review coordinated in Azure/GPT-RAG#689. Not approved.",
+      "handler_fingerprint": "340bc8608e8c309f545703ffec7de3d0f8593ef209c5ec5fc2926bc4ef62611a",
+      "caught_types": [
+        "Exception"
+      ],
+      "boundary": "Chainlit OAuth refresh boundary",
+      "reason": "An unexpected refresh callback failure must clear the local user and return session_expired without an access token; it cannot preserve authenticated success.",
+      "failure_outcome": "failure-translation",
+      "diagnostic_path": "logger.warning; cleared user session and explicit auth_error",
+      "evidence_tests": [
+        "tests/test_boundary_failures.py::BoundaryFailureTests.test_oauth_refresh_failure_clears_session_and_denies_request"
+      ],
+      "state": "proposed",
+      "review_by_stage": "blocking",
+      "expires_on": "2026-10-06"
+    },
+    {
+      "id": "ui-boundary-23",
+      "module_id": "app",
+      "symbol": "handle_message",
+      "review": "Proposed in Azure/gpt-rag-ui#110; pending maintainer review coordinated in Azure/GPT-RAG#689. Not approved.",
+      "handler_fingerprint": "28432097d5e316c53871f35a15bae778d07207b7d5bfe4456053b36d6c2d0d4a",
+      "caught_types": [
+        "Exception"
+      ],
+      "boundary": "Uploaded-file ingestion interaction",
+      "reason": "The message event must surface arbitrary ingestion/client failure as a reference-bearing error rather than a processed-success response.",
+      "failure_outcome": "failure-translation",
+      "diagnostic_path": "logger.exception; streamed ingestion failure with question reference",
+      "evidence_tests": [
+        "tests/test_boundary_failures.py::BoundaryFailureTests.test_ingestion_failure_does_not_claim_processed_success"
+      ],
+      "state": "proposed",
+      "review_by_stage": "blocking",
+      "expires_on": "2026-10-06"
+    },
+    {
+      "id": "ui-boundary-24",
+      "module_id": "app",
+      "symbol": "handle_message",
+      "review": "Proposed in Azure/gpt-rag-ui#110; pending maintainer review coordinated in Azure/GPT-RAG#689. Not approved.",
+      "handler_fingerprint": "745f35b8acf978f9806573704dd103ef503cecb3dcbd1b84eb5df58488d9ebd2",
+      "caught_types": [
+        "Exception"
+      ],
+      "boundary": "Hosted continuity streaming interaction",
+      "reason": "The outer Chainlit event boundary translates arbitrary coordinator/stream failures into a reference-bearing technical error and always closes the generator.",
+      "failure_outcome": "failure-translation",
+      "diagnostic_path": "logger.exception; user-visible technical error; generator.aclose in finally",
+      "evidence_tests": [
+        "tests/test_boundary_failures.py::BoundaryFailureTests.test_chat_failure_boundaries_report_errors_and_close_generators"
+      ],
+      "state": "proposed",
+      "review_by_stage": "blocking",
+      "expires_on": "2026-10-06"
+    },
+    {
+      "id": "ui-boundary-25",
+      "module_id": "app",
+      "symbol": "handle_message",
+      "review": "Proposed in Azure/gpt-rag-ui#110; pending maintainer review coordinated in Azure/GPT-RAG#689. Not approved.",
+      "handler_fingerprint": "1c63d8d3596fd52c1ca0c8f8ef8e81cce533d248265762e77b05fed6b31d3a8a",
+      "caught_types": [
+        "Exception"
+      ],
+      "boundary": "Direct hosted-agent streaming interaction",
+      "reason": "Keep the existing user-visible error and generator cleanup if the hosted stream fails outside its narrower authentication/cancellation mappings.",
+      "failure_outcome": "failure-translation",
+      "diagnostic_path": "logger.exception; user-visible technical error; generator.aclose in finally",
+      "evidence_tests": [
+        "tests/test_boundary_failures.py::BoundaryFailureTests.test_chat_failure_boundaries_report_errors_and_close_generators"
+      ],
+      "state": "proposed",
+      "review_by_stage": "blocking",
+      "expires_on": "2026-10-06"
+    },
+    {
+      "id": "ui-boundary-26",
+      "module_id": "app",
+      "symbol": "handle_message",
+      "review": "Proposed in Azure/gpt-rag-ui#110; pending maintainer review coordinated in Azure/GPT-RAG#689. Not approved.",
+      "handler_fingerprint": "207aa65b444e45b6567319918d07ecdeebb01080c281dab60bd57326131f6b63",
+      "caught_types": [
+        "Exception"
+      ],
+      "boundary": "Classic orchestrator streaming interaction",
+      "reason": "The Chainlit event must display a reference-bearing technical error on arbitrary orchestrator stream failure and close the generator rather than terminate silently.",
+      "failure_outcome": "failure-translation",
+      "diagnostic_path": "logger.exception; user-visible technical error; generator.aclose in finally",
+      "evidence_tests": [
+        "tests/test_boundary_failures.py::BoundaryFailureTests.test_chat_failure_boundaries_report_errors_and_close_generators"
+      ],
+      "state": "proposed",
+      "review_by_stage": "blocking",
+      "expires_on": "2026-10-06"
+    },
+    {
+      "id": "ui-boundary-27",
+      "module_id": "gpt_rag_ui.services.citations",
+      "symbol": "_resolve_legacy_reference_href",
+      "review": "Proposed in Azure/gpt-rag-ui#110; pending maintainer review coordinated in Azure/GPT-RAG#689. Not approved.",
+      "handler_fingerprint": "03cb111ed45f097249afcbd161767a555a30e0614aee2a3a906bdb6120dbc93a",
+      "caught_types": [
+        "Exception"
+      ],
+      "boundary": "Optional legacy citation link rendering",
+      "reason": "A failed optional signing/link callback omits that citation with a warning instead of failing the already-generated answer or emitting a broken link.",
+      "failure_outcome": "contractual-best-effort",
+      "diagnostic_path": "logger.warning; omitted citation",
+      "evidence_tests": [
+        "tests/test_boundary_failures.py::BoundaryFailureTests.test_optional_legacy_citation_failure_is_logged_and_omitted"
+      ],
+      "state": "proposed",
+      "review_by_stage": "blocking",
+      "expires_on": "2026-10-06"
+    },
+    {
+      "id": "ui-boundary-28",
+      "module_id": "hosted_continuity",
+      "symbol": "HostedContinuityCoordinator.run_turn",
+      "review": "Proposed in Azure/gpt-rag-ui#110; pending maintainer review coordinated in Azure/GPT-RAG#689. Not approved.",
+      "handler_fingerprint": "dc6e603ecd7756c1eb6ae4ec785ef18eff71de07bf79d56f150443c1b4157363",
+      "caught_types": [
+        "Exception"
+      ],
+      "boundary": "Optional post-create panel owner-index hook",
+      "reason": "The durable conversation/owner operation has succeeded; failure of the optional panel indexing hook must be logged without losing the turn. Missing index entries reduce listing, not ownership checks.",
+      "failure_outcome": "contractual-best-effort",
+      "diagnostic_path": "logger.exception; main streaming turn continues",
+      "evidence_tests": [
+        "tests/test_hosted_continuity_panel_hook.py::OwnerIndexHookTests.test_hook_failure_does_not_fail_the_turn"
+      ],
+      "state": "proposed",
+      "review_by_stage": "blocking",
+      "expires_on": "2026-10-06"
+    }
+  ]
 }
