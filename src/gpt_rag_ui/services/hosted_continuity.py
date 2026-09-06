@@ -432,4 +432,3 @@ class HostedContinuityCoordinator:
                 ) from exc
 
             await self._idempotency.mark_applied(conversation_id, client_turn_id)
-

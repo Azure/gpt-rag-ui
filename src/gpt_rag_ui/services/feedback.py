@@ -91,4 +91,3 @@ def feedback_requires_ownership(
         auth_payload.get("copilot_auth_mode") or ""
     ).strip().lower()
     return bool(copilot_auth_mode) or not allow_standalone_anonymous
-
