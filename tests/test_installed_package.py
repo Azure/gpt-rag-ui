@@ -63,7 +63,13 @@ class InstalledPackageTests(unittest.TestCase):
 
     def run_installed(self, code, *, environment=None, cwd=None):
         env = dict(os.environ)
-        for name in ("PYTHONPATH", "PYTHONHOME", "APP_CONFIG_ENDPOINT", "AZURE_APPCONFIG_CONNECTION_STRING"):
+        for name in (
+            "PYTHONPATH", "PYTHONHOME", "APP_CONFIG_ENDPOINT",
+            "AZURE_APPCONFIG_CONNECTION_STRING", "DEPLOY_ADMINISTRATIVE_PANEL",
+            "DATABASE_ACCOUNT_NAME", "DATABASE_NAME", "CHAINLIT_URL",
+            "CHAINLIT_ALLOWED_ORIGINS", "CHAINLIT_COOKIE_SECURE",
+            "CHAINLIT_COOKIE_SAMESITE",
+        ):
             env.pop(name, None)
         for name in list(env):
             if name.startswith(("OAUTH_", "HOSTED_", "PANEL_", "CHAINLIT_COPILOT_")) or name == "ALLOW_ANONYMOUS_EFFECTIVE":
@@ -229,6 +235,133 @@ with TestClient(main.app) as client:
                     "PANEL_CONVERSATIONS_TENANT_ID": "11111111-2222-3333-4444-555555555555",
                     "DATABASE_ACCOUNT_NAME": "test-account",
                     "DATABASE_NAME": "test-database",
+                })
+
+    def test_real_entra_startup_keeps_uploads_in_the_writable_asset_root(self):
+        for copilot in (False, True):
+            with self.subTest(copilot=copilot):
+                environment = {
+                    "ALLOW_ANONYMOUS": "false",
+                    "OAUTH_AZURE_AD_CLIENT_ID": "test-client",
+                    "OAUTH_AZURE_AD_TENANT_ID": "11111111-2222-3333-4444-555555555555",
+                    "OAUTH_AZURE_AD_CLIENT_SECRET": "test-client-secret",
+                }
+                if copilot:
+                    environment.update({
+                        "CHAINLIT_COPILOT_ENABLED": "true",
+                        "CHAINLIT_COPILOT_AUTH_MODE": "entra",
+                        "CHAINLIT_URL": "https://chat.example.com",
+                        "CHAINLIT_ALLOWED_ORIGINS": "https://portal.example.com",
+                        "CHAINLIT_COPILOT_ENTRA_TENANT_ID": environment["OAUTH_AZURE_AD_TENANT_ID"],
+                        "CHAINLIT_COPILOT_ENTRA_AUDIENCE": "api://test",
+                    })
+                self.run_installed("""
+import asyncio, tomllib
+from uuid import uuid4
+assert "chainlit" not in sys.modules
+class AuthOrderGuard:
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == "chainlit":
+            assert os.environ.get("ALLOW_ANONYMOUS_EFFECTIVE") == "false"
+            assert os.environ.get("CHAINLIT_AUTH_SECRET")
+        return None
+sys.meta_path.insert(0, AuthOrderGuard())
+from gpt_rag_ui.config import dependencies
+class Config:
+    connected = True
+    def get(self, key, default=None, type=str):
+        return default
+    def get_value(self, key, default=None, allow_none=False, type=str):
+        return default
+dependencies.__dict__["__config"] = Config()
+import main
+assert_installed(main)
+assert "chainlit" in sys.modules
+from gpt_rag_ui import bootstrap
+assert main.app is bootstrap.app
+assert_installed(bootstrap)
+from chainlit.config import APP_ROOT, FILES_DIRECTORY, config
+asset_root = Path(os.environ["CHAINLIT_APP_ROOT"]).resolve()
+assert Path(APP_ROOT).resolve() == asset_root
+assert FILES_DIRECTORY.resolve() == asset_root / ".files"
+assert not FILES_DIRECTORY.resolve().is_relative_to(installed)
+assert config.features.spontaneous_file_upload.enabled
+saved_config = tomllib.loads((asset_root / ".chainlit" / "config.toml").read_text())
+assert saved_config["features"]["spontaneous_file_upload"]["enabled"]
+from chainlit.session import HTTPSession
+async def persist_upload():
+    session = HTTPSession(
+        id="installed-" + uuid4().hex, client_type="webapp",
+        thread_id=None, user=None, token=None, user_env=None, environ=None,
+    )
+    try:
+        reference = await session.persist_file(
+            name="synthetic.txt", mime="text/plain", content=b"synthetic installed upload",
+        )
+        path = session.files[reference["id"]]["path"].resolve()
+        assert path.is_relative_to(FILES_DIRECTORY.resolve())
+        assert path.read_bytes() == b"synthetic installed upload"
+    finally:
+        await session.delete()
+    assert not session.files_dir.exists()
+asyncio.run(persist_upload())
+from fastapi.testclient import TestClient
+with TestClient(main.app) as client:
+    assert client.get("/version-footer").status_code == 200
+    assert client.get("/public/custom.css").status_code == 200
+""", environment=environment)
+
+    def test_missing_required_oauth_preserves_auth_required_readiness(self):
+        self.run_installed("""
+from gpt_rag_ui.config import dependencies
+class Config:
+    connected = True
+    def get(self, key, default=None, type=str):
+        return default
+    def get_value(self, key, default=None, allow_none=False, type=str):
+        return default
+dependencies.__dict__["__config"] = Config()
+import main
+assert_installed(main)
+from fastapi.testclient import TestClient
+with TestClient(main.app) as client:
+    response = client.get("/")
+    assert response.status_code == 503
+    assert response.headers["retry-after"] == "30"
+    health = client.get("/healthz")
+    assert health.status_code == 200
+    assert health.headers["x-app-mode"] == "auth-required"
+assert "chainlit" not in sys.modules
+""", environment={"ALLOW_ANONYMOUS": "false"})
+
+    def test_invalid_copilot_configuration_fails_only_when_activated(self):
+        for active in (False, True):
+            with self.subTest(copilot_active=active):
+                self.run_installed(f"""
+import unittest
+from gpt_rag_ui.config import dependencies
+from gpt_rag_ui.config.embed_config import EmbedConfigError
+class Config:
+    connected = True
+    def get(self, key, default=None, type=str):
+        return default
+    def get_value(self, key, default=None, allow_none=False, type=str):
+        return default
+dependencies.__dict__["__config"] = Config()
+if {active!r}:
+    with unittest.TestCase().assertRaises(EmbedConfigError):
+        importlib.import_module("main")
+    assert "chainlit" not in sys.modules
+else:
+    import main
+    assert_installed(main)
+    from fastapi.testclient import TestClient
+    with TestClient(main.app) as client:
+        assert client.get("/version-footer").status_code == 200
+""", environment={
+                    "CHAINLIT_COPILOT_ENABLED": str(active).lower(),
+                    "CHAINLIT_COPILOT_AUTH_MODE": "entra",
+                    "CHAINLIT_URL": "invalid-url",
                 })
 
     def test_disconnected_configuration_is_not_ready_and_missing_version_is_optional(self):
