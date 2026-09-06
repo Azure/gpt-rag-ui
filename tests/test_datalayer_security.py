@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import AsyncMock, patch
 
-import datalayer
+import gpt_rag_ui.services.history as datalayer
 
 
 class DataLayerSecurityTests(unittest.IsolatedAsyncioTestCase):
@@ -23,19 +23,19 @@ class DataLayerSecurityTests(unittest.IsolatedAsyncioTestCase):
     async def test_list_threads_binds_owner_to_canonical_tid_oid(self):
         with (
             patch(
-                "datalayer._get_session_metadata",
+                "gpt_rag_ui.services.history._get_session_metadata",
                 return_value=self.metadata,
             ),
             patch(
-                "datalayer.is_copilot_session_active",
+                "gpt_rag_ui.services.history.is_copilot_session_active",
                 AsyncMock(return_value=True),
             ),
             patch(
-                "datalayer.resolve_access_token",
+                "gpt_rag_ui.services.history.resolve_access_token",
                 AsyncMock(return_value="token"),
             ),
             patch(
-                "datalayer.call_orchestrator_list_conversations",
+                "gpt_rag_ui.services.history.call_orchestrator_list_conversations",
                 AsyncMock(
                     return_value={
                         "conversations": [
@@ -64,15 +64,15 @@ class DataLayerSecurityTests(unittest.IsolatedAsyncioTestCase):
     async def test_get_thread_rejects_other_principal(self):
         with (
             patch(
-                "datalayer._get_session_metadata",
+                "gpt_rag_ui.services.history._get_session_metadata",
                 return_value=self.metadata,
             ),
             patch(
-                "datalayer.is_copilot_session_active",
+                "gpt_rag_ui.services.history.is_copilot_session_active",
                 AsyncMock(return_value=True),
             ),
             patch(
-                "datalayer.get_owned_conversation",
+                "gpt_rag_ui.services.history.get_owned_conversation",
                 AsyncMock(return_value=None),
             ),
         ):
@@ -81,23 +81,23 @@ class DataLayerSecurityTests(unittest.IsolatedAsyncioTestCase):
     async def test_update_and_delete_require_owned_thread(self):
         with (
             patch(
-                "datalayer._get_session_metadata",
+                "gpt_rag_ui.services.history._get_session_metadata",
                 return_value=self.metadata,
             ),
             patch(
-                "datalayer.is_copilot_session_active",
+                "gpt_rag_ui.services.history.is_copilot_session_active",
                 AsyncMock(return_value=True),
             ),
             patch(
-                "datalayer.get_owned_conversation",
+                "gpt_rag_ui.services.history.get_owned_conversation",
                 AsyncMock(return_value=None),
             ),
             patch(
-                "datalayer.call_orchestrator_update_conversation",
+                "gpt_rag_ui.services.history.call_orchestrator_update_conversation",
                 AsyncMock(),
             ) as update,
             patch(
-                "datalayer.call_orchestrator_delete_conversation",
+                "gpt_rag_ui.services.history.call_orchestrator_delete_conversation",
                 AsyncMock(),
             ) as delete,
         ):

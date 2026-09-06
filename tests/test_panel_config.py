@@ -1,6 +1,6 @@
 import unittest
 
-from panel_config import PanelConfigError, PanelSettings, load_panel_settings
+from gpt_rag_ui.config.panel_config import PanelConfigError, PanelSettings, load_panel_settings
 
 
 class _FakeAppConfig:

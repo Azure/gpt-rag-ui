@@ -1,0 +1,1 @@
+"""Pure constants and helpers."""

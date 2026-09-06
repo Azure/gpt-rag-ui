@@ -1,0 +1,637 @@
+{
+  "schema_version": 1,
+  "source_revision": "c635bc6696714b543feec24b4a062a8a8f3ff6d0",
+  "state": "unapproved",
+  "handlers": [
+    {
+      "module_id": "gpt_rag_ui.api.download_routes",
+      "symbol": "register_secure_download_route.download_blob_file",
+      "line": 104,
+      "handler_fingerprint": "d78898d42b1dc248bf90edb319d835c1038795ec612b503328be68ff1c6fdfab",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "gpt_rag_ui.api.feedback",
+      "symbol": "register_feedback_handlers.handle_feedback",
+      "line": 136,
+      "handler_fingerprint": "b6e457d6674331cda2bee724a5a1bc0755c63e888ee4a3c4b6347297620ce0f2",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "embed_auth",
+      "symbol": "CopilotSessionStore._notify_invalidated",
+      "line": 174,
+      "handler_fingerprint": "56fd043d6a04e5c96a397fd313a0dcbda8cce1d962d186077d913d9de125c797",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "embed_security",
+      "symbol": "CopilotSocketRegistry.bind_connection",
+      "line": 298,
+      "handler_fingerprint": "bfe1614754694fdd9fe09f973f1e35d2198c5b6c86de475f508ca250a4878c0a",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "embed_security",
+      "symbol": "CopilotSocketRegistry.disconnect_session",
+      "line": 479,
+      "handler_fingerprint": "7ce76329a4444b888e812dea354c4cc99a8b240834c8a6bd188bbed7b1fe82b4",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "embed_security",
+      "symbol": "_target_has_copilot_sockets",
+      "line": 984,
+      "handler_fingerprint": "076accdaac426fa89772f7002c3b6fda8abe9acc9290a181acf669a8c5fe806f",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "embed_security",
+      "symbol": "disconnect_copilot_session",
+      "line": 1133,
+      "handler_fingerprint": "37da9a5b920235a080703b69d9d8681be241d5d2299698e3f42637cbe1c51f24",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "embed_security",
+      "symbol": "disconnect_copilot_session",
+      "line": 1144,
+      "handler_fingerprint": "7ce76329a4444b888e812dea354c4cc99a8b240834c8a6bd188bbed7b1fe82b4",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "embed_security",
+      "symbol": "_terminate_socket",
+      "line": 1170,
+      "handler_fingerprint": "02057e748d5c5cd8987627b8d8e59e37304b58e5336e0dcc5cbac03feae184f0",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "embed_security",
+      "symbol": "_terminate_socket",
+      "line": 1180,
+      "handler_fingerprint": "6d9ffd40868ead00d39955db848db73084233514904f89aafe601fba3c250c45",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "embed_security",
+      "symbol": "configure_copilot_bridge_guards.disconnect_socket",
+      "line": 1237,
+      "handler_fingerprint": "e0fb96ed2e139d8c2dace63399de6fae0cb43a2ff5c08bed58230d5c4ca93360",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "embed_security",
+      "symbol": "configure_copilot_bridge_guards.close_rejected_socket",
+      "line": 1267,
+      "handler_fingerprint": "22d4bbfd5017c7ab6e525ce34ca962c2b8491dfe615b93632da2ee858da488a8",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "embed_security",
+      "symbol": "configure_copilot_bridge_guards.guarded_engineio_connect",
+      "line": 1308,
+      "handler_fingerprint": "414f208f3b9234aae053cc5221c0de279359af94d25298d99a70727fda3147c2",
+      "caught_types": [
+        "BaseException"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "embed_security",
+      "symbol": "configure_copilot_bridge_guards.guarded_engineio_disconnect",
+      "line": 1342,
+      "handler_fingerprint": "1e1d171b24fec60ec5fab97d38ad5e73211651cfb4523e6229317963dad04305",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "embed_security",
+      "symbol": "configure_copilot_bridge_guards.guarded_engineio_disconnect",
+      "line": 1350,
+      "handler_fingerprint": "a295d0c7dcce47dcb34f4afc54d885aeef9d2227239511502ce265e2db9cbaa1",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "embed_security",
+      "symbol": "configure_copilot_bridge_guards.guarded_engineio_disconnect",
+      "line": 1362,
+      "handler_fingerprint": "19445c74e15c18a3049e4134632fa9959f27deb78428824aef0e97954cd61010",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "embed_security",
+      "symbol": "configure_copilot_bridge_guards.guarded_engineio_disconnect",
+      "line": 1376,
+      "handler_fingerprint": "fd7619af1bf84098272dafd72335e294f259c1f501a315c14e0590f3d179cc44",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "embed_security",
+      "symbol": "configure_copilot_bridge_guards.guarded_connect",
+      "line": 1639,
+      "handler_fingerprint": "e1b860dbb3c6ee1a289f49db88acbdfb7b0e2b35876fa8d11c3b160663771f2c",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "embed_security",
+      "symbol": "configure_copilot_bridge_guards.guarded_disconnect",
+      "line": 1711,
+      "handler_fingerprint": "c8c456b0ad93bdaebc4d48de69bcbabf542a98c1d503347a0f9e91d2e125fa52",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "auth_oauth",
+      "symbol": "_decode_jwt_unverified",
+      "line": 41,
+      "handler_fingerprint": "c3fde88d2b8da1fb938e77ffdf783cb7109a6d092274d4066207eac4498aaaf5",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "auth_oauth",
+      "symbol": "_jwt_exp_unverified",
+      "line": 82,
+      "handler_fingerprint": "c3fde88d2b8da1fb938e77ffdf783cb7109a6d092274d4066207eac4498aaaf5",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "auth_oauth",
+      "symbol": "get_env_var",
+      "line": 279,
+      "handler_fingerprint": "4154344e21d001322837937dd96ebed7d08e66307b8dd53c6b8ed91820379c6f",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "auth_oauth",
+      "symbol": "oauth_callback",
+      "line": 299,
+      "handler_fingerprint": "99b2890238dc24d9e2994635202ec31f421c1fefbab0f73db2d97579116333d4",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "main",
+      "symbol": "_read_local_ui_version",
+      "line": 134,
+      "handler_fingerprint": "ac31201d3fec1a48fa90e65e4bffa753e8b55dfcb777449dd3c30cc20382abcf",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "main",
+      "symbol": "_configure_auth_environment",
+      "line": 517,
+      "handler_fingerprint": "54e428e2e5d202e79766f8313a4c3c5cfca2fcea9f3450103cc22bf282ab23d3",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "main",
+      "symbol": "_create_chainlit_app.download_from_blob",
+      "line": 807,
+      "handler_fingerprint": "193bf0b33d245598a4b7ce505c3f35522a282ddf0ab77012eb083f385d164898",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "main",
+      "symbol": "_create_chainlit_app.handle_file_download",
+      "line": 826,
+      "handler_fingerprint": "c114fef7bfb19aaf4ed6edfb15eb70e3514ad5e67a6726e8089b2f85beda1df5",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "main",
+      "symbol": "_create_chainlit_app",
+      "line": 910,
+      "handler_fingerprint": "51cfebe134077966abb2e71965363f5cf0e60be7cd2c2bade89d84689c191990",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "main",
+      "symbol": "_create_chainlit_app._safe_openapi",
+      "line": 924,
+      "handler_fingerprint": "b3fe65a8ba6e289315d7d7b1a861171f274344dd2a46be9ce8dafbc1f70c59d9",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "main",
+      "symbol": "_create_chainlit_app.stream_from_blob",
+      "line": 1011,
+      "handler_fingerprint": "9e1b90b286707f2d1b2f28e38ffd9256f35a047bf1e3f00d0c55d3aa6f7e39cc",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "connectors.blob",
+      "symbol": "BlobClient.__init__",
+      "line": 32,
+      "handler_fingerprint": "73e9709baee32f0c3b649fec77e26a5b0ea4ae9d6446544d0453f4838645eb3e",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "connectors.blob",
+      "symbol": "BlobClient.__init__",
+      "line": 43,
+      "handler_fingerprint": "22d6eae79890f2f77f16d2acf2d6aaf46c94a5250e96b83c6fda58e82acc3ca9",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "connectors.blob",
+      "symbol": "BlobClient._get_credential",
+      "line": 62,
+      "handler_fingerprint": "571f08bf787be4739bb33077c0c45bb1f8d66dbc73e85ff839bc810a7f4883ac",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "connectors.blob",
+      "symbol": "BlobClient.download_blob",
+      "line": 91,
+      "handler_fingerprint": "cd867148c8ccba32874200140a7d271291b0f7af198eb84bd8921dfdb3e0e24f",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "connectors.blob",
+      "symbol": "BlobClient.download_blob_chunks",
+      "line": 115,
+      "handler_fingerprint": "2be29127688d71c5c9287f310f77d96ce98d65cceb481ea67fa18476964ac3e6",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "connectors.blob",
+      "symbol": "BlobClient.generate_sas_url",
+      "line": 179,
+      "handler_fingerprint": "01309eed94f588263f1240b3b28ca0904b3481ea849d0d7a5b5c0230d253f3d3",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "connectors.blob",
+      "symbol": "BlobContainerClient._get_credential",
+      "line": 226,
+      "handler_fingerprint": "571f08bf787be4739bb33077c0c45bb1f8d66dbc73e85ff839bc810a7f4883ac",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "hosted_agent_client",
+      "symbol": "_get_config_value",
+      "line": 119,
+      "handler_fingerprint": "b9746a2aac4706b7cd0d39f161369f8cd5549a864365b69efd5e71d2a566d65a",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "orchestrator_client",
+      "symbol": "_decode_jwt_unverified",
+      "line": 115,
+      "handler_fingerprint": "c3fde88d2b8da1fb938e77ffdf783cb7109a6d092274d4066207eac4498aaaf5",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "orchestrator_client",
+      "symbol": "_get_config_value",
+      "line": 152,
+      "handler_fingerprint": "4587e7139a32a5ec0b1d118d0e5043b57ae7b20a53c2c6e79c6e50f73100245d",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "orchestrator_client",
+      "symbol": "call_orchestrator_list_conversations",
+      "line": 545,
+      "handler_fingerprint": "cd88a2c884a0e68d8956c6cf5a087a71dfb4467b88419b5280df6255faa827fa",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "orchestrator_client",
+      "symbol": "call_orchestrator_get_conversation",
+      "line": 576,
+      "handler_fingerprint": "f870ef6fdc220ecbcdc2be692a1cf875a6191dab8ad376f6725416a57fb23ff3",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "orchestrator_client",
+      "symbol": "call_orchestrator_update_conversation",
+      "line": 610,
+      "handler_fingerprint": "46b7a13c9e02ee2bc5b81e124d5d2cc60351b9306ff29f6e2b3ebe981a1c8126",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "orchestrator_client",
+      "symbol": "call_orchestrator_delete_conversation",
+      "line": 642,
+      "handler_fingerprint": "434dc75df96ef48899172b21d46a8802fbddb1da287e6e695098225627c216f6",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "connectors.appconfig",
+      "symbol": "AppConfigClient.__init__",
+      "line": 29,
+      "handler_fingerprint": "b1a267fb1881862ed3e6fdf6b93281cde6698c939d8a50cb2ba38c0fad980a3e",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "connectors.appconfig",
+      "symbol": "AppConfigClient.__init__",
+      "line": 34,
+      "handler_fingerprint": "b1a267fb1881862ed3e6fdf6b93281cde6698c939d8a50cb2ba38c0fad980a3e",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "connectors.appconfig",
+      "symbol": "AppConfigClient.__init__",
+      "line": 83,
+      "handler_fingerprint": "e3f2e902895d5705581e8fda6efcf9bb0292d699ea8e6cf16eb6a06b85e07e52",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "connectors.appconfig",
+      "symbol": "AppConfigClient.__init__",
+      "line": 96,
+      "handler_fingerprint": "5937429e785282b4891d2ebc0879bae61f523e61c65dc836cdb5636e321b68de",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "connectors.appconfig",
+      "symbol": "AppConfigClient.get_value",
+      "line": 117,
+      "handler_fingerprint": "8e7b1ed8f690a9d36ad90fef15cd89d966c372ba41fcbedd66f1ddf99332a6ce",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "hosted_continuity_config",
+      "symbol": "_read_setting",
+      "line": 121,
+      "handler_fingerprint": "9afb945a652714551ecf3d43a6bdf0f4d92ff056610274beee6644de98440bbf",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "panel_config",
+      "symbol": "_read_setting",
+      "line": 110,
+      "handler_fingerprint": "9afb945a652714551ecf3d43a6bdf0f4d92ff056610274beee6644de98440bbf",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "app",
+      "symbol": "get_auth_info",
+      "line": 299,
+      "handler_fingerprint": "635678fa42359ad0b31b8d6abc569994ebf829d9ac61dfd91b8a7a3b87e7e822",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "app",
+      "symbol": "_decode_jwt_unverified",
+      "line": 377,
+      "handler_fingerprint": "c3fde88d2b8da1fb938e77ffdf783cb7109a6d092274d4066207eac4498aaaf5",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "app",
+      "symbol": "handle_message",
+      "line": 619,
+      "handler_fingerprint": "a57270fe7fff752b28dba88b4276c75e965dd96de9a61a4c5dbb9b6bcae07bd0",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "app",
+      "symbol": "handle_message",
+      "line": 893,
+      "handler_fingerprint": "0ac2086107f306422be469fdfc9c095219d57668d6ff9e06d228ae7ab54a333e",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "app",
+      "symbol": "handle_message",
+      "line": 1043,
+      "handler_fingerprint": "e966ab00373103e2763dd72b4ce66ae6fcd179d1b2cc8e73461e5471dd439017",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "app",
+      "symbol": "handle_message",
+      "line": 1220,
+      "handler_fingerprint": "45e7fac1cf1745af44e9695dd159ed4c87277d6e48321c5560eda17171a5ec9b",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "gpt_rag_ui.services.citations",
+      "symbol": "_resolve_legacy_reference_href",
+      "line": 157,
+      "handler_fingerprint": "4a0f1e713212c1d9b26e94a71e9fee515cc8d63f30b660ee10cff264ab3d2494",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "datalayer",
+      "symbol": "_get_session_metadata",
+      "line": 69,
+      "handler_fingerprint": "38a931793af7288599c66ae9d269877cc6ee2f873fd7d00197fc0fec47578faa",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "datalayer",
+      "symbol": "_get_session_metadata",
+      "line": 78,
+      "handler_fingerprint": "954a20c07870d9c5d8729f79c5d14f8b8fc9488bf2d570ff801cda945a571255",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "datalayer",
+      "symbol": "OrchestratorDataLayer.update_thread",
+      "line": 325,
+      "handler_fingerprint": "ec656306061e5a617a3572c30dc1ba5b1c8ab07b619b9a8f2b8d727a3a4f2fec",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "hosted_continuity",
+      "symbol": "HostedContinuityCoordinator.run_turn",
+      "line": 354,
+      "handler_fingerprint": "509f39f165872a430dc45486a7ee20f969a09401f7adcc29349e115981506036",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    },
+    {
+      "module_id": "telemetry",
+      "symbol": "Telemetry.configure_monitoring",
+      "line": 80,
+      "handler_fingerprint": "b3cec7c9a7ecc36fe56bc549dd0c14ee52f38374781d23983281f689baf6ca2b",
+      "caught_types": [
+        "Exception"
+      ],
+      "unsupported": false
+    }
+  ]
+}

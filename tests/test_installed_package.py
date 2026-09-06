@@ -1,0 +1,235 @@
+"""Non-editable wheel acceptance outside the checkout with staged writable assets."""
+
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+import venv
+import zipfile
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+class InstalledPackageTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.temporary = tempfile.TemporaryDirectory(prefix="gpt-rag-ui-installed-")
+        cls.addClassCleanup(cls.temporary.cleanup)
+        cls.root = Path(cls.temporary.name)
+        cls.environment = cls.root / "environment"
+        # Reuse only runtime dependencies. Every UI file must resolve from this
+        # environment's non-editable wheel, never a system editable installation.
+        venv.EnvBuilder(with_pip=True, system_site_packages=True).create(cls.environment)
+        cls.python = cls.environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+        cls.wheels = cls.root / "wheels"
+        cls.wheels.mkdir()
+        cls.run_command([sys.executable, "-m", "pip", "wheel", "--no-deps", "--wheel-dir", str(cls.wheels), str(ROOT)])
+        cls.wheel = next(cls.wheels.glob("gpt_rag_ui-*.whl"))
+        cls.run_command([str(cls.python), "-m", "pip", "install", "--no-deps", "--ignore-installed", str(cls.wheel)])
+        cls.assets = cls.root / "assets"
+        cls.assets.mkdir()
+        for name in (".chainlit", "public"):
+            shutil.copytree(ROOT / name, cls.assets / name)
+        for name in ("chainlit.config.yaml", "chainlit.md", "VERSION"):
+            shutil.copy2(ROOT / name, cls.assets / name)
+        cls.cwd = cls.root / "unrelated-cwd"
+        cls.cwd.mkdir()
+        cls.inventory = json.loads((ROOT / ".quality/migration.json").read_text(encoding="utf-8"))
+
+    @classmethod
+    def run_command(cls, command, **kwargs):
+        result = subprocess.run(command, text=True, capture_output=True, timeout=300, **kwargs)
+        if result.returncode:
+            raise AssertionError(f"Command failed: {command[:4]}\n{result.stdout}\n{result.stderr}")
+        return result
+
+    def run_installed(self, code, *, environment=None, cwd=None):
+        env = dict(os.environ)
+        for name in ("PYTHONPATH", "PYTHONHOME", "APP_CONFIG_ENDPOINT", "AZURE_APPCONFIG_CONNECTION_STRING"):
+            env.pop(name, None)
+        for name in list(env):
+            if name.startswith(("OAUTH_", "HOSTED_", "PANEL_", "CHAINLIT_COPILOT_")) or name == "ALLOW_ANONYMOUS_EFFECTIVE":
+                env.pop(name, None)
+        env.update(CHAINLIT_APP_ROOT=str(self.assets), CHAT_BACKEND="orchestrator",
+                   ALLOW_ANONYMOUS="true", CHAINLIT_AUTH_SECRET="test-secret-for-installed-package")
+        env.update(environment or {})
+        prelude = f"""
+from pathlib import Path
+import importlib, os, sys
+checkout = Path({str(ROOT)!r}).resolve()
+installed = Path({str(self.environment)!r}).resolve()
+assert not Path.cwd().is_relative_to(checkout)
+def assert_installed(module):
+    path = Path(module.__file__).resolve()
+    assert path.is_relative_to(installed), (module.__name__, str(path))
+    assert not path.is_relative_to(checkout)
+"""
+        return self.run_command([str(self.python), "-I", "-c", prelude + code],
+                                cwd=cwd or self.cwd, env=env)
+
+    def test_wheel_contains_every_package_and_legacy_module(self):
+        with zipfile.ZipFile(self.wheel) as wheel:
+            files = set(wheel.namelist())
+        for entry in self.inventory["modules"]:
+            self.assertIn(entry["source_path"], files)
+            self.assertIn(entry["path"].removeprefix("src/"), files)
+        self.assertIn("gpt_rag_ui/config/resources.py", files)
+        self.assertFalse(any(path.startswith((".chainlit/", "public/")) for path in files))
+
+    def test_both_import_orders_have_one_owner_and_one_registration(self):
+        pairs = [(m["id"], m["import_name"]) for m in self.inventory["modules"] if m["id"] != "connectors"]
+        for reverse in (False, True):
+            with self.subTest(canonical_first=reverse):
+                self.run_installed(f"""
+os.environ.update(OAUTH_AZURE_AD_CLIENT_ID="client", OAUTH_AZURE_AD_TENANT_ID="tenant",
+                  OAUTH_AZURE_AD_CLIENT_SECRET="test-secret")
+from unittest.mock import patch
+import chainlit as cl
+with patch.object(cl, "on_chat_start", wraps=cl.on_chat_start) as start, \\
+     patch.object(cl, "on_chat_resume", wraps=cl.on_chat_resume) as resume, \\
+     patch.object(cl, "on_message", wraps=cl.on_message) as message, \\
+     patch.object(cl, "data_layer", wraps=cl.data_layer) as data, \\
+     patch.object(cl, "oauth_callback", wraps=cl.oauth_callback) as oauth:
+    for legacy, canonical in {pairs!r}:
+        order = (canonical, legacy) if {reverse!r} else (legacy, canonical)
+        for name in order:
+            assert_installed(importlib.import_module(name))
+    from gpt_rag_ui.api.callbacks import register_callbacks
+    register_callbacks()
+    register_callbacks()
+    assert start.call_count == resume.call_count == message.call_count == 1
+    assert data.call_count == oauth.call_count == 1
+import dependencies
+from gpt_rag_ui.config import dependencies as owner
+assert dependencies.get_config is owner.get_config
+assert dependencies.get_config() is owner.get_config()
+import main
+from gpt_rag_ui import bootstrap
+assert main.app is bootstrap.app
+import hosted_agent_client
+from gpt_rag_ui.clients import hosted_agent_client as client_owner
+assert hosted_agent_client.call_hosted_agent_stream is client_owner.call_hosted_agent_stream
+""")
+
+    def test_real_main_startup_uses_assets_and_auth_precedes_chainlit(self):
+        self.run_installed("""
+assert "chainlit" not in sys.modules
+class AuthOrderGuard:
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == "chainlit":
+            assert os.environ.get("ALLOW_ANONYMOUS_EFFECTIVE") == "true"
+            assert os.environ.get("CHAINLIT_AUTH_SECRET")
+        return None
+sys.meta_path.insert(0, AuthOrderGuard())
+from gpt_rag_ui.config import dependencies
+class Config:
+    connected = True
+    def get(self, key, default=None, type=str):
+        return {"CHAT_BACKEND": "orchestrator", "ALLOW_ANONYMOUS": True}.get(key, default)
+    def get_value(self, key, default=None, allow_none=False, type=str):
+        return self.get(key, default, type)
+dependencies.__dict__["__config"] = Config()
+assert "chainlit" not in sys.modules
+import main
+assert_installed(main)
+from uvicorn.importer import import_from_string
+assert import_from_string("main:app") is main.app
+assert os.environ["ALLOW_ANONYMOUS_EFFECTIVE"] == "true"
+assert "gpt_rag_ui.clients.panel_cosmos" not in sys.modules
+assert "gpt_rag_ui.clients.hosted_conversation_store" not in sys.modules
+from chainlit.config import APP_ROOT, config
+assert Path(APP_ROOT).resolve() == Path(os.environ["CHAINLIT_APP_ROOT"]).resolve()
+from fastapi.testclient import TestClient
+with TestClient(main.app) as client:
+    footer = client.get("/version-footer")
+    assert footer.status_code == 200
+    expected = Path(APP_ROOT, "VERSION").read_text().strip()
+    assert footer.json()["gpt_rag_ui_release"] == "v" + expected
+    response = client.get("/public/custom.css")
+    assert response.status_code == 200, response.status_code
+    assert client.get("/").status_code == 200
+""")
+
+    def test_hosted_continuity_and_panel_activation_share_one_coordinator(self):
+        for active in (False, True):
+            with self.subTest(panel_active=active):
+                self.run_installed(f"""
+from gpt_rag_ui.config import dependencies
+class Config:
+    connected = True
+    def get(self, key, default=None, type=str):
+        return default
+    def get_value(self, key, default=None, allow_none=False, type=str):
+        return default
+dependencies.__dict__["__config"] = Config()
+import main, app
+from gpt_rag_ui.services import chat
+assert app.CHAT_BACKEND == "hosted_agent"
+assert app.HOSTED_CONTINUITY_ENABLED
+first = chat.get_hosted_continuity_coordinator()
+assert first is chat.get_hosted_continuity_coordinator()
+assert chat.PANEL_SETTINGS.user_surfaces_active is {active!r}
+assert (first._on_conversation_created is not None) is {active!r}
+assert_installed(chat)
+assert "gpt_rag_ui.clients.panel_cosmos" in sys.modules
+from fastapi.testclient import TestClient
+with TestClient(main.app) as client:
+    response = client.get("/panel/conversations")
+    assert response.status_code == {401 if active else 503}, response.status_code
+""", environment={
+                    "CHAT_BACKEND": "",
+                    "HOSTED_AGENT_BASE_URL": "https://agent.example.com/protocol",
+                    "HOSTED_AGENT_RESOURCE_SCOPE": "api://hosted-agent/.default",
+                    "OAUTH_AZURE_AD_CLIENT_ID": "test-client",
+                    "OAUTH_AZURE_AD_TENANT_ID": "11111111-2222-3333-4444-555555555555",
+                    "OAUTH_AZURE_AD_CLIENT_SECRET": "test-client-secret",
+                    "HOSTED_CONTINUITY_ENABLED": "true",
+                    "HOSTED_CONVERSATION_OWNER_BINDING": "capability",
+                    "HOSTED_CONVERSATION_CAPABILITY_KEY": "k" * 32,
+                    "HOSTED_CONVERSATION_CAPABILITY_KEY_ID": "test",
+                    "HOSTED_CONVERSATION_STORE_BASE_URL": "https://agent.example.com/openai/v1",
+                    "HOSTED_CONVERSATION_STORE_RESOURCE_SCOPE": "api://hosted-agent/.default",
+                    "DEPLOY_ADMINISTRATIVE_PANEL": str(active).lower(),
+                    "PANEL_HISTORY_ENABLED": str(active).lower(),
+                    "PANEL_CONVERSATIONS_TOKEN_AUDIENCE": "api://panel/.default",
+                    "PANEL_CONVERSATIONS_TENANT_ID": "11111111-2222-3333-4444-555555555555",
+                    "DATABASE_ACCOUNT_NAME": "test-account",
+                    "DATABASE_NAME": "test-database",
+                })
+
+    def test_disconnected_configuration_is_not_ready_and_missing_version_is_optional(self):
+        self.run_installed("""
+import main
+from fastapi.testclient import TestClient
+with TestClient(main.app) as client:
+    assert client.get("/").status_code == 503
+    assert client.get("/healthz").status_code == 503
+from gpt_rag_ui import bootstrap
+from unittest.mock import patch
+with patch.object(bootstrap, "_local_version_file_path", return_value="missing-version"):
+    assert bootstrap._read_local_ui_version() is None
+assert "chainlit" not in sys.modules
+""")
+
+    def test_cwd_asset_handoff_and_missing_config_warning(self):
+        self.run_installed("""
+os.environ.pop("CHAINLIT_APP_ROOT")
+import main
+from gpt_rag_ui.config.resources import get_asset_root
+assert get_asset_root() == Path.cwd().resolve()
+from gpt_rag_ui import bootstrap
+from unittest.mock import patch
+from types import SimpleNamespace
+with patch.object(bootstrap, "get_asset_root", return_value=Path.cwd() / "absent"), \\
+     patch.object(bootstrap.logger, "warning") as warning:
+    bootstrap._sync_chainlit_spontaneous_file_upload(SimpleNamespace(allow_anonymous=True))
+    warning.assert_called_once()
+""", cwd=self.assets)
+
+
+if __name__ == "__main__":
+    unittest.main()

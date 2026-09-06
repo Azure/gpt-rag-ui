@@ -1,9 +1,9 @@
 import unittest
 from unittest.mock import Mock
 
-from panel_cosmos import PanelStoreError
-from panel_config import PanelSettings
-from panel_store import (
+from gpt_rag_ui.clients.panel_cosmos import PanelStoreError
+from gpt_rag_ui.config.panel_config import PanelSettings
+from gpt_rag_ui.services.panel_store import (
     PanelValidationError,
     create_feedback,
     delete_feedback_for_conversation,

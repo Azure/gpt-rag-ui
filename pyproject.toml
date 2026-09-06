@@ -1,0 +1,70 @@
+[build-system]
+requires = ["setuptools==80.9.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gpt-rag-ui"
+dynamic = ["version"]
+description = "Chainlit web client for GPT-RAG"
+requires-python = ">=3.12"
+
+[tool.setuptools.dynamic]
+version = {file = "VERSION"}
+
+[tool.setuptools.packages.find]
+where = ["src", "."]
+include = ["gpt_rag_ui*", "connectors"]
+namespaces = false
+
+[tool.setuptools]
+py-modules = [
+  "main", "app", "auth_common", "auth_oauth", "chat_backend", "constants",
+  "conversation_security", "datalayer", "dependencies", "download_security",
+  "embed_auth", "embed_config", "embed_security", "entra_token", "feedback",
+  "hosted_agent_client", "hosted_continuity", "hosted_continuity_config",
+  "hosted_conversation_capability", "hosted_conversation_store",
+  "ingestion_client", "orchestrator_client", "panel_auth", "panel_config",
+  "panel_cosmos", "panel_cursor", "panel_routes", "panel_store", "telemetry",
+]
+
+[tool.ruff]
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["F821", "E722", "BLE001", "PGH003", "PGH004", "RUF100"]
+
+[tool.mypy]
+python_version = "3.12"
+check_untyped_defs = true
+disallow_incomplete_defs = true
+warn_unused_ignores = true
+warn_unused_configs = true
+incremental = false
+follow_imports = "normal"
+
+[[tool.mypy.overrides]]
+module = [
+  "gpt_rag_ui.config.chat_backend",
+  "gpt_rag_ui.config.panel_config",
+  "gpt_rag_ui.config.hosted_continuity_config",
+  "gpt_rag_ui.config.resources",
+]
+disallow_untyped_defs = true
+
+[tool.importlinter]
+root_package = "gpt_rag_ui"
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "Runtime dependencies follow the approved area graph"
+type = "layers"
+layers = [
+  "gpt_rag_ui.bootstrap",
+  "gpt_rag_ui.api",
+  "gpt_rag_ui.services",
+  "gpt_rag_ui.clients",
+  "gpt_rag_ui.auth",
+  "gpt_rag_ui.telemetry",
+  "gpt_rag_ui.config",
+  "gpt_rag_ui.util",
+]

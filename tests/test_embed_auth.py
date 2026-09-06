@@ -1,3 +1,4 @@
+from gpt_rag_ui.api.embed_routes import register_copilot_auth_routes
 import asyncio
 import os
 import time
@@ -13,18 +14,17 @@ from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 
-from embed_config import EmbedSettings
-from embed_auth import (
+from gpt_rag_ui.config.embed_config import EmbedSettings
+from gpt_rag_ui.auth.embed_auth import (
     COPILOT_SESSION_COOKIE,
     CopilotSessionStore,
     clear_copilot_session_cookie,
     create_embed_session_jwt,
-    register_copilot_auth_routes,
     session_id_from_request,
     set_copilot_session_cookie,
 )
-from embed_security import CopilotRequestMiddleware
-from entra_token import EntraTokenError
+from gpt_rag_ui.auth.embed_security import CopilotRequestMiddleware
+from gpt_rag_ui.auth.entra_token import EntraTokenError
 
 
 TENANT_ID = "11111111-2222-3333-4444-555555555555"

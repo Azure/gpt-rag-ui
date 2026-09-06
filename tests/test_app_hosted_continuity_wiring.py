@@ -50,10 +50,10 @@ _DELEGATED_CONTINUITY_ENV = {
 def _reload_app_with_env(env: dict[str, str]):
     with (
         patch.dict(os.environ, env, clear=False),
-        patch("telemetry.Telemetry.configure_monitoring"),
-        patch("telemetry.Telemetry.get_tracer", return_value=Mock()),
+        patch("gpt_rag_ui.telemetry.monitoring.Telemetry.configure_monitoring"),
+        patch("gpt_rag_ui.telemetry.monitoring.Telemetry.get_tracer", return_value=Mock()),
     ):
-        import app
+        import gpt_rag_ui.services.chat as app
 
         return importlib.reload(app)
 
@@ -83,11 +83,11 @@ class TestHostedContinuityAppWiring(unittest.TestCase):
             app.HOSTED_CONTINUITY_SETTINGS.store_base_url,
             "https://agent.example.com/openai/v1",
         )
-        coordinator = app._get_hosted_continuity_coordinator()
+        coordinator = app.get_hosted_continuity_coordinator()
         self.assertIsInstance(coordinator, app.HostedContinuityCoordinator)
         # The factory must be a singleton (same coordinator instance reused
         # across turns/messages within one running process).
-        self.assertIs(coordinator, app._get_hosted_continuity_coordinator())
+        self.assertIs(coordinator, app.get_hosted_continuity_coordinator())
 
     def test_delegated_continuity_builds_coordinator_without_capability_manager(self):
         """Preferred/default owner-binding mode (Azure/GPT-RAG#591): the
@@ -97,15 +97,15 @@ class TestHostedContinuityAppWiring(unittest.TestCase):
         self.assertTrue(app.HOSTED_CONTINUITY_ENABLED)
         self.assertEqual(app.HOSTED_CONTINUITY_SETTINGS.owner_binding, "delegated")
         self.assertTrue(app.HOSTED_CONTINUITY_SETTINGS.uses_delegated_binding)
-        coordinator = app._get_hosted_continuity_coordinator()
+        coordinator = app.get_hosted_continuity_coordinator()
         self.assertIsInstance(coordinator, app.HostedContinuityCoordinator)
-        self.assertIs(coordinator, app._get_hosted_continuity_coordinator())
+        self.assertIs(coordinator, app.get_hosted_continuity_coordinator())
 
     def test_conversation_not_found_error_is_the_same_class_as_hosted_continuity(self):
         """Wiring correctness: app.py's except clause for the rejected
         client-presented-handle path must catch the exact exception class
         hosted_continuity.py raises, not an accidental re-import/shadow."""
-        import hosted_continuity
+        import gpt_rag_ui.services.hosted_continuity as hosted_continuity
 
         app = _reload_app_with_env(_DELEGATED_CONTINUITY_ENV)
         self.assertIs(

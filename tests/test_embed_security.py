@@ -3,7 +3,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-import embed_security
+import gpt_rag_ui.auth.embed_security as embed_security
 from fastapi import FastAPI, Request, WebSocket
 from fastapi.testclient import TestClient
 from socketio.exceptions import (
@@ -11,9 +11,9 @@ from socketio.exceptions import (
 )
 from starlette.websockets import WebSocketDisconnect
 
-from embed_auth import COPILOT_SESSION_COOKIE
-from embed_config import EmbedSettings
-from embed_security import (
+from gpt_rag_ui.auth.embed_auth import COPILOT_SESSION_COOKIE
+from gpt_rag_ui.config.embed_config import EmbedSettings
+from gpt_rag_ui.auth.embed_security import (
     _authenticated_socket_user,
     _is_copilot_socket,
     _terminate_socket,
@@ -670,7 +670,7 @@ class RealChainlitBridgeGuardTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with patch(
-            "embed_security._authenticated_socket_user",
+            "gpt_rag_ui.auth.embed_security._authenticated_socket_user",
             AsyncMock(return_value=user),
         ):
             result = await sio.handlers["/"]["connect"](
@@ -749,7 +749,7 @@ class RealChainlitBridgeGuardTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with patch(
-            "embed_security._authenticated_socket_user",
+            "gpt_rag_ui.auth.embed_security._authenticated_socket_user",
             authenticate,
         ):
             result = await sio.handlers["/"]["connect"](
@@ -804,7 +804,7 @@ class RealChainlitBridgeGuardTests(unittest.IsolatedAsyncioTestCase):
                 )
                 with (
                     patch(
-                        "embed_security._authenticated_socket_user",
+                        "gpt_rag_ui.auth.embed_security._authenticated_socket_user",
                         AsyncMock(return_value=user),
                     ),
                     self.assertRaises(SocketIOConnectionRefusedError),
@@ -910,7 +910,7 @@ class RealChainlitBridgeGuardTests(unittest.IsolatedAsyncioTestCase):
                 return False, None
 
         with patch(
-            "embed_security._authenticated_socket_user",
+            "gpt_rag_ui.auth.embed_security._authenticated_socket_user",
             side_effect=authenticate,
         ):
             tasks = [
@@ -1134,7 +1134,7 @@ class BridgeGuardTests(unittest.IsolatedAsyncioTestCase):
                 )
 
                 with patch(
-                    "embed_security._authenticated_socket_user",
+                    "gpt_rag_ui.auth.embed_security._authenticated_socket_user",
                     authenticate,
                 ):
                     self.assertTrue(
@@ -1200,7 +1200,7 @@ class BridgeGuardTests(unittest.IsolatedAsyncioTestCase):
 
                 with (
                     patch(
-                        "embed_security._authenticated_socket_user",
+                        "gpt_rag_ui.auth.embed_security._authenticated_socket_user",
                         authenticate,
                     ),
                     patch(
@@ -1666,7 +1666,7 @@ class BridgeGuardTests(unittest.IsolatedAsyncioTestCase):
         sio = FakeSio()
         configure_copilot_bridge_guards(sio, sessions=FakeSessions())
 
-        with patch("embed_security._is_copilot_socket", return_value=True):
+        with patch("gpt_rag_ui.auth.embed_security._is_copilot_socket", return_value=True):
             self.assertIsNone(
                 await sio.emit("window_message", {"secret": True}, to="socket")
             )
@@ -1694,7 +1694,7 @@ class BridgeGuardTests(unittest.IsolatedAsyncioTestCase):
         sio = FakeSio()
         configure_copilot_bridge_guards(sio, sessions=FakeSessions())
 
-        with patch("embed_security._is_copilot_socket", return_value=True):
+        with patch("gpt_rag_ui.auth.embed_security._is_copilot_socket", return_value=True):
             self.assertIsNone(
                 await sio.emit("window_message", {"secret": True}, "socket")
             )
@@ -1714,7 +1714,7 @@ class BridgeGuardTests(unittest.IsolatedAsyncioTestCase):
         sio = FakeSio()
         configure_copilot_bridge_guards(sio, sessions=FakeSessions())
 
-        with patch("embed_security._has_copilot_sockets", return_value=True):
+        with patch("gpt_rag_ui.auth.embed_security._has_copilot_sockets", return_value=True):
             self.assertIsNone(
                 await sio.emit("window_message", {"secret": True})
             )
@@ -1739,7 +1739,7 @@ class BridgeGuardTests(unittest.IsolatedAsyncioTestCase):
         configure_copilot_bridge_guards(sio, sessions=FakeSessions())
 
         with patch(
-            "embed_security._is_copilot_socket",
+            "gpt_rag_ui.auth.embed_security._is_copilot_socket",
             side_effect=lambda socket_id: socket_id == "copilot-socket",
         ):
             self.assertIsNone(
@@ -1766,9 +1766,9 @@ class BridgeGuardTests(unittest.IsolatedAsyncioTestCase):
         sio = SimpleNamespace(disconnect=AsyncMock())
 
         with (
-            patch("embed_security._copilot_disconnect_socket", None),
-            patch("embed_security._copilot_sio", sio),
-            patch("embed_security._copilot_socket_registry", None),
+            patch("gpt_rag_ui.auth.embed_security._copilot_disconnect_socket", None),
+            patch("gpt_rag_ui.auth.embed_security._copilot_sio", sio),
+            patch("gpt_rag_ui.auth.embed_security._copilot_socket_registry", None),
             patch(
                 "chainlit.session.ws_sessions_sid",
                 {"copilot-socket": socket_session},
@@ -1824,9 +1824,9 @@ class BridgeGuardTests(unittest.IsolatedAsyncioTestCase):
         sio = SimpleNamespace(disconnect=AsyncMock())
 
         with (
-            patch("embed_security._copilot_disconnect_socket", None),
-            patch("embed_security._copilot_sio", sio),
-            patch("embed_security._copilot_socket_registry", registry),
+            patch("gpt_rag_ui.auth.embed_security._copilot_disconnect_socket", None),
+            patch("gpt_rag_ui.auth.embed_security._copilot_sio", sio),
+            patch("gpt_rag_ui.auth.embed_security._copilot_socket_registry", registry),
             patch(
                 "chainlit.session.ws_sessions_sid",
                 socket_sessions,
@@ -2229,11 +2229,11 @@ class BridgeGuardTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch(
-                "embed_security._existing_socket_session",
+                "gpt_rag_ui.auth.embed_security._existing_socket_session",
                 return_value=existing_session,
             ),
             patch(
-                "embed_security._authenticated_socket_user",
+                "gpt_rag_ui.auth.embed_security._authenticated_socket_user",
                 AsyncMock(return_value=current_user),
             ),
         ):
@@ -2271,11 +2271,11 @@ class BridgeGuardTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch(
-                "embed_security._existing_socket_session",
+                "gpt_rag_ui.auth.embed_security._existing_socket_session",
                 return_value=SimpleNamespace(user=user),
             ),
             patch(
-                "embed_security._authenticated_socket_user",
+                "gpt_rag_ui.auth.embed_security._authenticated_socket_user",
                 AsyncMock(return_value=user),
             ),
         ):
@@ -2312,7 +2312,7 @@ class BridgeGuardTests(unittest.IsolatedAsyncioTestCase):
         configure_copilot_bridge_guards(sio, sessions=FakeSessions())
 
         with patch(
-            "embed_security._authenticated_socket_user",
+            "gpt_rag_ui.auth.embed_security._authenticated_socket_user",
             AsyncMock(return_value=user),
         ):
             with self.assertRaises(SocketIOConnectionRefusedError):
@@ -2354,7 +2354,7 @@ class BridgeGuardTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with patch(
-            "embed_security._authenticated_socket_user",
+            "gpt_rag_ui.auth.embed_security._authenticated_socket_user",
             AsyncMock(return_value=user),
         ), patch(
             "chainlit.session.WebsocketSession.get",
@@ -2444,7 +2444,7 @@ class BridgeGuardTests(unittest.IsolatedAsyncioTestCase):
         )
         with (
             patch(
-                "embed_security._authenticated_socket_user",
+                "gpt_rag_ui.auth.embed_security._authenticated_socket_user",
                 AsyncMock(return_value=user),
             ),
             patch(
@@ -2505,7 +2505,7 @@ class BridgeGuardTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with patch(
-            "embed_security._authenticated_socket_user",
+            "gpt_rag_ui.auth.embed_security._authenticated_socket_user",
             AsyncMock(return_value=user),
         ),         patch(
             "chainlit.session.WebsocketSession.get",
@@ -2553,7 +2553,7 @@ class BridgeGuardTests(unittest.IsolatedAsyncioTestCase):
         configure_copilot_bridge_guards(sio, sessions=FakeSessions())
 
         with patch(
-            "embed_security._authenticated_socket_user",
+            "gpt_rag_ui.auth.embed_security._authenticated_socket_user",
             AsyncMock(return_value=standalone_user),
         ):
             with self.assertRaises(SocketIOConnectionRefusedError):
@@ -2609,7 +2609,7 @@ class BridgeGuardTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with patch(
-            "embed_security._authenticated_socket_user",
+            "gpt_rag_ui.auth.embed_security._authenticated_socket_user",
             AsyncMock(return_value=user),
         ):
             with self.assertRaises(SocketIOConnectionRefusedError):

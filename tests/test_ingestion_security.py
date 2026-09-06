@@ -1,14 +1,14 @@
 import unittest
 from unittest.mock import patch
 
-from ingestion_client import _build_ingest_documents_payload
+from gpt_rag_ui.clients.ingestion_client import _build_ingest_documents_payload
 
 
 class IngestionSecurityTests(unittest.IsolatedAsyncioTestCase):
     async def test_ingestion_acl_uses_validated_bare_object_id(self):
         object_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
         with patch(
-            "ingestion_client._read_file_bytes",
+            "gpt_rag_ui.clients.ingestion_client._read_file_bytes",
             return_value=b"hello",
         ):
             payload = await _build_ingest_documents_payload(
@@ -32,7 +32,7 @@ class IngestionSecurityTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_ingestion_omits_malformed_object_id(self):
         with patch(
-            "ingestion_client._read_file_bytes",
+            "gpt_rag_ui.clients.ingestion_client._read_file_bytes",
             return_value=b"hello",
         ):
             payload = await _build_ingest_documents_payload(

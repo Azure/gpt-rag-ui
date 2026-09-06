@@ -1,0 +1,10 @@
+# Repository permission endpoint confirmed @placerda has admin permission.
+# Administrators must separately require latest-head code-owner approval;
+# this file alone does not activate branch protection.
+/.quality/ @placerda
+/pyproject.toml @placerda
+/requirements-quality.txt @placerda
+/.github/scripts/check-quality.py @placerda
+/.github/workflows/tests.yml @placerda
+/.github/CODEOWNERS @placerda
+/tests/test_quality_policy.py @placerda

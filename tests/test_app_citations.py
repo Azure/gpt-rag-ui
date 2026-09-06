@@ -1,3 +1,4 @@
+from gpt_rag_ui.services import citations
 import os
 import unittest
 from unittest.mock import Mock, patch
@@ -6,12 +7,12 @@ os.environ.setdefault("CHAINLIT_AUTH_SECRET", "test-secret")
 os.environ["CHAT_BACKEND"] = "orchestrator"
 
 with (
-    patch("telemetry.Telemetry.configure_monitoring"),
-    patch("telemetry.Telemetry.get_tracer", return_value=Mock()),
+    patch("gpt_rag_ui.telemetry.monitoring.Telemetry.configure_monitoring"),
+    patch("gpt_rag_ui.telemetry.monitoring.Telemetry.get_tracer", return_value=Mock()),
 ):
-    import app
+    import gpt_rag_ui.services.chat as app
 
-from download_security import DownloadTokenManager
+from gpt_rag_ui.services.download_security import DownloadTokenManager
 
 
 class AppCitationTests(unittest.TestCase):
@@ -34,13 +35,13 @@ class AppCitationTests(unittest.TestCase):
             "https://portal.example.com/gpt-rag/api/download/grant-1"
         )
         with (
-            patch.object(app, "COPILOT_ENABLED", True),
-            patch.object(app, "DOCUMENTS_CONTAINER", "documents"),
-            patch.object(app, "CONVERSATION_DOCUMENTS_CONTAINER", ""),
-            patch.object(app, "SHARED_DOWNLOAD_CONTAINERS", {"documents"}),
-            patch("app.get_download_tokens", return_value=manager),
+            patch.object(citations, "COPILOT_ENABLED", True),
+            patch.object(citations, "DOCUMENTS_CONTAINER", "documents"),
+            patch.object(citations, "CONVERSATION_DOCUMENTS_CONTAINER", ""),
+            patch.object(citations, "SHARED_DOWNLOAD_CONTAINERS", {"documents"}),
+            patch("gpt_rag_ui.services.citations.get_download_tokens", return_value=manager),
         ):
-            citation = app.resolve_reference_href(
+            citation = citations.resolve_reference_href(
                 "documents/folder/file.pdf",
                 conversation_id="thread-1",
                 principal_id="tenant:object",
@@ -60,9 +61,9 @@ class AppCitationTests(unittest.TestCase):
         )
 
     def test_copilot_citation_requires_conversation_and_principal(self):
-        with patch.object(app, "COPILOT_ENABLED", True):
+        with patch.object(citations, "COPILOT_ENABLED", True):
             self.assertIsNone(
-                app.resolve_reference_href(
+                citations.resolve_reference_href(
                     "documents/file.pdf",
                     conversation_id="",
                     principal_id="tenant:object",
@@ -70,7 +71,7 @@ class AppCitationTests(unittest.TestCase):
                 )
             )
             self.assertIsNone(
-                app.resolve_reference_href(
+                citations.resolve_reference_href(
                     "documents/file.pdf",
                     conversation_id="thread-1",
                     principal_id="",
@@ -85,16 +86,16 @@ class AppCitationTests(unittest.TestCase):
             public_url="https://portal.example.com/gpt-rag",
         )
         with (
-            patch.object(app, "COPILOT_ENABLED", True),
+            patch.object(citations, "COPILOT_ENABLED", True),
             patch.object(
-                app,
+                citations,
                 "CONVERSATION_DOCUMENTS_CONTAINER",
                 "conversation-documents",
             ),
-            patch.object(app, "SHARED_DOWNLOAD_CONTAINERS", set()),
-            patch("app.get_download_tokens", return_value=manager),
+            patch.object(citations, "SHARED_DOWNLOAD_CONTAINERS", set()),
+            patch("gpt_rag_ui.services.citations.get_download_tokens", return_value=manager),
         ):
-            citation = app.resolve_reference_href(
+            citation = citations.resolve_reference_href(
                 (
                     "conversation-documents/conversations/"
                     f"{conversation_id}/"
@@ -115,10 +116,10 @@ class AppCitationTests(unittest.TestCase):
             )
         )
         with (
-            patch.object(app, "COPILOT_ENABLED", True),
-            patch("app._resolve_legacy_reference_href", legacy),
+            patch.object(citations, "COPILOT_ENABLED", True),
+            patch("gpt_rag_ui.services.citations._resolve_legacy_reference_href", legacy),
         ):
-            citation = app.resolve_reference_href("documents/file.pdf")
+            citation = citations.resolve_reference_href("documents/file.pdf")
 
         self.assertEqual(
             (
@@ -132,10 +133,10 @@ class AppCitationTests(unittest.TestCase):
     def test_embedded_citation_requires_opaque_session(self):
         legacy = Mock(return_value="https://storage.example.com/file.pdf")
         with (
-            patch.object(app, "COPILOT_ENABLED", True),
-            patch("app._resolve_legacy_reference_href", legacy),
+            patch.object(citations, "COPILOT_ENABLED", True),
+            patch("gpt_rag_ui.services.citations._resolve_legacy_reference_href", legacy),
         ):
-            citation = app.resolve_reference_href(
+            citation = citations.resolve_reference_href(
                 "documents/file.pdf",
                 conversation_id="thread-1",
                 principal_id="tenant:object",
@@ -150,12 +151,12 @@ class AppCitationTests(unittest.TestCase):
         )
         sas = Mock(return_value=signed)
         with (
-            patch.object(app, "STORAGE_ACCOUNT_NAME", "acct"),
-            patch.object(app, "DOCUMENTS_CONTAINER", "documents"),
-            patch.object(app, "CONVERSATION_DOCUMENTS_CONTAINER", ""),
-            patch.object(app, "generate_blob_sas_url", sas),
+            patch.object(citations, "STORAGE_ACCOUNT_NAME", "acct"),
+            patch.object(citations, "DOCUMENTS_CONTAINER", "documents"),
+            patch.object(citations, "CONVERSATION_DOCUMENTS_CONTAINER", ""),
+            patch.object(citations, "generate_blob_sas_url", sas),
         ):
-            citation = app._resolve_legacy_reference_href(
+            citation = citations._resolve_legacy_reference_href(
                 "https://acct.blob.core.windows.net/documents/f.pdf"
             )
 
@@ -166,11 +167,11 @@ class AppCitationTests(unittest.TestCase):
         sas = Mock()
         external = "https://contoso.example.com/documents/f.pdf"
         with (
-            patch.object(app, "STORAGE_ACCOUNT_NAME", "acct"),
-            patch.object(app, "generate_blob_sas_url", sas),
+            patch.object(citations, "STORAGE_ACCOUNT_NAME", "acct"),
+            patch.object(citations, "generate_blob_sas_url", sas),
         ):
             self.assertEqual(
-                external, app._resolve_legacy_reference_href(external)
+                external, citations._resolve_legacy_reference_href(external)
             )
         sas.assert_not_called()
 
@@ -180,11 +181,11 @@ class AppCitationTests(unittest.TestCase):
             "https://acct.blob.core.windows.net/documents/f.pdf?sig=abc"
         )
         with (
-            patch.object(app, "STORAGE_ACCOUNT_NAME", "acct"),
-            patch.object(app, "generate_blob_sas_url", sas),
+            patch.object(citations, "STORAGE_ACCOUNT_NAME", "acct"),
+            patch.object(citations, "generate_blob_sas_url", sas),
         ):
             self.assertEqual(
-                signed, app._resolve_legacy_reference_href(signed)
+                signed, citations._resolve_legacy_reference_href(signed)
             )
         sas.assert_not_called()
 
@@ -194,13 +195,13 @@ class AppCitationTests(unittest.TestCase):
             "https://portal.example.com/gpt-rag/api/download/grant-2"
         )
         with (
-            patch.object(app, "STORAGE_ACCOUNT_NAME", "acct"),
-            patch.object(app, "DOCUMENTS_CONTAINER", "documents"),
-            patch.object(app, "CONVERSATION_DOCUMENTS_CONTAINER", ""),
-            patch.object(app, "SHARED_DOWNLOAD_CONTAINERS", {"documents"}),
-            patch("app.get_download_tokens", return_value=manager),
+            patch.object(citations, "STORAGE_ACCOUNT_NAME", "acct"),
+            patch.object(citations, "DOCUMENTS_CONTAINER", "documents"),
+            patch.object(citations, "CONVERSATION_DOCUMENTS_CONTAINER", ""),
+            patch.object(citations, "SHARED_DOWNLOAD_CONTAINERS", {"documents"}),
+            patch("gpt_rag_ui.services.citations.get_download_tokens", return_value=manager),
         ):
-            citation = app._resolve_secure_reference_href(
+            citation = citations._resolve_secure_reference_href(
                 (
                     "https://acct.blob.core.windows.net/"
                     "documents/folder/file.pdf"
@@ -225,11 +226,11 @@ class AppCitationTests(unittest.TestCase):
     def test_external_absolute_citation_is_dropped_when_secured(self):
         manager = Mock(public_url="https://portal.example.com/gpt-rag")
         with (
-            patch.object(app, "STORAGE_ACCOUNT_NAME", "acct"),
-            patch("app.get_download_tokens", return_value=manager),
+            patch.object(citations, "STORAGE_ACCOUNT_NAME", "acct"),
+            patch("gpt_rag_ui.services.citations.get_download_tokens", return_value=manager),
         ):
             self.assertIsNone(
-                app._resolve_secure_reference_href(
+                citations._resolve_secure_reference_href(
                     "https://contoso.example.com/documents/f.pdf",
                     conversation_id="thread-1",
                     principal_id="tenant:object",

@@ -2,7 +2,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from panel_cursor import PanelCursorError, PanelCursorManager
+from gpt_rag_ui.services.panel_cursor import PanelCursorError, PanelCursorManager
 
 OID_A = "11111111-1111-1111-1111-111111111111"
 OID_B = "22222222-2222-2222-2222-222222222222"
@@ -38,7 +38,7 @@ class PanelCursorManagerTests(unittest.TestCase):
 
     def test_expired_cursor_is_rejected(self):
         token = self.manager.mint(oid=OID_A, skip=10)
-        with patch("panel_cursor.URLSafeTimedSerializer.loads") as mocked:
+        with patch("gpt_rag_ui.services.panel_cursor.URLSafeTimedSerializer.loads") as mocked:
             from itsdangerous import SignatureExpired
 
             mocked.side_effect = SignatureExpired("expired")

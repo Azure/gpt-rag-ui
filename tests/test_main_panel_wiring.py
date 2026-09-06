@@ -9,7 +9,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-import dependencies
+import gpt_rag_ui.config.dependencies as dependencies
 
 
 class _FakeConfig:
@@ -23,8 +23,8 @@ class _FakeConfig:
 
 dependencies.__dict__["__config"] = _FakeConfig()
 
-import main  # noqa: E402
-from panel_config import PanelSettings  # noqa: E402
+import gpt_rag_ui.bootstrap as main  # noqa: E402
+from gpt_rag_ui.config.panel_config import PanelSettings  # noqa: E402
 
 
 class MountPanelRoutesTests(unittest.TestCase):
@@ -54,7 +54,7 @@ class MountPanelRoutesTests(unittest.TestCase):
             CHAT_BACKEND="hosted_agent",
             PANEL_SETTINGS=PanelSettings(),
             HOSTED_CONTINUITY_ENABLED=False,
-            _get_hosted_continuity_coordinator=lambda: Mock(store=Mock()),
+            get_hosted_continuity_coordinator=lambda: Mock(store=Mock()),
         )
         main._mount_panel_routes(self.host_app, self.config, handlers)
         self.host_app.include_router.assert_called_once()

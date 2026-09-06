@@ -1,3 +1,4 @@
+from gpt_rag_ui.api.download_routes import register_secure_download_route
 import hashlib
 import unittest
 from types import SimpleNamespace
@@ -10,16 +11,15 @@ from chainlit.user import User
 from fastapi import FastAPI
 from itsdangerous import URLSafeTimedSerializer
 
-from conversation_security import conversation_belongs_to, get_owned_conversation
-from download_security import (
+from gpt_rag_ui.services.conversation_security import conversation_belongs_to, get_owned_conversation
+from gpt_rag_ui.services.download_security import (
     DownloadStream,
     DownloadTokenManager,
     is_download_target_allowed,
-    register_secure_download_route,
 )
-from embed_auth import COPILOT_SESSION_COOKIE
-from embed_config import EmbedSettings
-from embed_security import CopilotRequestMiddleware
+from gpt_rag_ui.auth.embed_auth import COPILOT_SESSION_COOKIE
+from gpt_rag_ui.config.embed_config import EmbedSettings
+from gpt_rag_ui.auth.embed_security import CopilotRequestMiddleware
 
 
 PRINCIPAL = (
@@ -230,11 +230,11 @@ class DownloadSecurityTests(unittest.IsolatedAsyncioTestCase):
     async def test_owned_conversation_fails_closed(self):
         with (
             patch(
-                "conversation_security.resolve_access_token",
+                "gpt_rag_ui.services.conversation_security.resolve_access_token",
                 AsyncMock(return_value="token"),
             ),
             patch(
-                "conversation_security.call_orchestrator_get_conversation",
+                "gpt_rag_ui.services.conversation_security.call_orchestrator_get_conversation",
                 AsyncMock(
                     return_value={
                         "principal_id": (
@@ -566,11 +566,11 @@ class DownloadSecurityTests(unittest.IsolatedAsyncioTestCase):
         transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
         with (
             patch(
-                "download_security.get_token_from_cookies",
+                "gpt_rag_ui.services.download_security.get_token_from_cookies",
                 return_value="chainlit-token",
             ),
             patch(
-                "download_security.authenticate_user",
+                "gpt_rag_ui.services.download_security.authenticate_user",
                 AsyncMock(return_value=oauth_user),
             ),
         ):
@@ -640,11 +640,11 @@ class DownloadSecurityTests(unittest.IsolatedAsyncioTestCase):
         transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
         with (
             patch(
-                "download_security.get_token_from_cookies",
+                "gpt_rag_ui.services.download_security.get_token_from_cookies",
                 return_value="chainlit-token",
             ),
             patch(
-                "download_security.authenticate_user",
+                "gpt_rag_ui.services.download_security.authenticate_user",
                 AsyncMock(return_value=oauth_user),
             ),
         ):
