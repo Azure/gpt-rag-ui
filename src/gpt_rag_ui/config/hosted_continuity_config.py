@@ -42,7 +42,10 @@ per-user document-level retrieval (ADR-0001), which remains untouched.
 
 from __future__ import annotations
 
+import logging
 import os
+
+from gpt_rag_ui.config.errors import ConfigurationError
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal, Protocol
@@ -118,7 +121,8 @@ def _read_setting(
         return str(env_value).strip()
     try:
         value = config.get(key, default, str)
-    except Exception:
+    except ConfigurationError:
+        logging.getLogger(__name__).warning("Configuration key '%s' is unavailable; using default", key)
         return default
     return str(value or default).strip()
 

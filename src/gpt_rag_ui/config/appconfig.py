@@ -12,7 +12,9 @@ from azure.appconfiguration.provider import (
     SettingSelector
 )
 
-from tenacity import retry, wait_random_exponential, stop_after_attempt, RetryError
+from tenacity import retry, retry_if_exception_type, wait_random_exponential, stop_after_attempt, RetryError
+
+from gpt_rag_ui.config.errors import ConfigurationError
 
 class AppConfigClient:
 
@@ -24,15 +26,8 @@ class AppConfigClient:
         Bulk-loads configuration keys into an in-memory dict.
         """
         # ==== Load all config parameters in one place ====
-        try:
-            self.tenant_id = os.environ.get('AZURE_TENANT_ID')
-        except Exception as e:
-            raise e
-
-        try:
-            self.client_id = os.environ.get('AZURE_CLIENT_ID')
-        except Exception as e:
-            raise e
+        self.tenant_id = os.environ.get('AZURE_TENANT_ID')
+        self.client_id = os.environ.get('AZURE_CLIENT_ID')
 
         self.connected: bool = False
 
@@ -80,7 +75,7 @@ class AppConfigClient:
                 e,
             )
             self.client = {}
-        except Exception as e:
+        except ValueError as e:
             # Fallback: try connection string if provided, otherwise keep env-only.
             logger.warning(
                 "Unable to connect to Azure App Configuration endpoint; trying connection string (if set). Error: %s",
@@ -93,7 +88,7 @@ class AppConfigClient:
                     key_vault_options=AzureAppConfigurationKeyVaultOptions(credential=self.credential),
                 )
                 self.connected = True
-            except Exception as e2:
+            except (KeyError, IndexError, ValueError, AzureError) as e2:
                 logger.warning(
                     "Azure App Configuration connection string not available/failed; running with env vars only. Error: %s",
                     e2,
@@ -107,16 +102,23 @@ class AppConfigClient:
     def get_value(self, key: str, default: str = None, allow_none: bool = False, type: type = str) -> str:
 
         if key is None:
-            raise Exception('The key parameter is required for get_value().')
+            raise ConfigurationError('The key parameter is required for get_value().')
 
         value = None
 
         if value is None:
             try:
                 value = self.get_config_with_retry(name=key)
-            except Exception:
-                # Config backend unavailable; rely on defaults/env vars.
-                pass
+            except KeyError:
+                logging.getLogger("gpt_rag_ui.appconfig").debug(
+                    "Configuration key '%s' is absent; using configured default.", key,
+                )
+            except RetryError as exc:
+                if not isinstance(exc.last_attempt.exception(), AzureError):
+                    raise
+                logging.getLogger("gpt_rag_ui.appconfig").warning(
+                    "Configuration lookup exhausted retries for key '%s'; using configured default.", key,
+                )
 
         if value is not None:
             if type is not None:
@@ -127,15 +129,16 @@ class AppConfigClient:
                     try:
                         value = type(value)
                     except ValueError as e:
-                        raise Exception(f'Value for {key} could not be converted to {type.__name__}. Error: {e}')
+                        raise ConfigurationError(f'Value for {key} could not be converted to {type.__name__}. Error: {e}') from e
             return value
         else:
             if default is not None or allow_none is True:
                 return default
 
-            raise Exception(f'The configuration variable {key} not found.')
+            raise ConfigurationError(f'The configuration variable {key} not found.')
 
-    def retry_before_sleep(self, retry_state):
+    @staticmethod
+    def retry_before_sleep(retry_state):
         # Log the outcome of each retry attempt.
         message = f"""Retrying {retry_state.fn}:
                         attempt {retry_state.attempt_number}
@@ -149,15 +152,13 @@ class AppConfigClient:
             logging.warning(message)
 
     @retry(
+        retry=retry_if_exception_type(AzureError),
         wait=wait_random_exponential(multiplier=1, max=5),
         stop=stop_after_attempt(5),
         before_sleep=retry_before_sleep
     )
     def get_config_with_retry(self, name):
-        try:
-            return self.client[name]
-        except RetryError:
-            pass
+        return self.client[name]
 
     # Helper functions for reading environment variables
     def read_env_variable(self, var_name, default=None):

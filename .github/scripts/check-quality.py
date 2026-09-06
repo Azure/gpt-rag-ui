@@ -6,6 +6,7 @@ import argparse
 import ast
 import builtins
 from collections import Counter, deque
+from contextlib import redirect_stderr, redirect_stdout
 import datetime
 import graphlib
 import hashlib
@@ -314,7 +315,8 @@ def read_record(path):
 def execute(command, *, cwd, allowed=(0,)):
     try:
         result = subprocess.run(command, cwd=cwd, text=True, encoding="utf-8",
-                                capture_output=True, timeout=TIMEOUT, check=False)
+                                capture_output=True, timeout=TIMEOUT, check=False,
+                                env=os.environ.copy())
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise PolicyError(f"Tool did not complete: {command[0]}") from exc
     if result.returncode not in allowed:
@@ -324,6 +326,57 @@ def execute(command, *, cwd, allowed=(0,)):
 
 def git(root, *args):
     return execute(["git", "--no-pager", *args], cwd=root).stdout.strip()
+
+
+def architecture_evidence(root, config_path):
+    """Use pinned graph tools on an explicit source directory, never an installed UI."""
+    import grimp
+    from grimp.application.config import settings
+    from importlinter import configuration
+    from importlinter.application import use_cases
+
+    package = root / "src" / "gpt_rag_ui"
+    if not (package / "__init__.py").is_file():
+        raise PolicyError("Canonical source package is missing")
+
+    class SourcePackageFinder:
+        def determine_package_directories(self, package_name, file_system):
+            if package_name != "gpt_rag_ui":
+                raise PolicyError(f"Unexpected graph root: {package_name}")
+            return {str(package)}
+
+    configuration.configure()
+    previous = settings.PACKAGE_FINDER
+    settings.configure(PACKAGE_FINDER=SourcePackageFinder())
+    output = io.StringIO()
+    try:
+        graph = grimp.build_graph("gpt_rag_ui", include_external_packages=False, cache_dir=None)
+        with redirect_stdout(output), redirect_stderr(output):
+            passed = use_cases.lint_imports(
+                config_filename=str(config_path), cache_dir=None,
+                is_debug_mode=True, no_logo=True,
+            )
+        return {
+            "graph": {name: sorted(graph.find_modules_directly_imported_by(name))
+                      for name in sorted(graph.modules)},
+            "passed": passed,
+            "output": output.getvalue(),
+        }
+    finally:
+        settings.configure(PACKAGE_FINDER=previous)
+
+
+def isolated_architecture_evidence(root, config_path):
+    worker = (
+        "import json,runpy,sys; from pathlib import Path; "
+        "scope=runpy.run_path(sys.argv[1]); "
+        "print(json.dumps(scope['architecture_evidence'](Path(sys.argv[2]),Path(sys.argv[3]))))"
+    )
+    completed = execute([
+        sys.executable, "-I", "-c", worker, str(Path(__file__).resolve()),
+        str(root), str(config_path),
+    ], cwd=config_path.parent)
+    return parse_json(completed.stdout)
 
 
 def base_text(root, revision, path):
@@ -1343,7 +1396,7 @@ def run_checks(root, base, requested, *, test_evidence=None):
         config_path = Path(temporary) / "pyproject.toml"
         config_path.write_text(config_text, encoding="utf-8")
         if "lint" in requested:
-            result = execute([sys.executable, "-m", "ruff", "check", "--config", str(config_path),
+            result = execute([sys.executable, "-I", "-m", "ruff", "check", "--config", str(config_path),
                               "--no-cache", "--output-format", "json", *paths.values()], cwd=root, allowed=(0, 1))
             diagnostics = parse_json(result.stdout)
             if result.returncode and not diagnostics:
@@ -1355,7 +1408,7 @@ def run_checks(root, base, requested, *, test_evidence=None):
             targets = [paths[n] for n in sources if module_ids.get(n, n) in scope]
             if not targets:
                 raise PolicyError("Empty blocking typing scope")
-            result = execute([sys.executable, "-m", "mypy", "--config-file", str(config_path),
+            result = execute([sys.executable, "-I", "-m", "mypy", "--config-file", str(config_path),
                               "--no-incremental", "--output", "json", *targets], cwd=root, allowed=(0, 1))
             diagnostics = mypy_diagnostics(result.stdout, result.returncode)
             reverse = {path: name for name, path in paths.items()}
@@ -1386,16 +1439,13 @@ def run_checks(root, base, requested, *, test_evidence=None):
             findings["architecture"].extend(validate_adapters(sources, [
                 m for m in modules if m["id"] not in {entry["id"] for entry in minimum["modules"]}
             ] + [m for m in modules if m["area"] != "legacy"]))
-            import grimp
-            graph = grimp.build_graph("gpt_rag_ui", include_external_packages=False, cache_dir=None)
-            for importer in graph.modules:
-                for target in graph.find_modules_directly_imported_by(importer):
+            graph_report = isolated_architecture_evidence(root, config_path)
+            for importer, targets in graph_report["graph"].items():
+                for target in targets:
                     if importer in sources and target in sources and target not in result["graph"][importer]:
                         findings["architecture"].append(finding("graph-disagreement", importer, 0, target))
-            executable = Path(sys.executable).parent / ("lint-imports.exe" if sys.platform == "win32" else "lint-imports")
-            result = execute([str(executable), "--config", str(config_path), "--no-cache"], cwd=root, allowed=(0, 1))
-            if result.returncode:
-                findings["architecture"].append(finding("import-linter", "", 0, result.stdout[-3000:]))
+            if not graph_report["passed"]:
+                findings["architecture"].append(finding("import-linter", "", 0, graph_report["output"][-3000:]))
         if "exceptions" in requested:
             handlers = [dict(h, module_id=module_ids.get(name, name))
                         for name, source in sources.items() for h in broad_handlers(name, source)]

@@ -88,16 +88,17 @@ jobs:
             cp .github/scripts/check-quality.py "$RUNNER_TEMP/check-quality.py"
             cp requirements-quality.txt "$RUNNER_TEMP/requirements-quality.txt"
           fi
-          python -m pip install -r "$RUNNER_TEMP/requirements-quality.txt"
-          python -m pip install -r requirements.txt
-          python -m pip install --no-deps -e .
+          git show "$BASE_SHA:requirements.txt" > "$RUNNER_TEMP/runtime-requirements.txt"
+          # No candidate package/build backend/.pth is installed into the evaluator.
+          python -I -m venv "$RUNNER_TEMP/quality-tools"
+          "$RUNNER_TEMP/quality-tools/bin/python" -I -m pip install -r "$RUNNER_TEMP/requirements-quality.txt" -r "$RUNNER_TEMP/runtime-requirements.txt"
       - name: Read same-run unittest evidence
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: quality-unittest
           path: .artifacts
       - name: Evaluate candidate against protected minimum
-        run: python "$RUNNER_TEMP/check-quality.py" --check "${{ matrix.check }}" --base-ref "$BASE_SHA" --test-evidence .artifacts/unittest.json --report ".artifacts/${{ matrix.check }}.json"
+        run: '"$RUNNER_TEMP/quality-tools/bin/python" -I "$RUNNER_TEMP/check-quality.py" --check "${{ matrix.check }}" --base-ref "$BASE_SHA" --test-evidence .artifacts/unittest.json --report ".artifacts/${{ matrix.check }}.json"'
       - name: Retain bound report even when checks fail
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

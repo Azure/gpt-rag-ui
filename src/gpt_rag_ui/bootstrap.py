@@ -131,7 +131,7 @@ def _read_local_ui_version() -> str | None:
             with open(version_path, "r", encoding="utf-8") as f:
                 value = (f.read() or "").strip()
                 return value or None
-    except Exception:
+    except (OSError, UnicodeError):
         logger.exception("Failed to read local VERSION file")
     return None
 
@@ -499,23 +499,20 @@ def _configure_auth_environment(config: AppConfigClient, auth_state: AuthState |
             return
 
     # Safe auth config health log (no secrets).
-    try:
-        client_id_env = (os.environ.get("OAUTH_AZURE_AD_CLIENT_ID") or "").strip()
-        tenant_id_env = (os.environ.get("OAUTH_AZURE_AD_TENANT_ID") or "").strip()
-        secret_env = (os.environ.get("OAUTH_AZURE_AD_CLIENT_SECRET") or "").strip()
-        chainlit_url_env = (os.environ.get("CHAINLIT_URL") or "").strip()
-        logger.info(
-            "OAuth config health: enabled=%s allow_anonymous=%s chainlit_url=%s client_id=%s tenant_id=%s has_client_secret=%s single_tenant=%s",
-            bool(client_id_env and tenant_id_env and secret_env),
-            allow_anonymous,
-            (chainlit_url_env or "<unset>"),
-            (_mask(client_id_env) if client_id_env else "<unset>"),
-            (_mask(tenant_id_env) if tenant_id_env else "<unset>"),
-            bool(secret_env),
-            _is_truthy(os.environ.get("OAUTH_AZURE_AD_ENABLE_SINGLE_TENANT")),
-        )
-    except Exception:
-        logger.exception("Failed to compute OAuth config health")
+    client_id_env = (os.environ.get("OAUTH_AZURE_AD_CLIENT_ID") or "").strip()
+    tenant_id_env = (os.environ.get("OAUTH_AZURE_AD_TENANT_ID") or "").strip()
+    secret_env = (os.environ.get("OAUTH_AZURE_AD_CLIENT_SECRET") or "").strip()
+    chainlit_url_env = (os.environ.get("CHAINLIT_URL") or "").strip()
+    logger.info(
+        "OAuth config health: enabled=%s allow_anonymous=%s chainlit_url=%s client_id=%s tenant_id=%s has_client_secret=%s single_tenant=%s",
+        bool(client_id_env and tenant_id_env and secret_env),
+        allow_anonymous,
+        (chainlit_url_env or "<unset>"),
+        (_mask(client_id_env) if client_id_env else "<unset>"),
+        (_mask(tenant_id_env) if tenant_id_env else "<unset>"),
+        bool(secret_env),
+        _is_truthy(os.environ.get("OAUTH_AZURE_AD_ENABLE_SINGLE_TENANT")),
+    )
 
 
 def _create_not_ready_app() -> FastAPI:
@@ -799,14 +796,10 @@ def _create_chainlit_app(
         )
         logger.debug("Constructed blob URL %s", blob_url)
 
-        try:
-            blob_client = BlobClient(blob_url=blob_url)
-            blob_data = blob_client.download_blob()
-            logger.debug("Successfully downloaded blob data for '%s'", file_name)
-            return blob_data
-        except Exception:
-            logger.exception("Error downloading blob '%s'", file_name)
-            raise
+        blob_client = BlobClient(blob_url=blob_url)
+        blob_data = blob_client.download_blob()
+        logger.debug("Successfully downloaded blob data for '%s'", file_name)
+        return blob_data
 
     blob_download_app = None
     if not embed_settings.enabled:
@@ -903,12 +896,9 @@ def _create_chainlit_app(
 
     # Provide friendly app metadata used by OpenAPI.
     chainlit_app.title = getattr(chainlit_app, "title", "GPT-RAG UI")
-    try:
-        version = _read_local_ui_version()
-        if version:
-            chainlit_app.version = version
-    except Exception:
-        chainlit_app.version = getattr(chainlit_app, "version", "dev")
+    version = _read_local_ui_version()
+    if version:
+        chainlit_app.version = version
 
     from fastapi.openapi.utils import get_openapi
 
@@ -1004,16 +994,9 @@ def _create_chainlit_app(
                 f"https://{account_name}.blob.core.windows.net/"
                 f"{quote(file_name, safe='/')}"
             )
-            try:
-                blob_client = BlobClient(blob_url=blob_url)
-                chunks, size = blob_client.download_blob_chunks()
-                return DownloadStream(chunks=chunks, size=size)
-            except Exception:
-                logger.exception(
-                    "Error opening blob download stream for '%s'",
-                    file_name,
-                )
-                raise
+            blob_client = BlobClient(blob_url=blob_url)
+            chunks, size = blob_client.download_blob_chunks()
+            return DownloadStream(chunks=chunks, size=size)
 
         validator = None
         if embed_settings.auth_mode == "entra":

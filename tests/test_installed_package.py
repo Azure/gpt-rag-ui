@@ -190,6 +190,39 @@ with TestClient(main.app) as client:
     assert client.get("/").status_code == 200
 """)
 
+    def test_installed_startup_preserves_documented_failure_boundaries(self):
+        self.run_installed("""
+from unittest import TestCase
+from unittest.mock import patch
+from gpt_rag_ui.config import dependencies
+class Config:
+    connected = True
+    def get(self, key, default=None, type=str):
+        return {"CHAT_BACKEND": "orchestrator", "ALLOW_ANONYMOUS": True,
+                "DOCUMENTS_STORAGE_CONTAINER": "documents"}.get(key, default)
+    def get_value(self, key, default=None, allow_none=False, type=str):
+        return self.get(key, default, type)
+dependencies.__dict__["__config"] = Config()
+with patch("fastapi.openapi.utils.get_openapi", side_effect=RuntimeError("schema failure")):
+    import main
+assert_installed(main)
+from chainlit.server import app as chainlit_app
+with TestCase().assertLogs(level="ERROR"):
+    schema = chainlit_app.openapi()
+assert schema["paths"] == {}
+assert schema["info"]["version"] == chainlit_app.version
+assert chainlit_app.openapi() is schema
+from gpt_rag_ui.clients.blob import BlobClient
+from fastapi.testclient import TestClient
+with TestClient(main.app) as client, patch.object(BlobClient, "__init__", return_value=None):
+    for message, expected_status in (("BlobNotFound", 404), ("download failure", 500)):
+        with patch.object(BlobClient, "download_blob", side_effect=RuntimeError(message)), TestCase().assertLogs(level="ERROR"):
+            response = client.get("/api/download/documents/synthetic.pdf")
+        assert response.status_code == expected_status, response.status_code
+        assert message in response.text
+    assert client.get("/api/download/not-allowed/synthetic.pdf").status_code == 404
+""")
+
     def test_hosted_continuity_and_panel_activation_share_one_coordinator(self):
         for active in (False, True):
             with self.subTest(panel_active=active):

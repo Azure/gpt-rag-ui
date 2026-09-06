@@ -29,9 +29,9 @@ class BlobClient:
             # Blob name is everything after "/{container_name}/"
             self.blob_name = unquote(parsed_url.path[len(f"/{self.container_name}/"):])
             logging.debug(f"[blob][{self.blob_name}] Parsed blob URL successfully.")
-        except Exception as e:
+        except (ValueError, IndexError) as e:
             logging.error(f"[blob] Invalid blob URL '{self.file_url}': {e}")
-            raise EnvironmentError(f"Invalid blob URL '{self.file_url}': {e}")
+            raise EnvironmentError(f"Invalid blob URL '{self.file_url}': {e}") from e
 
         # 3. Initialize the BlobServiceClient
         try:
@@ -40,7 +40,7 @@ class BlobClient:
                 credential=self.credential
             )
             logging.debug(f"[blob][{self.blob_name}] Initialized BlobServiceClient.")
-        except Exception as e:
+        except (ValueError, AzureError) as e:
             logging.error(f"[blob][{self.blob_name}] Failed to initialize BlobServiceClient: {e}")
             raise
 
@@ -59,7 +59,7 @@ class BlobClient:
                     AzureCliCredential()
                 )
                 logging.debug("[blob] Initialized ChainedTokenCredential with ManagedIdentityCredential and AzureCliCredential.")
-            except Exception as e:
+            except ValueError as e:
                 logging.error(f"[blob] Failed to initialize ChainedTokenCredential: {e}")
                 raise
         else:
@@ -88,9 +88,9 @@ class BlobClient:
                 f"[blob][{self.blob_name}] Blob was not found during download."
             )
             raise
-        except Exception as e:
+        except AzureError as e:
             logging.error(f"[blob][{self.blob_name}] Failed to download blob: {e}")
-            raise Exception(f"Blob client error when reading from blob storage: {e}")
+            raise Exception(f"Blob client error when reading from blob storage: {e}") from e
 
     def download_blob_chunks(self) -> tuple[Iterator[bytes], int]:
         """Open the blob as a lazy chunk iterator without buffering it."""
@@ -112,7 +112,7 @@ class BlobClient:
                 self.blob_name,
             )
             raise
-        except Exception as exc:
+        except AzureError as exc:
             logging.error(
                 "[blob][%s] Failed to open blob download stream: %s",
                 self.blob_name,
@@ -176,7 +176,7 @@ class BlobClient:
             logging.debug(f"[blob][{self.blob_name}] Generated SAS URL (expires: {expiry})")
             return sas_url
 
-        except Exception as e:
+        except (AzureError, ValueError) as e:
             logging.error(f"[blob][{self.blob_name}] Failed to generate SAS URL: {e}")
             # Fallback: return properly encoded URL (will only work if blob is public or client has auth)
             encoded_blob_name = quote(self.blob_name, safe='/')
@@ -223,7 +223,7 @@ class BlobContainerClient:
                     AzureCliCredential()
                 )
                 logging.debug("[blob] Initialized ChainedTokenCredential with ManagedIdentityCredential and AzureCliCredential.")
-            except Exception as e:
+            except ValueError as e:
                 logging.error(f"[blob] Failed to initialize ChainedTokenCredential: {e}")
                 raise
         else:

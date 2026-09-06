@@ -14,6 +14,7 @@
     "gpt_rag_ui.auth",
     "gpt_rag_ui.clients",
     "gpt_rag_ui.config",
+    "gpt_rag_ui.config.errors",
     "gpt_rag_ui.config.resources",
     "gpt_rag_ui.services",
     "gpt_rag_ui.services.citations",

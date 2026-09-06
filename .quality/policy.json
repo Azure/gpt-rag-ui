@@ -1137,6 +1137,21 @@
       "typing_status": "uncovered"
     },
     {
+      "id": "gpt_rag_ui.config.errors",
+      "path": "src/gpt_rag_ui/config/errors.py",
+      "import_name": "gpt_rag_ui.config.errors",
+      "area": "config",
+      "public_exports": [
+        "ConfigurationError"
+      ],
+      "legacy_aliases": [],
+      "source_revision": "653660e31daa2de8219bf38a571e8bd97f227a8a",
+      "responsibilities": "configuration lookup failure contract",
+      "private_modules": [],
+      "allowed_importers": [],
+      "typing_status": "blocking"
+    },
+    {
       "id": "embed_config",
       "path": "src/gpt_rag_ui/config/embed_config.py",
       "import_name": "gpt_rag_ui.config.embed_config",

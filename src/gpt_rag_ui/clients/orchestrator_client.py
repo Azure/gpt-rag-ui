@@ -9,6 +9,7 @@ import httpx
 from azure.identity import ManagedIdentityCredential, AzureCliCredential, ChainedTokenCredential
 
 from gpt_rag_ui.config.dependencies import get_config
+from gpt_rag_ui.config.errors import ConfigurationError
 
 logger = logging.getLogger("gpt_rag_ui.orchestrator_client")
 config = get_config()
@@ -112,7 +113,7 @@ def _decode_jwt_unverified(token: str) -> dict | None:
         payload = base64.urlsafe_b64decode(payload_b64.encode("utf-8"))
         data = json.loads(payload.decode("utf-8"))
         return data if isinstance(data, dict) else None
-    except Exception:
+    except ValueError:
         return None
 
 
@@ -149,7 +150,7 @@ def _bool_env(value: Optional[str]) -> bool:
 def _get_config_value(key: str, *, default=None, allow_none: bool = False):
     try:
         return config.get_value(key, default=default, allow_none=allow_none)
-    except Exception:
+    except ConfigurationError:
         if allow_none or default is not None:
             logger.debug("Configuration key '%s' not found; using default", key)
         else:
@@ -533,6 +534,8 @@ async def call_orchestrator_list_conversations(
                 )
                 return {"conversations": [], "has_more": False, "skip": skip, "limit": limit}
             data = response.json()
+            if not isinstance(data, dict):
+                raise ValueError("Conversation list response must be an object")
             logger.info(
                 "List conversations response: status=%s conversations_count=%s has_more=%s",
                 response.status_code,
@@ -542,7 +545,7 @@ async def call_orchestrator_list_conversations(
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug("List conversations raw response: %s", _sanitize_for_log(data))
             return data
-    except Exception:
+    except (httpx.HTTPError, ValueError):
         logger.exception("Failed to list conversations: url=%s", url)
         return {"conversations": [], "has_more": False, "skip": skip, "limit": limit}
 
@@ -573,7 +576,7 @@ async def call_orchestrator_get_conversation(
                 )
                 return None
             return response.json()
-    except Exception:
+    except (httpx.HTTPError, ValueError):
         logger.exception("Failed to get conversation: url=%s conversation_id=%s", url, conversation_id)
         return None
 
@@ -607,7 +610,7 @@ async def call_orchestrator_update_conversation(
                 return False
             logger.info("Conversation updated successfully: conversation_id=%s", conversation_id)
             return True
-    except Exception:
+    except httpx.HTTPError:
         logger.exception("Failed to update conversation: url=%s conversation_id=%s", url, conversation_id)
         return False
 
@@ -639,6 +642,6 @@ async def call_orchestrator_delete_conversation(
                 return False
             logger.info("Conversation deleted successfully: conversation_id=%s", conversation_id)
             return True
-    except Exception:
+    except httpx.HTTPError:
         logger.exception("Failed to delete conversation: url=%s conversation_id=%s", url, conversation_id)
         return False

@@ -1,7 +1,7 @@
 import asyncio
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import gpt_rag_ui.auth.embed_security as embed_security
 from fastapi import FastAPI, Request, WebSocket
@@ -943,6 +943,128 @@ class RealChainlitBridgeGuardTests(unittest.IsolatedAsyncioTestCase):
 
 
 class BridgeGuardTests(unittest.IsolatedAsyncioTestCase):
+    async def test_engineio_admission_failure_releases_reservation_and_propagates(self):
+        for failure in (RuntimeError("connect failed"), asyncio.CancelledError()):
+            with self.subTest(failure=type(failure).__name__):
+                sio, connect = engineio_guard_sio()
+                connect.side_effect = failure
+                configure_copilot_bridge_guards(
+                    sio, sessions=FakeSessions(SimpleNamespace(principal_id="tenant:user")),
+                )
+                with self.assertRaises(type(failure)) as raised:
+                    await sio.eio.handlers["connect"]("failed-connect", transport_environ())
+                self.assertIs(failure, raised.exception)
+                self.assertIsNone(
+                    await embed_security._copilot_socket_registry.engineio_session("failed-connect")
+                )
+
+    async def test_engineio_cleanup_dependency_failures_release_transport_reservation(self):
+        for stage in ("namespaces", "lookup", "disconnect"):
+            with self.subTest(stage=stage):
+                sio, _ = engineio_guard_sio()
+                sio.eio.handlers["disconnect"].side_effect = RuntimeError("disconnect callback failed")
+                sio.manager = SimpleNamespace(
+                    get_namespaces=Mock(return_value=("/",)),
+                    sid_from_eio_sid=Mock(return_value="socket"),
+                    disconnect=AsyncMock(),
+                )
+                method = {"namespaces": "get_namespaces", "lookup": "sid_from_eio_sid",
+                          "disconnect": "disconnect"}[stage]
+                getattr(sio.manager, method).side_effect = RuntimeError(f"{stage} failed")
+                configure_copilot_bridge_guards(
+                    sio, sessions=FakeSessions(SimpleNamespace(principal_id="tenant:user")),
+                )
+                await sio.eio.handlers["connect"]("engine", transport_environ())
+                with self.assertLogs(embed_security.logger, level="ERROR") as logs:
+                    self.assertIsNone(await sio.eio.handlers["disconnect"]("engine"))
+                self.assertTrue(any(f"{stage} failed" in line for line in logs.output))
+                self.assertIsNone(await embed_security._copilot_socket_registry.engineio_session("engine"))
+
+    async def test_failed_session_disconnect_retains_denied_binding(self):
+        registry = CopilotSocketRegistry(max_connections_per_session=1)
+        await registry.bind_connection(
+            session_id=SESSION_ID, socket_id="socket", chainlit_session_id="chainlit", disconnect=AsyncMock(),
+        )
+        with self.assertLogs(embed_security.logger, level="ERROR"):
+            count = await registry.disconnect_session(
+                session_id=SESSION_ID, additional_socket_ids=set(),
+                disconnect=AsyncMock(side_effect=RuntimeError("disconnect failed")),
+            )
+        self.assertEqual(0, count)
+        self.assertFalse(await registry.socket_is_active("socket"))
+        self.assertEqual(("socket",), (await registry.session_resources(SESSION_ID))[0])
+
+    async def test_failed_session_delete_still_unbinds_terminated_socket(self):
+        registry = CopilotSocketRegistry(max_connections_per_session=1)
+        await registry.bind_connection(
+            session_id=SESSION_ID, socket_id="socket", chainlit_session_id="chainlit", disconnect=AsyncMock(),
+        )
+        session = SimpleNamespace(
+            to_clear=False, current_task=None, delete=AsyncMock(side_effect=RuntimeError("delete failed")),
+        )
+        with (
+            patch("chainlit.session.WebsocketSession.get", return_value=session),
+            self.assertLogs(embed_security.logger, level="ERROR"),
+        ):
+            self.assertTrue(await _terminate_socket(SimpleNamespace(disconnect=AsyncMock()), registry, "socket"))
+        self.assertEqual((), (await registry.session_resources(SESSION_ID))[0])
+        self.assertTrue(session.to_clear)
+
+    async def test_bridge_recipient_lookup_failure_is_conservative(self):
+        sio = SimpleNamespace(manager=SimpleNamespace(
+            get_participants=Mock(side_effect=RuntimeError("manager lookup failed")),
+        ))
+        with (
+            patch.object(embed_security, "_has_copilot_sockets", return_value=True),
+            patch.object(embed_security, "_is_copilot_socket", return_value=False),
+            self.assertLogs(embed_security.logger, level="ERROR"),
+        ):
+            self.assertTrue(embed_security._target_has_copilot_sockets(sio, "room"))
+
+    async def test_disconnect_callback_failure_closes_transport_then_propagates(self):
+        sio = RealChainlitSio(AsyncMock())
+        failure = RuntimeError("disconnect failed")
+        sio.disconnect.side_effect = failure
+        configure_copilot_bridge_guards(sio, sessions=FakeSessions())
+        with patch.object(embed_security, "_close_engineio_transport", AsyncMock()) as close:
+            with self.assertRaises(RuntimeError) as raised:
+                await embed_security._copilot_disconnect_socket("socket")
+        self.assertIs(failure, raised.exception)
+        close.assert_awaited_once_with(sio, "engine-socket")
+
+    async def test_rejected_socket_remains_denied_if_transport_close_fails(self):
+        sio = RealChainlitSio(AsyncMock())
+        configure_copilot_bridge_guards(sio, sessions=FakeSessions())
+        with (
+            patch.object(embed_security, "_close_engineio_transport", AsyncMock(side_effect=RuntimeError("close failed"))),
+            self.assertLogs(embed_security.logger, level="ERROR"),
+            self.assertRaises(SocketIOConnectionRefusedError),
+        ):
+            await sio.handlers["/"]["connect"]("socket", transport_environ(), {"clientType": "copilot"})
+
+    async def test_invalidation_transport_failures_are_logged_without_counting_success(self):
+        registry = CopilotSocketRegistry(max_connections_per_session=1)
+        await registry.reserve_engineio_transport(SESSION_ID, "engine")
+        sio = SimpleNamespace(disconnect=AsyncMock(side_effect=RuntimeError("disconnect failed")))
+        session = SimpleNamespace(
+            user=SimpleNamespace(metadata={"copilot_session_id": SESSION_ID}),
+            socket_id="socket", to_clear=False, current_task=None,
+        )
+        with (
+            patch.object(embed_security, "_copilot_sio", sio),
+            patch.object(embed_security, "_copilot_disconnect_socket", None),
+            patch.object(embed_security, "_close_engineio_transport", AsyncMock(side_effect=RuntimeError("close failed"))),
+            patch("chainlit.session.ws_sessions_sid", {"socket": session}),
+        ):
+            for active_registry in (None, registry):
+                with (
+                    self.subTest(registry=active_registry is not None),
+                    patch.object(embed_security, "_copilot_socket_registry", active_registry),
+                    self.assertLogs(embed_security.logger, level="ERROR"),
+                ):
+                    self.assertEqual(0, await disconnect_copilot_session(SESSION_ID))
+        self.assertTrue(session.to_clear)
+
     async def test_portal_engineio_admits_both_modes_and_transports(self):
         for auth_mode in ("anonymous", "entra"):
             for scope_type in ("http", "websocket"):

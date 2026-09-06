@@ -20,6 +20,74 @@ spec.loader.exec_module(quality)
 
 
 class QualityPolicyTests(unittest.TestCase):
+    def test_subprocess_environment_preserves_empty_values(self):
+        with patch.dict(os.environ, {"GPT_RAG_EMPTY_ENV_FIXTURE": ""}):
+            result = quality.execute(
+                [sys.executable, "-I", "-c",
+                 "import os; assert os.environ.get('GPT_RAG_EMPTY_ENV_FIXTURE') == ''"],
+                cwd=SCRIPT.parent,
+            )
+        self.assertEqual(0, result.returncode)
+
+    def test_candidate_modules_and_pythonpath_cannot_shadow_quality_tools(self):
+        for tool, check, invalid in (
+            ("mypy", "typing", "value: int = 'wrong'\n"),
+            ("ruff", "lint", "value = undefined_name\n"),
+        ):
+            with self.subTest(tool=tool), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                base = EvidenceIntegrationTests().protected_fixture(root)
+                marker = root / "executed"
+                shadow = f"from pathlib import Path\nPath({str(marker)!r}).touch()\n"
+                if tool == "ruff":
+                    shadow += "print('[]')\n"
+                (root / f"{tool}.py").write_text(shadow, encoding="utf-8")
+                (root / "sitecustomize.py").write_text(shadow, encoding="utf-8")
+                (root / "sample.py").write_text(invalid, encoding="utf-8")
+                previous = os.environ.get("PYTHONPATH")
+                try:
+                    os.environ["PYTHONPATH"] = str(root)
+                    report = quality.run_checks(root, base, (check,))
+                finally:
+                    if previous is None:
+                        os.environ.pop("PYTHONPATH", None)
+                    else:
+                        os.environ["PYTHONPATH"] = previous
+                self.assertFalse(marker.exists(), "Candidate executed inside protected tool process")
+                self.assertEqual("violations", report["checks"][check]["status"])
+
+    def test_architecture_reads_candidate_sources_without_importing_them(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            EvidenceIntegrationTests().protected_fixture(root)
+            package = root / "src" / "gpt_rag_ui"
+            package.mkdir(parents=True)
+            marker = root / "executed"
+            shadow = f"from pathlib import Path\nPath({str(marker)!r}).touch()\n"
+            (package / "__init__.py").write_text(shadow, encoding="utf-8")
+            for name in ("sitecustomize.py", "grimp.py", "importlinter.py"):
+                (root / name).write_text(shadow, encoding="utf-8")
+            (package / "lower.py").write_text("from . import upper\n", encoding="utf-8")
+            (package / "upper.py").write_text("VALUE = 1\n", encoding="utf-8")
+            config = root / "graph.toml"
+            config.write_text(
+                '[tool.importlinter]\nroot_package="gpt_rag_ui"\n'
+                '[[tool.importlinter.contracts]]\nname="candidate layers"\ntype="layers"\n'
+                'layers=["gpt_rag_ui.upper","gpt_rag_ui.lower"]\n', encoding="utf-8")
+            report = quality.isolated_architecture_evidence(root, config)
+            self.assertFalse(marker.exists())
+            self.assertIn("gpt_rag_ui.upper", report["graph"]["gpt_rag_ui.lower"])
+            self.assertFalse(report["passed"])
+
+    def test_quality_job_does_not_install_candidate_build_or_runtime_requirements(self):
+        source = (SCRIPT.parents[1] / "workflows" / "tests.yml").read_text(encoding="utf-8")
+        job = source.split("\n  quality:\n", 1)[1].split("\n  container-tests:\n", 1)[0]
+        self.assertIn('git show "$BASE_SHA:requirements.txt"', job)
+        self.assertIn('python -I -m venv "$RUNNER_TEMP/quality-tools"', job)
+        self.assertNotIn("pip install --no-deps", job)
+        self.assertNotIn("pip install -r requirements.txt", job)
+        self.assertIn('quality-tools/bin/python" -I "$RUNNER_TEMP/check-quality.py"', job)
+
     def graph(self, sources, **policy):
         return quality.analyze_sources(sources, policy)
 

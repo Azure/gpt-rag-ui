@@ -77,7 +77,11 @@ class Telemetry:
             # Still configure application logging defaults.
             try:
                 Telemetry.configure_logging(config)
-            except Exception:
+            except (ValueError, TypeError, AttributeError, ImportError):
+                logging.getLogger(__name__).warning(
+                    "Optional telemetry logging configuration failed; using basic logging.",
+                    exc_info=True,
+                )
                 Telemetry.configure_basic(config)
             return
 

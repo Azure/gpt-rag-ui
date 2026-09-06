@@ -15,6 +15,7 @@ from gpt_rag_ui.auth.auth_common import (
     is_user_authorized,
 )
 from gpt_rag_ui.config.dependencies import get_config
+from gpt_rag_ui.config.errors import ConfigurationError
 
 logger = logging.getLogger("gpt_rag_ui.auth_oauth")
 
@@ -38,7 +39,7 @@ def _decode_jwt_unverified(token: str) -> Optional[dict]:
         payload = base64.urlsafe_b64decode(payload_b64.encode("utf-8"))
         data = json.loads(payload.decode("utf-8"))
         return data if isinstance(data, dict) else None
-    except Exception:
+    except ValueError:
         return None
 
 
@@ -79,7 +80,7 @@ def _jwt_exp_unverified(access_token: str) -> int | None:
     exp = claims.get("exp")
     try:
         return int(exp) if exp is not None else None
-    except Exception:
+    except (ValueError, TypeError, OverflowError):
         return None
 
 
@@ -276,7 +277,8 @@ def get_env_var(name: str, fallback: str | None = None, *, warn_on_missing: bool
     # Use allow_none=True so missing keys don't crash.
     try:
         value = config.get_value(name, default=fallback, allow_none=True, type=str)
-    except Exception:
+    except ConfigurationError:
+        logger.warning("Configuration key '%s' is unavailable; using fallback", name)
         value = fallback
     if value is None:
         if warn_on_missing:
@@ -294,10 +296,7 @@ async def oauth_callback(
 
     logger.info("OAuth callback received for provider '%s'", provider_id)
 
-    try:
-        metadata_keys = sorted(list((default_user.metadata or {}).keys()))
-    except Exception:
-        metadata_keys = []
+    metadata_keys = sorted(key for key in (default_user.metadata or {}) if isinstance(key, str))
     logger.info(
         "OAuth callback context: provider=%s metadata_keys=%s",
         provider_id,

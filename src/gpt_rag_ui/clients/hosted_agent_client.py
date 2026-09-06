@@ -23,6 +23,7 @@ from azure.identity.aio import (
 )
 
 from gpt_rag_ui.config.dependencies import get_config
+from gpt_rag_ui.config.errors import ConfigurationError
 
 logger = logging.getLogger("gpt_rag_ui.hosted_agent_client")
 config = get_config()
@@ -116,7 +117,7 @@ def _get_config_value(key: str, default: str | None = None) -> str | None:
         return value
     try:
         return config.get(key, default, str)
-    except Exception:
+    except ConfigurationError:
         logger.debug("Configuration key '%s' not found", key)
         return default
 

@@ -374,7 +374,7 @@ def _decode_jwt_unverified(token: str) -> dict | None:
         payload = base64.urlsafe_b64decode(payload_b64.encode("utf-8"))
         data = json.loads(payload.decode("utf-8"))
         return data if isinstance(data, dict) else None
-    except Exception:
+    except ValueError:
         return None
 
 
