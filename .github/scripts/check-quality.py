@@ -371,6 +371,32 @@ def scoped_nodes(tree):
     return walk(tree, "")
 
 
+def lexical_nodes(tree, scope=()):
+    yield tree, scope
+    if isinstance(tree, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        body_ids = {id(statement) for statement in tree.body}
+        for child in ast.iter_child_nodes(tree):
+            yield from lexical_nodes(child, scope + (tree,) if id(child) in body_ids else scope)
+    else:
+        for child in ast.iter_child_nodes(tree):
+            yield from lexical_nodes(child, scope)
+
+
+def alias_targets(bindings, scope, reference):
+    for index in range(len(scope), -1, -1):
+        current = scope[:index]
+        if current and isinstance(current[-1], ast.ClassDef) and any(
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) for node in scope[index:]
+        ):
+            continue
+        values = bindings.get(current, {})
+        if reference in values:
+            return values[reference]
+        if reference.split(".")[0] in values:
+            return set()
+    return set()
+
+
 def dynamic_calls(source):
     tree = ast.parse(source)
     names = {"__import__", "importlib.import_module"}
@@ -505,6 +531,8 @@ def analyze_sources(sources, policy, *, verified_tests=()):
     dynamic = {(entry["module"], entry["symbol"], entry["site_fingerprint"]): entry
                for entry in policy.get("dynamic_imports", [])}
     used_dynamic = set()
+    packages = {entry["import_name"] for entry in policy.get("modules", [])
+                if entry.get("path", "").endswith("/__init__.py")}
     private_modules = {private: set(entry["allowed_importers"])
                        for entry in policy.get("modules", []) for private in entry.get("private_modules", [])}
 
@@ -522,12 +550,21 @@ def analyze_sources(sources, policy, *, verified_tests=()):
     for name, source in sources.items():
         tree = ast.parse(source, filename=name)
         aliases = {}
+        scoped = list(lexical_nodes(tree))
         # Packages are identified from inventory; fixtures may infer a parent with children.
-        package = name if any(other.startswith(name + ".") for other in sources) else name.rpartition(".")[0]
-        for node in ast.walk(tree):
+        package = name if name in packages or any(other.startswith(name + ".") for other in sources) else name.rpartition(".")[0]
+        for node, scope in scoped:
+            local = aliases.setdefault(scope, {})
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                function = aliases.setdefault(scope + (node,), {})
+                for arg in [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs,
+                            *[arg for arg in (node.args.vararg, node.args.kwarg) if arg]]:
+                    function.setdefault(arg.arg, set())
+            elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+                local.setdefault(node.id, set())
             if isinstance(node, ast.Import):
                 for alias in node.names:
-                    aliases[alias.asname or alias.name] = alias.name
+                    local.setdefault(alias.asname or alias.name, set()).add(alias.name)
                     add(name, alias.name, "", node.lineno)
             elif isinstance(node, ast.ImportFrom):
                 if node.level:
@@ -542,9 +579,10 @@ def analyze_sources(sources, policy, *, verified_tests=()):
                 for alias in node.names:
                     child = f"{target}.{alias.name}"
                     if child in sources:
-                        aliases[alias.asname or alias.name] = child
+                        local.setdefault(alias.asname or alias.name, set()).add(child)
                         add(name, child, "", node.lineno)
                     else:
+                        local.setdefault(alias.asname or alias.name, set()).add(target)
                         add(name, target, alias.name, node.lineno)
         for node, _, argument in dynamic_calls(source):
             if not isinstance(argument, ast.Constant) or not isinstance(argument.value, str):
@@ -571,10 +609,9 @@ def analyze_sources(sources, policy, *, verified_tests=()):
                 findings.append(finding("dynamic-evidence", name, 0, "Dynamic target behavior tests did not execute successfully"))
             for target in entry["targets"]:
                 add(name, target, "", 0)
-        for node in ast.walk(tree):
+        for node, scope in scoped:
             if isinstance(node, ast.Attribute) and node.attr.startswith("_"):
-                target = aliases.get(ast.unparse(node.value))
-                if target:
+                for target in alias_targets(aliases, scope, ast.unparse(node.value)):
                     add(name, target, node.attr, node.lineno)
     for key in dynamic.keys() - used_dynamic:
         findings.append(finding("stale-dynamic-import", key[0], 0, "Unused dynamic import approval"))
@@ -917,6 +954,29 @@ def diagnostic_identity(diagnostic, source, module_id):
     }
 
 
+def mypy_diagnostics(output, returncode):
+    diagnostics = [parse_json(line) for line in output.splitlines() if line.strip()]
+    for entry in diagnostics:
+        exact_object(entry, ("file", "line", "column", "end_line", "end_column", "message", "hint", "code", "severity"))
+        choice(entry["severity"], ("error", "note"))
+        text(entry["file"])
+        text(entry["message"])
+        if type(entry["line"]) is not int or entry["line"] < 1 or type(entry["column"]) is not int or entry["column"] < 0:
+            invalid("Invalid mypy diagnostic location")
+        for key in ("end_line", "end_column"):
+            if entry[key] is not None and (type(entry[key]) is not int or entry[key] < 0):
+                invalid("Invalid mypy diagnostic end location")
+        if entry["hint"] is not None:
+            text(entry["hint"])
+        if entry["severity"] == "error":
+            text(entry["code"])
+        elif entry["code"] is not None:
+            text(entry["code"])
+    if returncode and not any(entry["severity"] == "error" for entry in diagnostics):
+        invalid("Mypy failed without an error diagnostic")
+    return diagnostics
+
+
 def validate_exception_records(handlers, records, root, *, verified_tests=(), stage="bootstrap", today=None):
     root = root.resolve()
     fields = ("module_id", "symbol", "handler_fingerprint")
@@ -1023,6 +1083,9 @@ def run_checks(root, base, requested, *, test_evidence=None):
             protected_modules = {m["id"]: m for m in minimum["modules"]}
             for module in modules:
                 old_module = protected_modules.get(module["id"])
+                if old_module is None and module["id"] not in records["typing-scope"]["module_ids"]:
+                    output.append(finding("unrecorded-coverage", module["id"], 0,
+                                          "Persist automatically blocking new modules in scope for subsequent PRs"))
                 if old_module:
                     for field in set(old_module) | set(module):
                         if field in {"path", "import_name"}:
@@ -1092,11 +1155,7 @@ def run_checks(root, base, requested, *, test_evidence=None):
                 raise PolicyError("Empty blocking typing scope")
             result = execute([sys.executable, "-m", "mypy", "--config-file", str(config_path),
                               "--no-incremental", "--output", "json", *targets], cwd=root, allowed=(0, 1))
-            diagnostics = [parse_json(line) for line in result.stdout.splitlines() if line.strip()]
-            if result.returncode and not diagnostics:
-                raise PolicyError("Mypy failed without structured diagnostics")
-            if result.returncode and not any(d.get("severity") == "error" for d in diagnostics):
-                raise PolicyError("Mypy failed without an error diagnostic")
+            diagnostics = mypy_diagnostics(result.stdout, result.returncode)
             reverse = {path: name for name, path in paths.items()}
             current = []
             imported = []

@@ -109,7 +109,10 @@ chain only if it terminates at an existing, declared canonical export. Extra
 imports, mutable state, initialization calls or changed forwarding order fail.
 
 Protected typing identities survive import/path moves; new modules enter
-blocking coverage independently of candidate scope. An ordinary move must have
+blocking coverage independently of candidate scope. Policy also requires those
+additions to be recorded before merge, so coverage survives the following PR;
+unknown mypy severities or malformed locations are execution errors, not
+silently discarded diagnostics. An ordinary move must have
 one-to-one identity and unchanged normalized syntax. Changed moves and splits
 require protected responsibility/debt allocation; they are not automatically
 approved by a candidate map. Individual retained debt is intersected with the
@@ -125,8 +128,10 @@ not a proof about arbitrary Python metaprogramming.
 
 Variable dynamic imports need exact site/context fingerprints, permitted
 targets and executed behavior tests. All permitted first-party targets enter
-the dependency graph. Literal loader aliases and keyword arguments are resolved
-as well. Handler fingerprints cover the protected `try` operation, catch/outcome
+the dependency graph. Import aliases are resolved in lexical scopes, and
+package-relative imports use inventoried `__init__.py` ownership. Literal loader
+aliases and keyword arguments are resolved as well. Handler fingerprints cover
+the protected `try` operation, catch/outcome
 and distinct occurrences, so identical handler bodies at separate sites cannot
 share one allowance.
 
@@ -163,8 +168,9 @@ unittest artifact, and `quality-gate` requires the real matrix, unittest and
 `container-tests` results plus every fresh artifact. The container job builds
 an ephemeral Ubuntu Docker image and runs `tests/container_smoke.py` with
 networking disabled; it does not publish an image or deploy to Azure. Its
-result is pending until that CI job executes successfully. A missing local
-Docker engine is a local limitation, not proof that Linux CI cannot run.
+successful result supplies Linux image evidence for that candidate, not live
+Azure integration. A missing local Docker engine is a local limitation, not
+proof that Linux CI cannot run.
 
 Tested tool pins are Ruff 0.16.5, mypy 2.3.1, Import Linter 2.14 and Grimp 3.16.
 The higher Ruff/Import Linter/Grimp versions proposed during parent research

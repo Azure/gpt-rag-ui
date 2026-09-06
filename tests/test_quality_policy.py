@@ -66,6 +66,22 @@ class QualityPolicyTests(unittest.TestCase):
         )
         self.assertEqual([], result["findings"])
 
+    def test_unrelated_function_alias_cannot_hide_private_access(self):
+        result = self.graph({
+            "owner": "_private = 1",
+            "consumer": "def first():\n import owner as client\n return client._private\n"
+                        "def unrelated():\n import os as client\n return client.name",
+        })
+        self.assertIn("private-import", {f["rule"] for f in result["findings"]})
+
+    def test_private_package_init_resolves_its_actual_package_owner(self):
+        result = self.graph(
+            {"pkg": "", "pkg._internal": "from ..public import value", "pkg.public": "value = 1"},
+            modules=[{"import_name": "pkg._internal", "path": "pkg/_internal/__init__.py"}],
+        )
+        self.assertEqual([], result["findings"])
+        self.assertEqual({"pkg.public"}, result["graph"]["pkg._internal"])
+
     def test_literal_dynamic_import_joins_cycle_variable_is_not_certified(self):
         result = self.graph({"a": 'import importlib\nimportlib.import_module("b")', "b": "import a"})
         self.assertIn("cycle", {f["rule"] for f in result["findings"]})
@@ -367,6 +383,27 @@ class QualityHardeningTests(unittest.TestCase):
         self.assertNotIn("dynamic-evidence", {f["rule"] for f in result["findings"]})
         entry["site_fingerprint"] = "stale"
         self.assertTrue(quality.analyze_sources(sources, policy)["findings"])
+        first = "def first():\n from importlib import import_module\n import_module(target)\n"
+        second = "def second():\n from importlib import import_module\n import_module(target)\n"
+        site = quality.dynamic_sites("a", first)[0]
+        record = {**entry, **site}
+        result = quality.analyze_sources({"a": first + second, "b": ""}, {"dynamic_imports": [record]},
+                                         verified_tests=set(record["evidence_tests"]))
+        self.assertIn("dynamic-import", {f["rule"] for f in result["findings"]})
+        records = self.records()
+        records["policy"]["dynamic_imports"] = [{**record, "module": records["policy"]["modules"][0]["import_name"],
+                                                 "targets": []}]
+        with self.assertRaises(quality.PolicyError):
+            quality.validate_records(records)
+
+    def test_malformed_mypy_severity_is_not_silently_uncovered(self):
+        valid = {"file": "a.py", "line": 1, "column": 1, "end_line": 1, "end_column": 2,
+                 "message": "bad assignment", "hint": None, "code": "assignment", "severity": "error"}
+        self.assertEqual([valid], quality.mypy_diagnostics(json.dumps(valid), 1))
+        for changed in ({**valid, "severity": "unknown"}, {**valid, "severity": None},
+                        {**valid, "line": True}, {**valid, "code": None}):
+            with self.subTest(diagnostic=changed), self.assertRaises(quality.PolicyError):
+                quality.mypy_diagnostics(json.dumps(changed), 0)
 
     def test_handler_approval_binds_try_operation_and_distinct_sites(self):
         before = "try:\n safe()\nexcept Exception:\n raise\n"
@@ -527,6 +564,39 @@ class EvidenceIntegrationTests(unittest.TestCase):
             self.assertEqual("violations", report["status"])
             self.assertIn("new", report["coverage"]["blocking"])
 
+    def test_auto_typed_new_module_scope_must_survive_the_next_pr(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            base = self.protected_fixture(root)
+            path = root / ".quality" / "policy.json"
+            policy = quality.read_record(path)
+            (root / "added.py").write_text("value: int = 1\n", encoding="utf-8")
+            added = {**policy["modules"][0], "id": "added", "import_name": "added",
+                     "path": "added.py", "typing_status": "uncovered"}
+            policy["modules"].append(added)
+            path.write_text(json.dumps(policy), encoding="utf-8")
+            report = quality.run_checks(root, base, ("policy", "typing"))
+            self.assertIn("added", report["coverage"]["blocking"])
+            self.assertIn("unrecorded-coverage", {f["rule"] for f in report["checks"]["policy"]["findings"]})
+            added["typing_status"] = "blocking"
+            path.write_text(json.dumps(policy), encoding="utf-8")
+            scope_path = root / ".quality" / "typing-scope.json"
+            scope = quality.read_record(scope_path)
+            scope["module_ids"].append("added")
+            scope_path.write_text(json.dumps(scope), encoding="utf-8")
+            self.assertEqual("passed", quality.run_checks(root, base, ("policy", "typing"))["status"])
+            quality.execute(["git", "add", "."], cwd=root)
+            quality.execute(["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                             "commit", "--quiet", "-m", "persisted expansion"], cwd=root)
+            next_base = quality.git(root, "rev-parse", "HEAD")
+            scope["module_ids"].remove("added")
+            scope_path.write_text(json.dumps(scope), encoding="utf-8")
+            added["typing_status"] = "uncovered"
+            path.write_text(json.dumps(policy), encoding="utf-8")
+            report = quality.run_checks(root, next_base, ("policy", "typing"))
+            self.assertIn("added", report["coverage"]["blocking"])
+            self.assertIn("scope-reduction", {f["rule"] for f in report["checks"]["policy"]["findings"]})
+
     def test_real_aggregate_rejects_failed_jobs_and_resealed_wrong_policy(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
@@ -552,6 +622,16 @@ class EvidenceIntegrationTests(unittest.TestCase):
                        "--base-ref", base, "--reports-dir", str(reports)]
             result = subprocess.run(command, cwd=root, env=env, capture_output=True, text=True, timeout=60)
             self.assertEqual(0, result.returncode, result.stderr)
+            originals = {path: path.read_text() for path in reports.glob("*.json")}
+            for field in ("head_sha", "base_sha", "run_id", "source_digest"):
+                for path, content in originals.items():
+                    forged = json.loads(content)
+                    forged[field] = "agreed-but-not-the-independent-expected-value"
+                    path.write_text(json.dumps(quality.seal_report(forged)), encoding="utf-8")
+                result = subprocess.run(command, cwd=root, env=env, capture_output=True, text=True, timeout=60)
+                self.assertNotEqual(0, result.returncode, result.stderr)
+                for path, content in originals.items():
+                    path.write_text(content, encoding="utf-8")
             for job in ("TEST_RESULT", "CONTAINER_RESULT"):
                 for state in ("skipped", "neutral", "failure", "cancelled", ""):
                     result = subprocess.run(command, cwd=root, env={**env, job: state},
