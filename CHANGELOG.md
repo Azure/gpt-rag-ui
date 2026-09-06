@@ -1,5 +1,24 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **Canonical UI runtime package with legacy adapters.** Move runtime ownership
+  into `src/gpt_rag_ui`, share citation rendering between chat and restored
+  history, and separate callback registration from reusable operations. Keep
+  `uvicorn main:app`, existing configuration/defaults and externally staged
+  Chainlit assets; install the package in the existing container build.
+
+### Added
+
+- **Proposed protected-base Python quality gates.** Add pinned development-only
+  Ruff, mypy and import tooling, individual typing debt records, full static
+  dependency checks, an explicit broad-handler inventory and a fail-closed
+  `quality-gate` aggregate alongside unittest. Initial handler approvals,
+  bootstrap review and administrator activation remain outstanding; this
+  change does not claim required merge enforcement is active.
+
 ## [v2.6.2] - 2026-09-03
 
 ### Fixed

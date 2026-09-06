@@ -1,5 +1,5 @@
 ---
-applyTo: "app.py,main.py,auth_common.py,auth_oauth.py,entra_token.py,embed_auth.py,embed_config.py,embed_security.py,conversation_security.py,download_security.py,tests/test_app_citations.py,tests/test_auth_common.py,tests/test_entra_token.py,tests/test_embed_*.py,tests/test_download_security.py,tests/test_main_policy.py"
+applyTo: "app.py,main.py,auth_common.py,auth_oauth.py,entra_token.py,embed_auth.py,embed_config.py,embed_security.py,conversation_security.py,download_security.py,src/gpt_rag_ui/auth/**/*.py,src/gpt_rag_ui/api/**/*.py,src/gpt_rag_ui/bootstrap.py,src/gpt_rag_ui/config/embed_config.py,src/gpt_rag_ui/services/chat.py,src/gpt_rag_ui/services/citations.py,src/gpt_rag_ui/services/conversation_security.py,src/gpt_rag_ui/services/download_security.py,tests/test_app_citations.py,tests/test_auth_common.py,tests/test_entra_token.py,tests/test_embed_*.py,tests/test_download_security.py,tests/test_main_policy.py"
 ---
 
 # Authentication and session security rules
