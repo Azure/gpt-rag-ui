@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import builtins
 from collections import Counter, deque
 import datetime
 import graphlib
@@ -30,6 +31,9 @@ TIMEOUT = 300
 RECORD_NAMES = ("policy", "typing-scope", "typing-baseline", "exceptions")
 STAGES = ("bootstrap", "blocking", "strict")
 TOOLS = ("ruff", "mypy", "import-linter", "grimp")
+NON_RUNTIME_DIRECTORIES = {"tests", "scripts", "docs", "infra", "public", "build", "dist", "node_modules"}
+BUILTIN_EXCEPTIONS = {name for name, value in vars(builtins).items()
+                      if isinstance(value, type) and issubclass(value, BaseException)}
 PROTECTED_FILES = (".github/scripts/check-quality.py", ".github/scripts/run-unittest.py",
                    ".github/scripts/aggregate-quality.py", ".github/workflows/tests.yml",
                    ".github/CODEOWNERS", "requirements-quality.txt", ".quality/migration.json",
@@ -331,11 +335,19 @@ def discover(root):
     """Discover new root modules/packages independently of candidate policy inventory."""
     files = set(root.glob("*.py"))
     for directory in root.iterdir():
-        if directory.is_dir() and not directory.name.startswith(".") and (
-            directory.name == "src" or
-            ((directory / "__init__.py").exists() and directory.name not in {"tests", "build", "dist"})
-        ):
-            files.update(directory.rglob("*.py"))
+        if not directory.is_dir() or directory.name.startswith(".") or directory.name in NON_RUNTIME_DIRECTORIES:
+            continue
+        if directory.is_symlink():
+            invalid("Runtime directory escapes discovery through a symlink")
+        for folder, directories, filenames in directory.walk():
+            directories[:] = [name for name in directories if not name.startswith(".")
+                              and name not in {"__pycache__", "node_modules"}]
+            for name in filenames:
+                path = folder / name
+                if path.is_symlink():
+                    invalid("Symlink in runtime source tree")
+                if path.suffix == ".py":
+                    files.add(path)
     if not files:
         raise PolicyError("No runtime sources discovered")
     modules = {}
@@ -380,6 +392,192 @@ def lexical_nodes(tree, scope=()):
     else:
         for child in ast.iter_child_nodes(tree):
             yield from lexical_nodes(child, scope)
+
+
+class StaticBindings:
+    """Resolve a bounded set of lexical bindings without importing application code."""
+
+    def __init__(self, tree):
+        self.scopes = dict(lexical_nodes(tree))
+        self.parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+        self.bindings = {}
+        self.attribute_writes = []
+        self.modules = set()
+        redirects = []
+        for node, scope in self.scopes.items():
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    parts = alias.name.split(".")
+                    self.modules.update(".".join(parts[:index]) for index in range(1, len(parts) + 1))
+                    self.store(scope, alias.asname or parts[0], "module",
+                               alias.name if alias.asname else parts[0], ast.Import(names=[alias]), original=node)
+            elif isinstance(node, ast.ImportFrom):
+                for alias in node.names:
+                    normalized = ast.ImportFrom(module=node.module, names=[alias], level=node.level)
+                    self.store(scope, alias.asname or alias.name, "symbol",
+                               "." * node.level + f"{node.module or ''}.{alias.name}", normalized, original=node)
+            elif isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                kind = "class" if isinstance(node, ast.ClassDef) else "function"
+                self.store(scope, node.name, kind, (node, scope), node)
+                if kind == "function":
+                    for arg in [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs,
+                                *[arg for arg in (node.args.vararg, node.args.kwarg) if arg]]:
+                        self.store(scope + (node,), arg.arg, "unknown", arg.arg, arg)
+            elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr)):
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                for target in targets:
+                    if isinstance(target, ast.Name):
+                        self.store(scope, target.id, "expression", node.value, node)
+                    elif isinstance(target, ast.Attribute):
+                        self.attribute_writes.append((target, node.value, scope, node))
+                    else:
+                        for part in ast.walk(target):
+                            if isinstance(part, ast.Name):
+                                self.store(scope, part.id, "unknown", ast.unparse(target), node)
+            elif isinstance(node, (ast.Global, ast.Nonlocal)):
+                redirects.append((node, scope))
+            elif isinstance(node, ast.ExceptHandler) and node.name:
+                self.store(scope, node.name, "unknown", node.name, node)
+            elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+                # Loop/with/exception targets also shadow outer bindings.
+                parent = self.parents.get(node)
+                if not isinstance(parent, (ast.Assign, ast.AnnAssign, ast.NamedExpr, ast.Tuple, ast.List)):
+                    self.store(scope, node.id, "unknown", node.id, parent or node)
+        for directive, scope in redirects:
+            for name in directive.names:
+                entries = self.bindings.get(scope, {}).pop(name, [])
+                if isinstance(directive, ast.Global):
+                    target = ()
+                else:
+                    target = next((scope[:index] for index in range(len(scope) - 1, 0, -1)
+                                   if name in self.bindings.get(scope[:index], {})), scope)
+                if entries:
+                    token = self.token(scope, directive) + repr([entry[3] for entry in entries])
+                    self.bindings.setdefault(target, {}).setdefault(name, []).append(
+                        ("unknown", name, scope, token))
+
+    @staticmethod
+    def token(scope, node):
+        if isinstance(node, ast.ClassDef):
+            source = repr((node.name, [ast.dump(base, include_attributes=False) for base in node.bases],
+                           [ast.dump(item, include_attributes=False) for item in node.keywords],
+                           [ast.dump(item, include_attributes=False) for item in node.decorator_list]))
+        else:
+            source = ast.dump(node, include_attributes=False)
+        return ".".join(part.name for part in scope) + ":" + source
+
+    def unconditional(self, node):
+        return isinstance(self.parents.get(node), (ast.Module, ast.ClassDef, ast.FunctionDef,
+                                                  ast.AsyncFunctionDef, ast.arguments))
+
+    def store(self, scope, name, kind, value, node, *, original=None):
+        origin = original or node
+        token = self.token(scope, node)
+        if not self.unconditional(origin):
+            if kind not in {"module", "symbol"}:
+                kind, value = "unknown", "conditional-binding"
+            parent = self.parents.get(origin)
+            if parent is not None:
+                token += self.token(scope, parent)
+        self.bindings.setdefault(scope, {}).setdefault(name, []).append(
+            (kind, value, scope, token))
+
+    def lookup(self, scope, name, seen):
+        for index in range(len(scope), -1, -1):
+            current = scope[:index]
+            if current and isinstance(current[-1], ast.ClassDef) and index < len(scope):
+                continue
+            values = self.bindings.get(current, {})
+            if "*" in values:
+                return ("unknown", name, tuple(entry[3] for entry in values["*"]))
+            if name in values:
+                return self.evaluate(values[name], (current, name), seen)
+        if name in BUILTIN_EXCEPTIONS or name == "object":
+            return ("symbol", f"builtins.{name}", ())
+        return ("unknown", name, ())
+
+    def evaluate(self, entries, key, seen):
+        trace = tuple(entry[3] for entry in entries)
+        if key in seen or len(entries) != 1:
+            return ("unknown", "ambiguous-or-cyclic-binding", trace)
+        kind, value, scope, _ = entries[0]
+        if kind == "expression":
+            resolved = self.resolve(value, scope, seen | {key})
+            return (resolved[0], resolved[1], (*trace, *resolved[2]))
+        return (kind, value, trace)
+
+    def attribute(self, owner, name, seen):
+        kind, value, trace = owner
+        if kind not in {"class", "module"}:
+            return ("unknown", name, trace)
+        key = ("attribute", kind, value if kind in {"symbol", "module", "class"} else None, name)
+        if key in seen:
+            return ("unknown", name, trace)
+        seen = seen | {key}
+        entries = []
+        for target, expression, scope, node in self.attribute_writes:
+            if target.attr != name:
+                continue
+            resolved_owner = self.resolve(target.value, scope, seen)
+            if resolved_owner[:2] == owner[:2]:
+                dynamic = not self.unconditional(node) or any(
+                    isinstance(part, (ast.FunctionDef, ast.AsyncFunctionDef)) for part in scope)
+                entries.append(("unknown" if dynamic else "expression", expression, scope, self.token(scope, node)))
+        if kind == "class":
+            node, scope = value
+            if node.decorator_list or node.keywords or node.bases:
+                return ("unknown", f"{node.name}.{name}", (*trace, self.token(scope, node)))
+            entries = [*self.bindings.get(scope + (node,), {}).get(name, []), *entries]
+            if not entries:
+                return ("unknown", f"{node.name}.{name}", trace)
+        if entries:
+            resolved = self.evaluate(entries, key, seen - {key})
+            return (resolved[0], resolved[1], (*trace, *resolved[2]))
+        if kind == "module":
+            target = f"{value}.{name}"
+            return ("module" if target in self.modules else "symbol", target, trace)
+        return ("unknown", name, trace)
+
+    def resolve(self, node, scope=None, seen=frozenset()):
+        if node is None:
+            return ("unknown", "<missing>", ())
+        if scope is None:
+            scope = self.scopes.get(node, ())
+        if isinstance(node, ast.Name):
+            return self.lookup(scope, node.id, seen)
+        if isinstance(node, ast.Attribute):
+            return self.attribute(self.resolve(node.value, scope, seen), node.attr, seen)
+        if isinstance(node, ast.Tuple):
+            return ("tuple", [self.resolve(item, scope, seen) for item in node.elts], ())
+        trace = tuple(repr(self.signature(self.resolve(child, scope, seen)))
+                      for child in ast.iter_child_nodes(node) if isinstance(child, ast.expr))
+        return ("unknown", ast.dump(node, include_attributes=False), trace)
+
+    @staticmethod
+    def signature(resolved):
+        kind, value, trace = resolved
+        if kind in {"class", "function"}:
+            node, scope = value
+            value = ".".join([*(part.name for part in scope), node.name])
+        elif kind == "tuple":
+            value = [StaticBindings.signature(item) for item in value]
+        return (kind, value, trace)
+
+    def exception_types(self, resolved, seen=frozenset()):
+        kind, value, _ = resolved
+        if kind == "tuple":
+            items = [self.exception_types(item, seen) for item in value]
+            return ([name for names, _ in items for name in names], any(unknown for _, unknown in items))
+        if kind == "symbol":
+            name = value.removeprefix("builtins.")
+            return ([name], value.startswith("builtins.") and name not in BUILTIN_EXCEPTIONS)
+        if kind == "class":
+            node, scope = value
+            if node not in seen and not node.decorator_list and not node.keywords and node.bases:
+                bases = [self.exception_types(self.resolve(base, scope), seen | {node}) for base in node.bases]
+                if not any(unknown for _, unknown in bases):
+                    return ([node.name], False)
+        return (["<unresolved>"], True)
 
 
 def alias_targets(bindings, scope, reference):
@@ -641,22 +839,7 @@ def analyze_sources(sources, policy, *, verified_tests=()):
 
 def broad_handlers(module, source):
     tree = ast.parse(source, filename=module)
-    aliases = {"Exception": "Exception", "BaseException": "BaseException",
-               "builtins.Exception": "Exception", "builtins.BaseException": "BaseException"}
-    uncertain = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module == "builtins":
-            for alias in node.names:
-                if alias.name in {"Exception", "BaseException"}:
-                    aliases[alias.asname or alias.name] = alias.name
-        elif isinstance(node, ast.Import):
-            for alias in node.names:
-                if alias.name == "builtins":
-                    for caught in ("Exception", "BaseException"):
-                        aliases[f"{alias.asname or alias.name}.{caught}"] = caught
-        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
-            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-            uncertain.update(t.id for t in targets if isinstance(t, ast.Name))
+    bindings = StaticBindings(tree)
     handlers = []
 
     counts = Counter()
@@ -664,14 +847,12 @@ def broad_handlers(module, source):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             symbol = ".".join(p for p in (symbol, node.name) if p)
         if isinstance(node, ast.ExceptHandler):
-            types = node.type.elts if isinstance(node.type, ast.Tuple) else [node.type]
-            caught = [aliases.get(ast.unparse(t), ast.unparse(t)) if t is not None else "bare" for t in types]
-            unsupported = any(t is not None and (
-                not isinstance(t, (ast.Name, ast.Attribute)) or ast.unparse(t) in uncertain
-            ) for t in types)
+            resolved = bindings.resolve(node.type)
+            caught, unsupported = bindings.exception_types(resolved) if node.type is not None else (["bare"], False)
             if unsupported or any(t in {"bare", "Exception", "BaseException"} for t in caught):
                 context = ast.dump(protected_try or node, include_attributes=False)
-                identity = (symbol, context, ast.dump(node, include_attributes=False))
+                identity = (symbol, context, ast.dump(node, include_attributes=False),
+                            repr(bindings.signature(resolved)), tuple(caught), unsupported)
                 counts[identity] += 1
                 handlers.append({
                     "module_id": module, "symbol": symbol or "<module>", "line": node.lineno,
@@ -743,7 +924,9 @@ def validate_moves(base, candidate, move_map, before_sources=None, after_sources
 
 def source_policy_changes(old, new, *, preserve_annotations=True):
     def suppressions(source):
-        nodes = list(scoped_nodes(ast.parse(source)))
+        tree = ast.parse(source)
+        nodes = list(scoped_nodes(tree))
+        bindings = StaticBindings(tree)
         result = Counter()
         for token in tokenize.generate_tokens(io.StringIO(source).readline):
             if token.type != tokenize.COMMENT or not re.search(r"\b(?:noqa|type:\s*ignore|mypy:|ruff:|pyright:)", token.string):
@@ -757,6 +940,17 @@ def source_policy_changes(old, new, *, preserve_annotations=True):
                 for alias in node.names:
                     if alias.name in {"no_type_check", "no_type_check_decorator"}:
                         result[(scope, "typing-bypass", ast.dump(node, include_attributes=False))] += 1
+            if isinstance(node, (ast.Name, ast.Attribute)) and isinstance(node.ctx, ast.Load):
+                resolved = bindings.resolve(node)
+                if resolved[0] == "symbol" and resolved[1] in {
+                    f"{module}.{member}" for module in ("typing", "typing_extensions")
+                    for member in ("no_type_check", "no_type_check_decorator")
+                }:
+                    enclosing = [(parent, owner) for parent, owner in nodes if isinstance(parent, ast.stmt)
+                                 and parent.lineno <= node.lineno <= parent.end_lineno]
+                    parent, owner = min(enclosing, key=lambda pair: pair[0].end_lineno - pair[0].lineno) if enclosing else (node, scope)
+                    result[(owner, "typing-bypass-use", ast.dump(parent, include_attributes=False),
+                            repr(bindings.signature(resolved)))] += 1
         return result
     extra = suppressions(new) - suppressions(old)
     findings = [finding("suppression-growth", "", 0, "New suppression requires protected review")] if extra else []
@@ -766,12 +960,17 @@ def source_policy_changes(old, new, *, preserve_annotations=True):
     def signatures(source):
         result = {}
         tree = ast.parse(source)
+        provider_bindings = StaticBindings(tree)
         annotations = []
         occurrences = Counter()
         for node, scope in scoped_nodes(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 occurrences[scope] += 1
                 scope = f"{scope}[{occurrences[scope]}]"
+                result[(scope, "decorator-bindings")] = tuple(
+                    (ast.dump(decorator, include_attributes=False),
+                     repr(provider_bindings.signature(provider_bindings.resolve(decorator))))
+                    for decorator in node.decorator_list)
                 args = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
                 args += [a for a in (node.args.vararg, node.args.kwarg) if a]
                 for arg in args:
@@ -794,6 +993,8 @@ def source_policy_changes(old, new, *, preserve_annotations=True):
                 result[(scope, "variable", ast.unparse(node.target))] = ast.dump(node.annotation, include_attributes=False)
             elif isinstance(node, ast.ClassDef):
                 result[(scope, "class-decorators")] = tuple(ast.dump(d, include_attributes=False) for d in node.decorator_list)
+                result[(scope, "decorator-bindings")] = tuple(
+                    repr(provider_bindings.signature(provider_bindings.resolve(decorator))) for decorator in node.decorator_list)
         bindings = {}
         for node in tree.body:
             if isinstance(node, (ast.Import, ast.ImportFrom)):
@@ -988,6 +1189,7 @@ def validate_exception_records(handlers, records, root, *, verified_tests=(), st
         handler = actual.pop(key, None)
         evidence = entry.get("evidence_tests", [])
         valid = (handler is not None and entry.get("state") == "active"
+                 and handler.get("unsupported", True) is False
                  and entry.get("caught_types") == handler["caught_types"]
                  and all(entry.get(k) for k in ("reason", "boundary", "failure_outcome", "diagnostic_path", "review"))
                  and evidence and set(evidence) <= set(verified_tests))

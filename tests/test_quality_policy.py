@@ -530,7 +530,8 @@ class EvidenceIntegrationTests(unittest.TestCase):
         for name, record in records.items():
             (root / ".quality" / f"{name}.json").write_text(json.dumps(record), encoding="utf-8")
         (root / "pyproject.toml").write_text(
-            '[tool.mypy]\npython_version="3.12"\ncheck_untyped_defs=true\n', encoding="utf-8")
+            '[tool.mypy]\npython_version="3.12"\ncheck_untyped_defs=true\n'
+            'mypy_path=["src", "."]\nexplicit_package_bases=true\n', encoding="utf-8")
         quality.execute(["git", "add", "."], cwd=root)
         quality.execute(["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
                          "commit", "--quiet", "-m", "protected policy"], cwd=root)
@@ -597,6 +598,24 @@ class EvidenceIntegrationTests(unittest.TestCase):
             self.assertIn("added", report["coverage"]["blocking"])
             self.assertIn("scope-reduction", {f["rule"] for f in report["checks"]["policy"]["findings"]})
 
+    def test_namespace_findings_keep_discovered_blocking_identity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            base = self.protected_fixture(root)
+            (root / "entry.py").write_text("import supplemental_runtime.bridge\n", encoding="utf-8")
+            namespace = root / "supplemental_runtime"
+            namespace.mkdir()
+            (namespace / "bridge.py").write_text(
+                "import entry\nvalue: int = 'wrong'\ndef operation():\n"
+                "    try: int('bad')\n    except Exception: return False\n", encoding="utf-8")
+            report = quality.run_checks(root, base, ("policy", "typing", "exceptions"))
+            self.assertIn("supplemental_runtime.bridge", report["coverage"]["blocking"])
+            self.assertTrue(any(f["module"] == "supplemental_runtime.bridge"
+                                for f in report["checks"]["typing"]["findings"]))
+            self.assertTrue(any(f["module"] == "supplemental_runtime.bridge"
+                                for f in report["checks"]["exceptions"]["findings"]))
+            self.assertEqual("violations", report["status"])
+
     def test_real_aggregate_rejects_failed_jobs_and_resealed_wrong_policy(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
@@ -646,6 +665,177 @@ class EvidenceIntegrationTests(unittest.TestCase):
             path.unlink()
             result = subprocess.run(command, cwd=root, env=env, capture_output=True, text=True, timeout=60)
             self.assertNotEqual(0, result.returncode, result.stderr)
+
+
+class BindingRegressionTests(unittest.TestCase):
+    def rules(self, before, after, **kwargs):
+        return {entry["rule"] for entry in quality.source_policy_changes(before, after, **kwargs)}
+
+    def active_record(self, handler):
+        record = {**{key: handler[key] for key in ("module_id", "symbol", "handler_fingerprint", "caught_types")},
+                "id": "fixture", "state": "active", "boundary": "fixture boundary",
+                "reason": "Preserve propagation", "failure_outcome": "propagation",
+                "diagnostic_path": "propagated error", "review": "protected fixture",
+                "review_by_stage": "strict", "expires_on": "2099-01-01",
+                "evidence_tests": ["tests/test_failure.py::Failure.test_failure"]}
+        quality.validate_record("exceptions", {"schema_version": 1, "entries": [record]})
+        return record
+
+    def validate(self, handlers, record):
+        return quality.validate_exception_records(
+            handlers, [record], Path.cwd(), verified_tests=set(record["evidence_tests"]),
+            today=datetime.date(2026, 9, 6))
+
+    def test_real_mypy_qualified_suppression_disables_untyped_body_checking(self):
+        before = "import typing\ndef operation():\n    value: int = 1\n"
+        after = 'import typing\n@typing.no_type_check\ndef operation():\n    value: int = "wrong"\n'
+        command = [sys.executable, "-m", "mypy", "--config-file", str(SCRIPT.parents[2] / "pyproject.toml"),
+                   "--no-incremental", "--command"]
+        bad = quality.execute([*command, after.replace("@typing.no_type_check\n", "")],
+                              cwd=SCRIPT.parents[2], allowed=(0, 1))
+        suppressed = quality.execute([*command, after], cwd=SCRIPT.parents[2], allowed=(0, 1))
+        self.assertEqual(1, bad.returncode, bad.stdout)
+        self.assertEqual(0, suppressed.returncode, suppressed.stdout)
+        self.assertIn("suppression-growth", self.rules(before, after))
+
+    def test_qualified_and_alias_suppressions_cover_untyped_functions_and_classes(self):
+        for header, decorator in (
+            ("import typing", "typing.no_type_check"),
+            ("import typing as types", "types.no_type_check"),
+            ("from typing import no_type_check as unchecked", "unchecked"),
+            ("import typing\nunchecked = typing.no_type_check", "unchecked"),
+            ("import typing\nclass Decorators:\n    unchecked = typing.no_type_check", "Decorators.unchecked"),
+            ("import typing_extensions as types", "types.no_type_check"),
+        ):
+            before = header + "\ndef operation():\n    value: int = 1\n"
+            after = header + f"\n@{decorator}\ndef operation():\n    value: int = 'wrong'\n"
+            with self.subTest(decorator=decorator):
+                self.assertIn("suppression-growth", self.rules(before, after, preserve_annotations=False))
+                self.assertEqual(set(), self.rules(after, "\n" + after))
+
+    def test_unchanged_decorator_alias_binds_its_provider_and_lexical_scope(self):
+        prefix = "import typing\ndef identity(fn): return fn\n"
+        suffix = "\n@decorate\ndef operation():\n    value: int = 1\n"
+        before = prefix + "decorate = identity" + suffix
+        after = prefix + "decorate = typing.no_type_check" + suffix
+        self.assertIn("suppression-growth", self.rules(before, after))
+        nested = "def outer():\n    import typing as provider\n    @provider.no_type_check\n    def operation(): pass\n"
+        self.assertIn("suppression-growth", self.rules("", nested))
+        self.assertEqual(set(), self.rules(nested, nested + "\ndef unrelated():\n    import os as provider\n"))
+        self.assertTrue(self.rules(
+            "decorate = first_factory()\n@decorate\ndef operation(): pass",
+            "decorate = second_factory()\n@decorate\ndef operation(): pass"))
+
+    def test_class_member_exception_aliases_resolve_breadth(self):
+        for statement, expected in (
+            ("Errors.caught", ["Exception"]),
+            ("(ValueError, Errors.caught)", ["ValueError", "Exception"]),
+        ):
+            source = "class Errors:\n    caught = Exception\ndef operation():\n    try: int('bad')\n"
+            source += f"    except {statement}: raise\n"
+            handlers = quality.broad_handlers("module", source)
+            with self.subTest(statement=statement):
+                self.assertEqual(1, len(handlers))
+                self.assertEqual(expected, handlers[0]["caught_types"])
+                self.assertFalse(handlers[0]["unsupported"])
+        nested = "class Outer:\n    class Errors:\n        caught = BaseException\n"
+        handlers = quality.broad_handlers("module", nested + "try: work()\nexcept* Outer.Errors.caught: raise")
+        self.assertEqual(["BaseException"], handlers[0]["caught_types"])
+
+    def test_exception_alias_rebinding_invalidates_existing_approval(self):
+        for prefix, replacement, expression in (
+            ("Error = Exception\n", "Error = BaseException\n", "Error"),
+            ("class Errors:\n    caught = Exception\n", "class Errors:\n    caught = BaseException\n", "Errors.caught"),
+            ("import builtins as provider\nError = provider.Exception\n",
+             "import builtins as provider\nError = provider.BaseException\n", "Error"),
+        ):
+            tail = f"try: operation()\nexcept {expression}: raise\n"
+            original = quality.broad_handlers("module", prefix + tail)[0]
+            changed = quality.broad_handlers("module", replacement + tail)[0]
+            record = self.active_record(original)
+            with self.subTest(expression=expression):
+                self.assertEqual(([], ["fixture"]), self.validate([original], record))
+                self.assertNotEqual(original["handler_fingerprint"], changed["handler_fingerprint"])
+                self.assertEqual(["Exception"], original["caught_types"])
+                self.assertEqual(["BaseException"], changed["caught_types"])
+                self.assertTrue(self.validate([changed], record)[0])
+
+    def test_catch_bindings_are_lexical_and_parameter_shadowing_is_unknown(self):
+        first = "def first():\n    Error = Exception\n    try: work()\n    except Error: raise\n"
+        other = "def unrelated():\n    Error = ValueError\n    try: work()\n    except Error: raise\n"
+        original = quality.broad_handlers("module", first)
+        self.assertEqual(1, len(original))
+        self.assertFalse(original[0]["unsupported"])
+        self.assertEqual(original, quality.broad_handlers("module", first + other))
+        shadowed = "Error = Exception\ndef operation(Error):\n    try: work()\n    except Error: raise\n"
+        self.assertTrue(quality.broad_handlers("module", shadowed)[0]["unsupported"])
+        closure = "def outer():\n    Error = BaseException\n    def inner():\n        try: work()\n        except Error: raise\n"
+        self.assertEqual(["BaseException"], quality.broad_handlers("module", closure)[0]["caught_types"])
+
+    def test_unresolved_catches_never_consume_an_active_record(self):
+        for header, expression in (
+            ("class Errors: pass\n", "Errors.caught"),
+            ("Error = choose_error()\n", "Error"),
+            ("", "choose_error()"),
+            ("", "unknown.caught"),
+            ("Error = Error\n", "Error"),
+            ("class Error(Error): pass\n", "Error"),
+            ("if configured:\n    Error = Exception\n", "Error"),
+        ):
+            source = header + f"try: work()\nexcept {expression}: raise\n"
+            handlers = quality.broad_handlers("module", source)
+            with self.subTest(expression=expression):
+                self.assertEqual(1, len(handlers))
+                self.assertTrue(handlers[0]["unsupported"])
+                self.assertTrue(self.validate(handlers, self.active_record(handlers[0]))[0])
+
+    def test_external_member_and_global_rebinding_cannot_reuse_approval(self):
+        source = "class Errors:\n    caught = Exception\ntry: work()\nexcept Errors.caught: raise\n"
+        original = quality.broad_handlers("module", source)[0]
+        changed = source.replace("try: work()", "Errors.caught = BaseException\ntry: work()")
+        handlers = quality.broad_handlers("module", changed)
+        self.assertTrue(self.validate(handlers, self.active_record(original))[0])
+        source = "Error = Exception\ndef operation():\n    try: work()\n    except Error: raise\n"
+        original = quality.broad_handlers("module", source)[0]
+        changed = source + "\ndef mutate():\n    global Error\n    Error = BaseException\n"
+        self.assertTrue(self.validate(quality.broad_handlers("module", changed), self.active_record(original))[0])
+
+    def test_nominal_narrow_exception_imports_and_classes_remain_supported(self):
+        for source in (
+            "from httpx import HTTPStatusError as Error\ntry: work()\nexcept Error: raise",
+            "import httpx as client\ntry: work()\nexcept client.HTTPStatusError: raise",
+            "if configured:\n    from httpx import HTTPStatusError as Error\n"
+            "if configured:\n    try: work()\n    except Error: raise",
+            "class Error(RuntimeError): pass\ntry: work()\nexcept Error: raise",
+            "Error = ValueError\ntry: work()\nexcept Error: raise",
+        ):
+            with self.subTest(source=source):
+                self.assertEqual([], quality.broad_handlers("module", source))
+
+    def test_root_namespace_sources_cannot_disappear_as_external_imports(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            (root / "entry.py").write_text("import supplemental_runtime.bridge\n", encoding="utf-8")
+            namespace = root / "supplemental_runtime"
+            namespace.mkdir()
+            (namespace / "bridge.py").write_text(
+                "import entry\nvalue: int = 'wrong'\ndef operation():\n"
+                "    try: int('bad')\n    except Exception: return False\n", encoding="utf-8")
+            for excluded in ("tests", "scripts", "docs", "infra", "public", "build", "dist", ".artifacts"):
+                (root / excluded).mkdir()
+                (root / excluded / "not_runtime.py").write_text("import entry", encoding="utf-8")
+            imported = quality.execute(
+                [sys.executable, "-c", "import entry; assert entry.supplemental_runtime.bridge.operation() is False"],
+                cwd=root)
+            self.assertEqual(0, imported.returncode)
+            sources, paths = quality.discover(root)
+            self.assertEqual({"entry", "supplemental_runtime.bridge"}, set(sources))
+            self.assertEqual("supplemental_runtime/bridge.py", paths["supplemental_runtime.bridge"])
+            self.assertIn("cycle", {f["rule"] for f in quality.analyze_sources(sources, {})["findings"]})
+            handlers = quality.broad_handlers("supplemental_runtime.bridge", sources["supplemental_runtime.bridge"])
+            self.assertEqual(1, len(handlers))
+            identities, scope = quality.effective_scope([], [], set(), set(), sources)
+            self.assertIn(identities["supplemental_runtime.bridge"], scope)
 
 
 def quality_fixture_reports():

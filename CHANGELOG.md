@@ -26,6 +26,12 @@
   protected aggregation and ephemeral offline Linux-image acceptance without
   publishing an image or changing repository settings.
 
+- **Close binding and namespace quality-check bypasses.** Detect qualified
+  suppression decorators on untyped functions, invalidate exception records
+  when effective catch bindings change, and reject unresolved catches.
+  Discover root namespace modules and retain their full typing/import identity
+  without changing application imports or exception behavior.
+
 ## [v2.6.2] - 2026-09-03
 
 ### Fixed

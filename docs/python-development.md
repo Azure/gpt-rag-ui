@@ -119,12 +119,26 @@ approved by a candidate map. Individual retained debt is intersected with the
 protected baseline, permitting genuine retirement without permitting revival
 or duplication.
 
+Discovery includes root namespace packages without `__init__.py`, not only
+regular packages. Their concrete Python modules receive normal graph, handler
+and blocking typing identities. Explicit non-runtime roots (`tests`, `scripts`,
+`docs`, `infra`, `public`, generated `build`/`dist`, dependency caches and hidden
+directories) remain excluded. Mypy uses explicit package bases at `src` and the
+repository root so a namespace file cannot acquire conflicting flat/imported
+module names. These are checker settings, not runtime `sys.path` changes.
+
 Annotation policy compares qualified functions, overload occurrences, parameter
 kinds, variadic arguments, returns, variables, decorators and local module-level
 type aliases. Suppression comments are bound to syntax sites, not just counted;
 moving an unchanged ignore to another error is a policy change. String literals
 that merely mention `noqa` are not directives. These are static syntax checks,
 not a proof about arbitrary Python metaprogramming.
+
+Qualified and aliased `typing`/`typing_extensions.no_type_check` and
+`no_type_check_decorator` uses are checked even on functions without annotated
+arguments or returns. Decorator-provider bindings are part of the interface
+snapshot, so changing a provider behind an unchanged `@alias` cannot silently
+disable body checking.
 
 Variable dynamic imports need exact site/context fingerprints, permitted
 targets and executed behavior tests. All permitted first-party targets enter
@@ -134,6 +148,16 @@ aliases and keyword arguments are resolved as well. Handler fingerprints cover
 the protected `try` operation, catch/outcome
 and distinct occurrences, so identical handler bodies at separate sites cannot
 share one allowance.
+
+The bounded binding resolver tracks lexical assignments, builtins aliases and
+plain local class-member aliases without executing application code. Handler
+identity includes effective types and binding source: changing an alias from
+`Exception` to `BaseException`, or rebinding a class member, invalidates the old
+record. Ambiguous, cyclic, parameter-supplied or otherwise unresolved catch
+expressions remain violations and cannot consume even an active record with
+passing tests. Existing nominal exception imports retain their treatment,
+including conditional hosted-client imports; import guards are included in
+binding identity rather than forcing eager runtime imports.
 
 `--test-evidence <file>` supplies an optional execution receipt to the quality
 CLI. Without valid evidence, no exception or dynamic-import behavior approval

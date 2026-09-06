@@ -35,6 +35,8 @@ select = ["F821", "E722", "BLE001", "PGH003", "PGH004", "RUF100"]
 
 [tool.mypy]
 python_version = "3.12"
+mypy_path = ["src", "."]
+explicit_package_bases = true
 check_untyped_defs = true
 disallow_incomplete_defs = true
 warn_unused_ignores = true
