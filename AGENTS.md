@@ -142,6 +142,13 @@ orchestrator.
   <protected-base-sha> --report .artifacts/quality.json`. Missing execution
   is an error; the initial broad-handler inventory is not an approved waiver.
   Do not grow the baseline or weaken policy to turn the bootstrap PR green.
+- Exception/dynamic-import evidence comes from the separate standard-unittest
+  runner `.github/scripts/run-unittest.py`; pass its same-run report through
+  `--test-evidence`. See `docs/python-development.md` for `QUALITY_RUN_ID`,
+  exact-source receipt requirements and protected aggregation.
+- `container-tests` builds an ephemeral Linux image and runs the explicit
+  offline `tests/container_smoke.py` helper with read-only mounted tests.
+  `quality-gate` requires its real result; no image is published or deployed.
 - For security changes, include negative tests that prove unauthorized,
   cross-session, cross-origin, or expired access is denied.
 - For client changes, test payload, header, timeout, retry, and error

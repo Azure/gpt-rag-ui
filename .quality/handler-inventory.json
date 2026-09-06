@@ -1,13 +1,13 @@
 {
   "schema_version": 1,
-  "source_revision": "c635bc6696714b543feec24b4a062a8a8f3ff6d0",
+  "source_revision": "043d89b87bd2504a9df1429df35c4ed05b4c2d60",
   "state": "unapproved",
   "handlers": [
     {
       "module_id": "gpt_rag_ui.api.download_routes",
       "symbol": "register_secure_download_route.download_blob_file",
       "line": 104,
-      "handler_fingerprint": "d78898d42b1dc248bf90edb319d835c1038795ec612b503328be68ff1c6fdfab",
+      "handler_fingerprint": "a269114f1e1aae9a15c1de41e41e00ddcb1021c6effdeb7db8c6d35c69dfd9f4",
       "caught_types": [
         "Exception"
       ],
@@ -17,7 +17,7 @@
       "module_id": "gpt_rag_ui.api.feedback",
       "symbol": "register_feedback_handlers.handle_feedback",
       "line": 136,
-      "handler_fingerprint": "b6e457d6674331cda2bee724a5a1bc0755c63e888ee4a3c4b6347297620ce0f2",
+      "handler_fingerprint": "cd846c4e8cdb0f10c822b7b903ae8996a391aa5be9f48f65c608adb9b0827c63",
       "caught_types": [
         "Exception"
       ],
@@ -27,7 +27,7 @@
       "module_id": "embed_auth",
       "symbol": "CopilotSessionStore._notify_invalidated",
       "line": 174,
-      "handler_fingerprint": "56fd043d6a04e5c96a397fd313a0dcbda8cce1d962d186077d913d9de125c797",
+      "handler_fingerprint": "4cc1734799a59036280cbaf7bc9287c596487560eb897d11c34bcee0d4a27a21",
       "caught_types": [
         "Exception"
       ],
@@ -37,7 +37,7 @@
       "module_id": "embed_security",
       "symbol": "CopilotSocketRegistry.bind_connection",
       "line": 298,
-      "handler_fingerprint": "bfe1614754694fdd9fe09f973f1e35d2198c5b6c86de475f508ca250a4878c0a",
+      "handler_fingerprint": "c71cd70a8955c921450c3120b3c677bd0af83b256914770c22725bef08faf0f8",
       "caught_types": [
         "Exception"
       ],
@@ -47,7 +47,7 @@
       "module_id": "embed_security",
       "symbol": "CopilotSocketRegistry.disconnect_session",
       "line": 479,
-      "handler_fingerprint": "7ce76329a4444b888e812dea354c4cc99a8b240834c8a6bd188bbed7b1fe82b4",
+      "handler_fingerprint": "f90df4836a86d7d10ab864d1881fc50d97993e5a8106c60e681762fe89b043c8",
       "caught_types": [
         "Exception"
       ],
@@ -57,7 +57,7 @@
       "module_id": "embed_security",
       "symbol": "_target_has_copilot_sockets",
       "line": 984,
-      "handler_fingerprint": "076accdaac426fa89772f7002c3b6fda8abe9acc9290a181acf669a8c5fe806f",
+      "handler_fingerprint": "283fe6c7da06aa494b6660e3b33731ee43f8dd6de0d9350d904d5849ba91d49e",
       "caught_types": [
         "Exception"
       ],
@@ -67,7 +67,7 @@
       "module_id": "embed_security",
       "symbol": "disconnect_copilot_session",
       "line": 1133,
-      "handler_fingerprint": "37da9a5b920235a080703b69d9d8681be241d5d2299698e3f42637cbe1c51f24",
+      "handler_fingerprint": "09d578550f55876424e498a0bebad556f3fe39139c4089527822f97c0295fb57",
       "caught_types": [
         "Exception"
       ],
@@ -77,7 +77,7 @@
       "module_id": "embed_security",
       "symbol": "disconnect_copilot_session",
       "line": 1144,
-      "handler_fingerprint": "7ce76329a4444b888e812dea354c4cc99a8b240834c8a6bd188bbed7b1fe82b4",
+      "handler_fingerprint": "e5117e01d1e79039cad8b086af1df450e8e40c64f83ed790a557b54e4e5bbca5",
       "caught_types": [
         "Exception"
       ],
@@ -87,7 +87,7 @@
       "module_id": "embed_security",
       "symbol": "_terminate_socket",
       "line": 1170,
-      "handler_fingerprint": "02057e748d5c5cd8987627b8d8e59e37304b58e5336e0dcc5cbac03feae184f0",
+      "handler_fingerprint": "5d9682d5c0ee390430ea74450864b658c6bf60a7d77ae3263a321d5c62e1faf9",
       "caught_types": [
         "Exception"
       ],
@@ -97,7 +97,7 @@
       "module_id": "embed_security",
       "symbol": "_terminate_socket",
       "line": 1180,
-      "handler_fingerprint": "6d9ffd40868ead00d39955db848db73084233514904f89aafe601fba3c250c45",
+      "handler_fingerprint": "a1da5529c21507acaaf3f68cf8e9bf1599621c29e82cc3356e0312b8ab2333c7",
       "caught_types": [
         "Exception"
       ],
@@ -107,7 +107,7 @@
       "module_id": "embed_security",
       "symbol": "configure_copilot_bridge_guards.disconnect_socket",
       "line": 1237,
-      "handler_fingerprint": "e0fb96ed2e139d8c2dace63399de6fae0cb43a2ff5c08bed58230d5c4ca93360",
+      "handler_fingerprint": "9dba836e84a115ebcc93346e7177c000d351c09ee3fe4cbba639dd9c3ca2858e",
       "caught_types": [
         "Exception"
       ],
@@ -117,7 +117,7 @@
       "module_id": "embed_security",
       "symbol": "configure_copilot_bridge_guards.close_rejected_socket",
       "line": 1267,
-      "handler_fingerprint": "22d4bbfd5017c7ab6e525ce34ca962c2b8491dfe615b93632da2ee858da488a8",
+      "handler_fingerprint": "0c58fea1de5edf274164c05bd38bf874e478f9cbc1c270df216e675e0ab88974",
       "caught_types": [
         "Exception"
       ],
@@ -127,7 +127,7 @@
       "module_id": "embed_security",
       "symbol": "configure_copilot_bridge_guards.guarded_engineio_connect",
       "line": 1308,
-      "handler_fingerprint": "414f208f3b9234aae053cc5221c0de279359af94d25298d99a70727fda3147c2",
+      "handler_fingerprint": "a0331643f5af45691bc32c47fd46e2b296464b9541637c2e72d7b26eb259721b",
       "caught_types": [
         "BaseException"
       ],
@@ -137,7 +137,7 @@
       "module_id": "embed_security",
       "symbol": "configure_copilot_bridge_guards.guarded_engineio_disconnect",
       "line": 1342,
-      "handler_fingerprint": "1e1d171b24fec60ec5fab97d38ad5e73211651cfb4523e6229317963dad04305",
+      "handler_fingerprint": "f325e9e2652b01c70c63f6294bf6a5357334338fc69c16ff641e16197ba0392f",
       "caught_types": [
         "Exception"
       ],
@@ -147,7 +147,7 @@
       "module_id": "embed_security",
       "symbol": "configure_copilot_bridge_guards.guarded_engineio_disconnect",
       "line": 1350,
-      "handler_fingerprint": "a295d0c7dcce47dcb34f4afc54d885aeef9d2227239511502ce265e2db9cbaa1",
+      "handler_fingerprint": "7a0a946f2a27d25b32884f44d5a167535705da5905ca442e996d6eea6dc28642",
       "caught_types": [
         "Exception"
       ],
@@ -157,7 +157,7 @@
       "module_id": "embed_security",
       "symbol": "configure_copilot_bridge_guards.guarded_engineio_disconnect",
       "line": 1362,
-      "handler_fingerprint": "19445c74e15c18a3049e4134632fa9959f27deb78428824aef0e97954cd61010",
+      "handler_fingerprint": "3d9bfd84cee79c984ff8a7648d459aef35cbac181da1bd38f5a11e17709a635e",
       "caught_types": [
         "Exception"
       ],
@@ -167,7 +167,7 @@
       "module_id": "embed_security",
       "symbol": "configure_copilot_bridge_guards.guarded_engineio_disconnect",
       "line": 1376,
-      "handler_fingerprint": "fd7619af1bf84098272dafd72335e294f259c1f501a315c14e0590f3d179cc44",
+      "handler_fingerprint": "fd488ceff5dc1bed58a3dd2369f000597ea70300e5227c6123a7ed1d47064c05",
       "caught_types": [
         "Exception"
       ],
@@ -177,7 +177,7 @@
       "module_id": "embed_security",
       "symbol": "configure_copilot_bridge_guards.guarded_connect",
       "line": 1639,
-      "handler_fingerprint": "e1b860dbb3c6ee1a289f49db88acbdfb7b0e2b35876fa8d11c3b160663771f2c",
+      "handler_fingerprint": "db665cfecc1df6baac5d96c218f19306d4b03599d076dd53b38f90e27119d070",
       "caught_types": [
         "Exception"
       ],
@@ -187,7 +187,7 @@
       "module_id": "embed_security",
       "symbol": "configure_copilot_bridge_guards.guarded_disconnect",
       "line": 1711,
-      "handler_fingerprint": "c8c456b0ad93bdaebc4d48de69bcbabf542a98c1d503347a0f9e91d2e125fa52",
+      "handler_fingerprint": "4d26eda74e5bab6dd13e1a36d53c17eb5bbdb71dd1430ccc149b50301dd733fc",
       "caught_types": [
         "Exception"
       ],
@@ -197,7 +197,7 @@
       "module_id": "auth_oauth",
       "symbol": "_decode_jwt_unverified",
       "line": 41,
-      "handler_fingerprint": "c3fde88d2b8da1fb938e77ffdf783cb7109a6d092274d4066207eac4498aaaf5",
+      "handler_fingerprint": "5c3e761612302d85bb5c6585ee16cd9afd7f41d927e21ceec354924a653552ef",
       "caught_types": [
         "Exception"
       ],
@@ -207,7 +207,7 @@
       "module_id": "auth_oauth",
       "symbol": "_jwt_exp_unverified",
       "line": 82,
-      "handler_fingerprint": "c3fde88d2b8da1fb938e77ffdf783cb7109a6d092274d4066207eac4498aaaf5",
+      "handler_fingerprint": "4b959295ca2e9d278095941a3f2d3f94838584064b511013a8c3e7283aad21e9",
       "caught_types": [
         "Exception"
       ],
@@ -217,7 +217,7 @@
       "module_id": "auth_oauth",
       "symbol": "get_env_var",
       "line": 279,
-      "handler_fingerprint": "4154344e21d001322837937dd96ebed7d08e66307b8dd53c6b8ed91820379c6f",
+      "handler_fingerprint": "cd219c1df44b853a9d1080d220469f67e3557b47b76a3b164bcbad9afaf929fc",
       "caught_types": [
         "Exception"
       ],
@@ -227,7 +227,7 @@
       "module_id": "auth_oauth",
       "symbol": "oauth_callback",
       "line": 299,
-      "handler_fingerprint": "99b2890238dc24d9e2994635202ec31f421c1fefbab0f73db2d97579116333d4",
+      "handler_fingerprint": "d3f5214172a128bfba7131df2fba72290d82d2099907219f57a6e3c39ca58834",
       "caught_types": [
         "Exception"
       ],
@@ -237,7 +237,7 @@
       "module_id": "main",
       "symbol": "_read_local_ui_version",
       "line": 134,
-      "handler_fingerprint": "ac31201d3fec1a48fa90e65e4bffa753e8b55dfcb777449dd3c30cc20382abcf",
+      "handler_fingerprint": "9b5ce939414ba27de9d4633d2aebd2e293cfdf8757acccad916837eea12e3c3e",
       "caught_types": [
         "Exception"
       ],
@@ -247,7 +247,7 @@
       "module_id": "main",
       "symbol": "_configure_auth_environment",
       "line": 517,
-      "handler_fingerprint": "54e428e2e5d202e79766f8313a4c3c5cfca2fcea9f3450103cc22bf282ab23d3",
+      "handler_fingerprint": "d10328f7a4af074994ac050226bcffd8a34153c55f86141d73e997e1e1eba2b4",
       "caught_types": [
         "Exception"
       ],
@@ -257,7 +257,7 @@
       "module_id": "main",
       "symbol": "_create_chainlit_app.download_from_blob",
       "line": 807,
-      "handler_fingerprint": "193bf0b33d245598a4b7ce505c3f35522a282ddf0ab77012eb083f385d164898",
+      "handler_fingerprint": "36981e518b27ec5a57e0e4c547585a5ea17f37fad8cebe12a20fb5fe0f10ee30",
       "caught_types": [
         "Exception"
       ],
@@ -267,7 +267,7 @@
       "module_id": "main",
       "symbol": "_create_chainlit_app.handle_file_download",
       "line": 826,
-      "handler_fingerprint": "c114fef7bfb19aaf4ed6edfb15eb70e3514ad5e67a6726e8089b2f85beda1df5",
+      "handler_fingerprint": "4df0274968b528264eb5612c2cd708817119b3317ee55e51ee714c01acd9314e",
       "caught_types": [
         "Exception"
       ],
@@ -277,7 +277,7 @@
       "module_id": "main",
       "symbol": "_create_chainlit_app",
       "line": 910,
-      "handler_fingerprint": "51cfebe134077966abb2e71965363f5cf0e60be7cd2c2bade89d84689c191990",
+      "handler_fingerprint": "d2f6ca39f54e29fd4bdbb5b145493755bab784793d8a40e22427603aa06d9f2b",
       "caught_types": [
         "Exception"
       ],
@@ -287,7 +287,7 @@
       "module_id": "main",
       "symbol": "_create_chainlit_app._safe_openapi",
       "line": 924,
-      "handler_fingerprint": "b3fe65a8ba6e289315d7d7b1a861171f274344dd2a46be9ce8dafbc1f70c59d9",
+      "handler_fingerprint": "a4e27b8c755f2fed38e3da436c92281deba43416cad66199e0177425e1a64a6b",
       "caught_types": [
         "Exception"
       ],
@@ -297,7 +297,7 @@
       "module_id": "main",
       "symbol": "_create_chainlit_app.stream_from_blob",
       "line": 1011,
-      "handler_fingerprint": "9e1b90b286707f2d1b2f28e38ffd9256f35a047bf1e3f00d0c55d3aa6f7e39cc",
+      "handler_fingerprint": "710c58692709cf6c273cad0c29a5f9cf8606f844a34d294a78a0b868c2b067ea",
       "caught_types": [
         "Exception"
       ],
@@ -307,7 +307,7 @@
       "module_id": "connectors.blob",
       "symbol": "BlobClient.__init__",
       "line": 32,
-      "handler_fingerprint": "73e9709baee32f0c3b649fec77e26a5b0ea4ae9d6446544d0453f4838645eb3e",
+      "handler_fingerprint": "a17ac958e2ffde99aa1e3feac66a65b2a575b9dadf420d35a9cc70285da3f396",
       "caught_types": [
         "Exception"
       ],
@@ -317,7 +317,7 @@
       "module_id": "connectors.blob",
       "symbol": "BlobClient.__init__",
       "line": 43,
-      "handler_fingerprint": "22d6eae79890f2f77f16d2acf2d6aaf46c94a5250e96b83c6fda58e82acc3ca9",
+      "handler_fingerprint": "6c071161deaaafbd6790fc4ad885617384156d54c1f00489d3fd97942e986851",
       "caught_types": [
         "Exception"
       ],
@@ -327,7 +327,7 @@
       "module_id": "connectors.blob",
       "symbol": "BlobClient._get_credential",
       "line": 62,
-      "handler_fingerprint": "571f08bf787be4739bb33077c0c45bb1f8d66dbc73e85ff839bc810a7f4883ac",
+      "handler_fingerprint": "ff9e81d51c4af4895352044d5017e15965106df19a4d92380cf022142d4ae981",
       "caught_types": [
         "Exception"
       ],
@@ -337,7 +337,7 @@
       "module_id": "connectors.blob",
       "symbol": "BlobClient.download_blob",
       "line": 91,
-      "handler_fingerprint": "cd867148c8ccba32874200140a7d271291b0f7af198eb84bd8921dfdb3e0e24f",
+      "handler_fingerprint": "97fcc29053902199c5e19d14992dbdf6ee91ebbd2169a04faca76ec24c5665cc",
       "caught_types": [
         "Exception"
       ],
@@ -347,7 +347,7 @@
       "module_id": "connectors.blob",
       "symbol": "BlobClient.download_blob_chunks",
       "line": 115,
-      "handler_fingerprint": "2be29127688d71c5c9287f310f77d96ce98d65cceb481ea67fa18476964ac3e6",
+      "handler_fingerprint": "cf35e7bd184ca2da7be0a81f4b79dee438ddc4503d51ca2b5afa78013cc21ec8",
       "caught_types": [
         "Exception"
       ],
@@ -357,7 +357,7 @@
       "module_id": "connectors.blob",
       "symbol": "BlobClient.generate_sas_url",
       "line": 179,
-      "handler_fingerprint": "01309eed94f588263f1240b3b28ca0904b3481ea849d0d7a5b5c0230d253f3d3",
+      "handler_fingerprint": "7f56c1e7ddec4e63b16b20e59004d593553350bae22e4a09ec20068138845229",
       "caught_types": [
         "Exception"
       ],
@@ -367,7 +367,7 @@
       "module_id": "connectors.blob",
       "symbol": "BlobContainerClient._get_credential",
       "line": 226,
-      "handler_fingerprint": "571f08bf787be4739bb33077c0c45bb1f8d66dbc73e85ff839bc810a7f4883ac",
+      "handler_fingerprint": "2355e10c3a8641c37c0628870de128e6a3e37f73ad451b66626cc8ba1b57cee7",
       "caught_types": [
         "Exception"
       ],
@@ -377,7 +377,7 @@
       "module_id": "hosted_agent_client",
       "symbol": "_get_config_value",
       "line": 119,
-      "handler_fingerprint": "b9746a2aac4706b7cd0d39f161369f8cd5549a864365b69efd5e71d2a566d65a",
+      "handler_fingerprint": "b3d64b1f3b249a2c3639cbe6d224bf4b6ce3a89b5c412097ee77393d9ae79d4c",
       "caught_types": [
         "Exception"
       ],
@@ -387,7 +387,7 @@
       "module_id": "orchestrator_client",
       "symbol": "_decode_jwt_unverified",
       "line": 115,
-      "handler_fingerprint": "c3fde88d2b8da1fb938e77ffdf783cb7109a6d092274d4066207eac4498aaaf5",
+      "handler_fingerprint": "5c3e761612302d85bb5c6585ee16cd9afd7f41d927e21ceec354924a653552ef",
       "caught_types": [
         "Exception"
       ],
@@ -397,7 +397,7 @@
       "module_id": "orchestrator_client",
       "symbol": "_get_config_value",
       "line": 152,
-      "handler_fingerprint": "4587e7139a32a5ec0b1d118d0e5043b57ae7b20a53c2c6e79c6e50f73100245d",
+      "handler_fingerprint": "16d41ff9e9e5ca877ed7e9dd90bcaebf9929c7ca43a66d3debe059e616f51693",
       "caught_types": [
         "Exception"
       ],
@@ -407,7 +407,7 @@
       "module_id": "orchestrator_client",
       "symbol": "call_orchestrator_list_conversations",
       "line": 545,
-      "handler_fingerprint": "cd88a2c884a0e68d8956c6cf5a087a71dfb4467b88419b5280df6255faa827fa",
+      "handler_fingerprint": "62a24371f4cd1d87d17f645e56db921f12b3ef9cddfb2c3d1c4ea2aa82a36805",
       "caught_types": [
         "Exception"
       ],
@@ -417,7 +417,7 @@
       "module_id": "orchestrator_client",
       "symbol": "call_orchestrator_get_conversation",
       "line": 576,
-      "handler_fingerprint": "f870ef6fdc220ecbcdc2be692a1cf875a6191dab8ad376f6725416a57fb23ff3",
+      "handler_fingerprint": "bfdbe231d9e911e9e7a4cc8f97ad27e59d178c81646c92876c609e2da2da409e",
       "caught_types": [
         "Exception"
       ],
@@ -427,7 +427,7 @@
       "module_id": "orchestrator_client",
       "symbol": "call_orchestrator_update_conversation",
       "line": 610,
-      "handler_fingerprint": "46b7a13c9e02ee2bc5b81e124d5d2cc60351b9306ff29f6e2b3ebe981a1c8126",
+      "handler_fingerprint": "77f10fe9c495f57f8346d2a6c0c2f5f085ad3299f1610128bb2be497244445c1",
       "caught_types": [
         "Exception"
       ],
@@ -437,7 +437,7 @@
       "module_id": "orchestrator_client",
       "symbol": "call_orchestrator_delete_conversation",
       "line": 642,
-      "handler_fingerprint": "434dc75df96ef48899172b21d46a8802fbddb1da287e6e695098225627c216f6",
+      "handler_fingerprint": "257f00156ec40c0cc16d7070fabb8bcf9bf810acb4a4fca3b57c63f926f77928",
       "caught_types": [
         "Exception"
       ],
@@ -447,7 +447,7 @@
       "module_id": "connectors.appconfig",
       "symbol": "AppConfigClient.__init__",
       "line": 29,
-      "handler_fingerprint": "b1a267fb1881862ed3e6fdf6b93281cde6698c939d8a50cb2ba38c0fad980a3e",
+      "handler_fingerprint": "8074eb92b544bb4d957927c8caf7cc502a4807298cb1a1e3e6b2e8f1d2b73de6",
       "caught_types": [
         "Exception"
       ],
@@ -457,7 +457,7 @@
       "module_id": "connectors.appconfig",
       "symbol": "AppConfigClient.__init__",
       "line": 34,
-      "handler_fingerprint": "b1a267fb1881862ed3e6fdf6b93281cde6698c939d8a50cb2ba38c0fad980a3e",
+      "handler_fingerprint": "2141f1d11d3c7ca2d5da84fb1aafe864e3a7b06592e6f7e80b9529f6a39560ea",
       "caught_types": [
         "Exception"
       ],
@@ -467,7 +467,7 @@
       "module_id": "connectors.appconfig",
       "symbol": "AppConfigClient.__init__",
       "line": 83,
-      "handler_fingerprint": "e3f2e902895d5705581e8fda6efcf9bb0292d699ea8e6cf16eb6a06b85e07e52",
+      "handler_fingerprint": "09ee94ad319c24cc9c45a0164f7ddc9e9c58012944142e0ff86dc0edc761f60f",
       "caught_types": [
         "Exception"
       ],
@@ -477,7 +477,7 @@
       "module_id": "connectors.appconfig",
       "symbol": "AppConfigClient.__init__",
       "line": 96,
-      "handler_fingerprint": "5937429e785282b4891d2ebc0879bae61f523e61c65dc836cdb5636e321b68de",
+      "handler_fingerprint": "ede778178159ec639cabfd2a3ab259c27db717affa40d8c0d6d2b2ebf02dff05",
       "caught_types": [
         "Exception"
       ],
@@ -487,7 +487,7 @@
       "module_id": "connectors.appconfig",
       "symbol": "AppConfigClient.get_value",
       "line": 117,
-      "handler_fingerprint": "8e7b1ed8f690a9d36ad90fef15cd89d966c372ba41fcbedd66f1ddf99332a6ce",
+      "handler_fingerprint": "0573954bb7127cb1608c09618008a5429e74e149358aa0caecae1a2b73d4b917",
       "caught_types": [
         "Exception"
       ],
@@ -497,7 +497,7 @@
       "module_id": "hosted_continuity_config",
       "symbol": "_read_setting",
       "line": 121,
-      "handler_fingerprint": "9afb945a652714551ecf3d43a6bdf0f4d92ff056610274beee6644de98440bbf",
+      "handler_fingerprint": "c3b38b7be8cb5b0cbcc772aaa4de57bf4e2e1c722c0565bc4ff7523383e261b6",
       "caught_types": [
         "Exception"
       ],
@@ -507,7 +507,7 @@
       "module_id": "panel_config",
       "symbol": "_read_setting",
       "line": 110,
-      "handler_fingerprint": "9afb945a652714551ecf3d43a6bdf0f4d92ff056610274beee6644de98440bbf",
+      "handler_fingerprint": "c3b38b7be8cb5b0cbcc772aaa4de57bf4e2e1c722c0565bc4ff7523383e261b6",
       "caught_types": [
         "Exception"
       ],
@@ -517,7 +517,7 @@
       "module_id": "app",
       "symbol": "get_auth_info",
       "line": 299,
-      "handler_fingerprint": "635678fa42359ad0b31b8d6abc569994ebf829d9ac61dfd91b8a7a3b87e7e822",
+      "handler_fingerprint": "8bd684e2964c2956053c94a321ac5e133a6f318cf0f00142d4e36193602452d5",
       "caught_types": [
         "Exception"
       ],
@@ -527,7 +527,7 @@
       "module_id": "app",
       "symbol": "_decode_jwt_unverified",
       "line": 377,
-      "handler_fingerprint": "c3fde88d2b8da1fb938e77ffdf783cb7109a6d092274d4066207eac4498aaaf5",
+      "handler_fingerprint": "5c3e761612302d85bb5c6585ee16cd9afd7f41d927e21ceec354924a653552ef",
       "caught_types": [
         "Exception"
       ],
@@ -537,7 +537,7 @@
       "module_id": "app",
       "symbol": "handle_message",
       "line": 619,
-      "handler_fingerprint": "a57270fe7fff752b28dba88b4276c75e965dd96de9a61a4c5dbb9b6bcae07bd0",
+      "handler_fingerprint": "a5fbf323ea4874a618b14baab0866afb3af703de808dccd018a9a11c643f4295",
       "caught_types": [
         "Exception"
       ],
@@ -547,7 +547,7 @@
       "module_id": "app",
       "symbol": "handle_message",
       "line": 893,
-      "handler_fingerprint": "0ac2086107f306422be469fdfc9c095219d57668d6ff9e06d228ae7ab54a333e",
+      "handler_fingerprint": "431bfba1f8f27355252a75ab77a9510cd85717acdab1d71f132ce4b31dcba426",
       "caught_types": [
         "Exception"
       ],
@@ -557,7 +557,7 @@
       "module_id": "app",
       "symbol": "handle_message",
       "line": 1043,
-      "handler_fingerprint": "e966ab00373103e2763dd72b4ce66ae6fcd179d1b2cc8e73461e5471dd439017",
+      "handler_fingerprint": "eb0adb278eb5e23341dd4837a369541e6867a134fde90df789f7de82193bfcaa",
       "caught_types": [
         "Exception"
       ],
@@ -567,7 +567,7 @@
       "module_id": "app",
       "symbol": "handle_message",
       "line": 1220,
-      "handler_fingerprint": "45e7fac1cf1745af44e9695dd159ed4c87277d6e48321c5560eda17171a5ec9b",
+      "handler_fingerprint": "3c2ebb75739fe38d8b4b11798feee70b4e4fcf80f137041b8b4db4fd817e6710",
       "caught_types": [
         "Exception"
       ],
@@ -577,7 +577,7 @@
       "module_id": "gpt_rag_ui.services.citations",
       "symbol": "_resolve_legacy_reference_href",
       "line": 157,
-      "handler_fingerprint": "4a0f1e713212c1d9b26e94a71e9fee515cc8d63f30b660ee10cff264ab3d2494",
+      "handler_fingerprint": "5a621793487033a398edef35febe868fb17c99ecca2c2357dabe5e40b8760d21",
       "caught_types": [
         "Exception"
       ],
@@ -587,7 +587,7 @@
       "module_id": "datalayer",
       "symbol": "_get_session_metadata",
       "line": 69,
-      "handler_fingerprint": "38a931793af7288599c66ae9d269877cc6ee2f873fd7d00197fc0fec47578faa",
+      "handler_fingerprint": "32e90c99ec3462a32ce619b72267051a6320f38c638547d36a353c45e7da1a52",
       "caught_types": [
         "Exception"
       ],
@@ -597,7 +597,7 @@
       "module_id": "datalayer",
       "symbol": "_get_session_metadata",
       "line": 78,
-      "handler_fingerprint": "954a20c07870d9c5d8729f79c5d14f8b8fc9488bf2d570ff801cda945a571255",
+      "handler_fingerprint": "c3d0ab870bb9499cc58e5c8000905603eb763c035c4dafc59e1f2c5d524cb58e",
       "caught_types": [
         "Exception"
       ],
@@ -607,7 +607,7 @@
       "module_id": "datalayer",
       "symbol": "OrchestratorDataLayer.update_thread",
       "line": 325,
-      "handler_fingerprint": "ec656306061e5a617a3572c30dc1ba5b1c8ab07b619b9a8f2b8d727a3a4f2fec",
+      "handler_fingerprint": "d82902d6b0383ee5289be00b010d8b582661b6c9270c64e482e7366ebdf6a108",
       "caught_types": [
         "Exception"
       ],
@@ -617,7 +617,7 @@
       "module_id": "hosted_continuity",
       "symbol": "HostedContinuityCoordinator.run_turn",
       "line": 354,
-      "handler_fingerprint": "509f39f165872a430dc45486a7ee20f969a09401f7adcc29349e115981506036",
+      "handler_fingerprint": "366d185a65a63906623ef1d74e588977426f448c21ffe3c8e6efa62c9413b798",
       "caught_types": [
         "Exception"
       ],
@@ -627,7 +627,7 @@
       "module_id": "telemetry",
       "symbol": "Telemetry.configure_monitoring",
       "line": 80,
-      "handler_fingerprint": "b3cec7c9a7ecc36fe56bc549dd0c14ee52f38374781d23983281f689baf6ca2b",
+      "handler_fingerprint": "dd4b30c3624c4d8e3f4857705894c5e60e5073729e845c00a84296e791a820ac",
       "caught_types": [
         "Exception"
       ],

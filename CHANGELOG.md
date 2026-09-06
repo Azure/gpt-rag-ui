@@ -19,6 +19,13 @@
   bootstrap review and administrator activation remain outstanding; this
   change does not claim required merge enforcement is active.
 
+- **Exact quality policy and executed failure evidence.** Validate closed
+  governance schemas, stable move/debt identities, annotation/suppression sites,
+  adapter exports and dynamic imports. Bind exception approvals to distinct
+  protected operations and same-run, non-skipped unittest results. Require
+  protected aggregation and ephemeral offline Linux-image acceptance without
+  publishing an image or changing repository settings.
+
 ## [v2.6.2] - 2026-09-03
 
 ### Fixed
