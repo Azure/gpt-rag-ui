@@ -1,6 +1,6 @@
-"""Compatibility exports; implementation lives in gpt_rag_ui.services.history."""
+"""Compatibility exports for the Chainlit history adapter."""
 
-from gpt_rag_ui.services.history import (
+from gpt_rag_ui.api.history import (
     OrchestratorDataLayer as OrchestratorDataLayer,
     get_data_layer as get_data_layer,
 )

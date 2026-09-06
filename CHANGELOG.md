@@ -4,6 +4,12 @@
 
 ### Changed
 
+- **Separate Chainlit history adaptation from history operations.** Put the
+  data-layer callbacks, factory and consume-once session bridge in `api.history`;
+  keep history authorization, orchestrator operations and the single user cache
+  in `services.history` with explicit context. Preserve legacy exports and
+  ownership-before-session-selection ordering without a storage rewrite.
+
 - **Canonical UI runtime package with legacy adapters.** Move runtime ownership
   into `src/gpt_rag_ui`, share citation rendering between chat and restored
   history, and separate callback registration from reusable operations. Keep

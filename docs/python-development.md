@@ -44,6 +44,17 @@ adapters. Root `main.py`, `app.py`, the other legacy modules and `connectors/`
 contain no business definitions. Public callables/classes share their canonical
 objects. Tests patch canonical owners, not arbitrary private adapter globals.
 
+History's split is explicit: `api.history.OrchestratorDataLayer` implements
+Chainlit callbacks and `get_data_layer()` still creates a fresh adapter per
+call. `services.history.HistoryService` owns history/user operations and the
+single `_users` cache. `HistoryOperationContext` carries authenticated metadata
+or the request Copilot session. Only the API resolves ambient session state,
+owns consume-once request metadata and updates the selected conversation.
+The service checks ownership before invoking that API selection callback and
+resolving the rename token. No framework-free DTO hierarchy or history storage
+rewrite is introduced. The adapter preserves the existing `None` denial result
+for `get_thread_author`, despite Chainlit's narrower `str` annotation.
+
 Dependencies flow from bootstrap to API, services, clients, auth, telemetry,
 config and util, with no upward edges or cycles. Implementations never import
 legacy adapters. Private first-party imports require exact recorded allowances;

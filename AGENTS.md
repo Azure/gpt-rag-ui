@@ -43,7 +43,7 @@ the complete current module/type scope is `.quality/policy.json`.
 | Canonical area | Responsibility |
 | --- | --- |
 | `bootstrap.py` | ASGI composition, auth-before-Chainlit, route/mount order |
-| `api/` | Panel, embed and download routes; OAuth, feedback and data-layer registration |
+| `api/` | Routes, callback registration, Chainlit data-layer adapter/factory and session bridge |
 | `services/` | Chat, shared citations, history, continuity, conversation/download policy and panel metadata |
 | `auth/` | Entra, OAuth refresh, embedding identity/session/transport and panel identity |
 | `clients/` | Orchestrator, ingestion, hosted runtime, managed Conversations, Blob and panel Cosmos |
@@ -62,8 +62,11 @@ The legacy names below remain supported, forwarding to those owners:
   transport, conversation, citation, and download security boundaries.
 - `orchestrator_client.py`, `ingestion_client.py`: backend service clients and
   wire contracts.
-- `feedback.py`, `datalayer.py`: feedback, conversation, and Cosmos-backed
-  persistence behavior.
+- `feedback.py`: feedback persistence through its service owner.
+- `datalayer.py`: `api.history.OrchestratorDataLayer` and `get_data_layer`;
+  `services.history.HistoryService` owns orchestrator-backed history/user
+  operations and the single user cache. The API owns consume-once request
+  metadata and Chainlit session selection; services receive explicit context.
 - `connectors/`: focused Azure and external service adapters.
 - `telemetry.py`: logging and instrumentation.
 - `public/`, `.chainlit/`, `chainlit.config.yaml`, `chainlit.md`: theming,

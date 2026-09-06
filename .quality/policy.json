@@ -324,14 +324,14 @@
       "typing_status": "blocking",
       "adapter": {
         "exports": {
-          "OrchestratorDataLayer": "gpt_rag_ui.services.history.OrchestratorDataLayer",
-          "get_data_layer": "gpt_rag_ui.services.history.get_data_layer",
+          "OrchestratorDataLayer": "gpt_rag_ui.api.history.OrchestratorDataLayer",
+          "get_data_layer": "gpt_rag_ui.api.history.get_data_layer",
           "register_data_layer": "gpt_rag_ui.api.history.register_data_layer"
         },
         "calls": [
           "register_data_layer()"
         ],
-        "source_fingerprint": "51055a47536af33b06b18133b91c6a34dab24a74bf4a21f0c72a325a9b245684"
+        "source_fingerprint": "b7885f144949a4e5d31e401c8ccf3a24fcb00779ac887c6205f7dd8c5ae99fa5"
       }
     },
     {
@@ -670,6 +670,8 @@
       "import_name": "gpt_rag_ui.api.history",
       "area": "api",
       "public_exports": [
+        "OrchestratorDataLayer",
+        "get_data_layer",
         "register_data_layer"
       ],
       "legacy_aliases": [],
@@ -1354,8 +1356,8 @@
       "import_name": "gpt_rag_ui.services.history",
       "area": "services",
       "public_exports": [
-        "OrchestratorDataLayer",
-        "get_data_layer"
+        "HistoryOperationContext",
+        "HistoryService"
       ],
       "legacy_aliases": [
         "datalayer"

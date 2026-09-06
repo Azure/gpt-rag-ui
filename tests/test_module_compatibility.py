@@ -38,6 +38,8 @@ os.environ.update(CHAT_BACKEND="orchestrator", ALLOW_ANONYMOUS="true",
                   OAUTH_AZURE_AD_CLIENT_SECRET="test-secret")
 inventory = json.loads(Path(".quality/migration.json").read_text())
 splits = {
+    ("datalayer", "OrchestratorDataLayer"): "gpt_rag_ui.api.history",
+    ("datalayer", "get_data_layer"): "gpt_rag_ui.api.history",
     ("embed_auth", "register_copilot_auth_routes"): "gpt_rag_ui.api.embed_routes",
     ("download_security", "register_secure_download_route"): "gpt_rag_ui.api.download_routes",
     ("feedback", "register_feedback_handlers"): "gpt_rag_ui.api.feedback",

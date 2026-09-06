@@ -1,19 +1,19 @@
 """
-Stateless data layer for Chainlit that persists conversations via the orchestrator API.
+History and user operations backed by the orchestrator API.
 
 No direct database access — all conversation data flows through the orchestrator service.
-User identity is resolved from the Chainlit session context (populated by OAuth).
+The API adapter supplies operation context; this module never resolves a
+Chainlit session or registers callbacks. Existing Chainlit value types remain
+the history contract rather than introducing a parallel DTO hierarchy.
 """
 
 import logging
 import uuid
-from contextvars import ContextVar
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
-import chainlit as cl
-from chainlit.data.base import BaseDataLayer
-from chainlit.step import StepDict
 from chainlit.types import (
     PaginatedResponse,
     Pagination,
@@ -34,7 +34,7 @@ from gpt_rag_ui.services.conversation_security import (
     thread_owner_id_from_metadata,
 )
 from gpt_rag_ui.auth.embed_auth import (
-    get_request_copilot_session,
+    CopilotSession,
     is_copilot_session_active,
     resolve_access_token,
 )
@@ -44,64 +44,27 @@ logger = logging.getLogger("gpt_rag_ui.datalayer")
 # In-memory user store: identifier -> PersistedUser
 # Populated on login, lost on restart (acceptable: users re-auth via OAuth each session).
 _users: dict[str, PersistedUser] = {}
-_request_user_metadata: ContextVar[Optional[dict]] = ContextVar(
-    "request_user_metadata",
-    default=None,
-)
+
+
+@dataclass(frozen=True)
+class HistoryOperationContext:
+    metadata: Optional[dict] = None
+    request_session: CopilotSession | None = None
 
 
 def _get_current_timestamp() -> str:
     return datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _get_session_metadata() -> Optional[dict]:
-    """Safely retrieve user metadata from the current Chainlit session context."""
-    # Primary: Chainlit internal context
-    try:
-        from chainlit.context import context
-        if context and context.session and context.session.user:
-            metadata = context.session.user.metadata
-            if metadata:
-                logger.debug("_get_session_metadata: found via context.session.user (keys=%s)", sorted(metadata.keys()))
-                return metadata
-            else:
-                logger.debug("_get_session_metadata: context.session.user exists but metadata is empty")
-    except Exception as e:
-        logger.debug("_get_session_metadata: context.session.user not available: %s", e)
-
-    # Secondary: cl.user_session (different API, may work in different contexts)
-    try:
-        user = cl.user_session.get("user")
-        if user and hasattr(user, "metadata") and user.metadata:
-            logger.debug("_get_session_metadata: found via cl.user_session (keys=%s)", sorted(user.metadata.keys()))
-            return user.metadata
-    except Exception as e:
-        logger.debug("_get_session_metadata: cl.user_session not available: %s", e)
-
-    if metadata := _request_user_metadata.get():
-        _request_user_metadata.set(None)
-        logger.debug(
-            "_get_session_metadata: consumed authenticated request context (keys=%s)",
-            sorted(metadata.keys()),
-        )
-        return metadata
-
-    logger.warning("_get_session_metadata: no metadata found via any source")
-    return None
-
-
-def get_data_layer():
-    return OrchestratorDataLayer()
-
-
-class OrchestratorDataLayer(BaseDataLayer):
-    """Chainlit data layer backed by the orchestrator API for conversations
-    and an in-memory store for user management."""
+class HistoryService:
+    """History behavior and the single in-memory user cache."""
 
     # ── User management (in-memory) ──────────────────────────────────────
 
-    async def get_user(self, identifier: str) -> Optional[PersistedUser]:
-        request_session = get_request_copilot_session()
+    async def get_user(
+        self, context: HistoryOperationContext, identifier: str
+    ) -> Optional[PersistedUser]:
+        request_session = context.request_session
         if request_session:
             if not await is_copilot_session_active(
                 request_session.user_metadata()
@@ -122,13 +85,9 @@ class OrchestratorDataLayer(BaseDataLayer):
                 createdAt=_get_current_timestamp(),
                 metadata=request_session.user_metadata(),
             )
-            _request_user_metadata.set(user.metadata)
             return user
 
-        user = _users.get(identifier)
-        if user and user.metadata:
-            _request_user_metadata.set(user.metadata)
-        return user
+        return _users.get(identifier)
 
     async def create_user(self, user: User) -> Optional[PersistedUser]:
         if not await is_copilot_session_active(user.metadata):
@@ -153,16 +112,13 @@ class OrchestratorDataLayer(BaseDataLayer):
         )
         if persisted.metadata.get("auth_source") != "copilot_session":
             _users[user.identifier] = persisted
-        _request_user_metadata.set(persisted.metadata)
         return persisted
 
     # ── Thread / conversation operations (via orchestrator API) ──────────
 
-    async def create_thread(self, thread_dict: ThreadDict) -> str:
-        return thread_dict["id"]
-
     async def list_threads(
         self,
+        context: HistoryOperationContext,
         pagination: Pagination,
         filters: ThreadFilter,
     ) -> PaginatedResponse[ThreadDict]:
@@ -173,7 +129,7 @@ class OrchestratorDataLayer(BaseDataLayer):
 
         logger.info("list_threads called: pagination=%s filters=%s", pagination, filters)
 
-        metadata = _get_session_metadata()
+        metadata = context.metadata
         if not metadata or not await is_copilot_session_active(metadata):
             logger.warning(
                 "list_threads: no active session metadata; returning empty"
@@ -251,8 +207,10 @@ class OrchestratorDataLayer(BaseDataLayer):
             ),
         )
 
-    async def get_thread(self, thread_id: str) -> Optional[ThreadDict]:
-        metadata = _get_session_metadata()
+    async def get_thread(
+        self, context: HistoryOperationContext, thread_id: str
+    ) -> Optional[ThreadDict]:
+        metadata = context.metadata
         if not metadata or not await is_copilot_session_active(metadata):
             logger.warning(
                 "get_thread: no active session metadata; returning None for thread=%s",
@@ -301,14 +259,24 @@ class OrchestratorDataLayer(BaseDataLayer):
             steps=steps,
         )
 
-    async def get_thread_author(self, thread_id: str) -> Optional[str]:
-        thread = await self.get_thread(thread_id)
+    async def get_thread_author(
+        self, context: HistoryOperationContext, thread_id: str
+    ) -> Optional[str]:
+        thread = await self.get_thread(context, thread_id)
         if thread:
             return thread.get("userIdentifier")
         return None
 
-    async def update_thread(self, thread_id: str, **kwargs) -> None:
-        metadata = _get_session_metadata()
+    async def update_thread(
+        self,
+        context: HistoryOperationContext,
+        thread_id: str,
+        *,
+        on_authorized: Callable[[str], None],
+        **kwargs: Any,
+    ) -> None:
+        """Keep authorization and rename together; the API owns selection."""
+        metadata = context.metadata
         if not metadata or not await is_copilot_session_active(metadata):
             logger.warning(
                 "update_thread: no active session metadata; cannot rename thread=%s",
@@ -319,15 +287,7 @@ class OrchestratorDataLayer(BaseDataLayer):
         if not await get_owned_conversation(thread_id, metadata):
             logger.warning("update_thread: ownership denied for thread=%s", thread_id)
             return
-
-        try:
-            cl.user_session.set("conversation_id", thread_id)
-        except Exception as exc:
-            logger.debug(
-                "update_thread: could not set conversation_id in session: %s",
-                exc,
-            )
-
+        on_authorized(thread_id)
         name_value = kwargs.get("name") or kwargs.get("title") or ""
         name = str(name_value).strip()
         if not name:
@@ -345,8 +305,8 @@ class OrchestratorDataLayer(BaseDataLayer):
         if not updated:
             logger.warning("update_thread: orchestrator rename failed for thread=%s", thread_id)
 
-    async def delete_thread(self, thread_id: str) -> bool:
-        metadata = _get_session_metadata()
+    async def delete_thread(self, context: HistoryOperationContext, thread_id: str) -> bool:
+        metadata = context.metadata
         if not metadata or not await is_copilot_session_active(metadata):
             logger.warning(
                 "delete_thread: no active session metadata; cannot delete thread=%s",
@@ -366,41 +326,6 @@ class OrchestratorDataLayer(BaseDataLayer):
             access_token=access_token,
             conversation_id=thread_id,
         )
-
-    # ── Stub methods (not backed by external storage) ────────────────────
-
-    async def upsert_feedback(self, feedback) -> str:
-        return ""
-
-    async def delete_feedback(self, feedback_id: str) -> bool:
-        return True
-
-    async def create_element(self, element_dict) -> None:
-        pass
-
-    async def get_element(self, thread_id: str, element_id: str):
-        return None
-
-    async def delete_element(self, element_id: str) -> bool:
-        return True
-
-    async def create_step(self, step_dict) -> StepDict:
-        return step_dict
-
-    async def update_step(self, step_dict) -> StepDict:
-        return step_dict
-
-    async def delete_step(self, step_id: str) -> bool:
-        return True
-
-    async def delete_user_session(self, id: str) -> bool:
-        return True
-
-    async def build_debug_url(self) -> str:
-        return ""
-
-    async def close(self) -> None:
-        pass
 
     # ── Helpers ──────────────────────────────────────────────────────────
 

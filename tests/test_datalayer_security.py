@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import AsyncMock, patch
 
-import gpt_rag_ui.services.history as datalayer
+import gpt_rag_ui.api.history as datalayer
 
 
 class DataLayerSecurityTests(unittest.IsolatedAsyncioTestCase):
@@ -23,7 +23,7 @@ class DataLayerSecurityTests(unittest.IsolatedAsyncioTestCase):
     async def test_list_threads_binds_owner_to_canonical_tid_oid(self):
         with (
             patch(
-                "gpt_rag_ui.services.history._get_session_metadata",
+                "gpt_rag_ui.api.history._get_session_metadata",
                 return_value=self.metadata,
             ),
             patch(
@@ -64,7 +64,7 @@ class DataLayerSecurityTests(unittest.IsolatedAsyncioTestCase):
     async def test_get_thread_rejects_other_principal(self):
         with (
             patch(
-                "gpt_rag_ui.services.history._get_session_metadata",
+                "gpt_rag_ui.api.history._get_session_metadata",
                 return_value=self.metadata,
             ),
             patch(
@@ -81,7 +81,7 @@ class DataLayerSecurityTests(unittest.IsolatedAsyncioTestCase):
     async def test_update_and_delete_require_owned_thread(self):
         with (
             patch(
-                "gpt_rag_ui.services.history._get_session_metadata",
+                "gpt_rag_ui.api.history._get_session_metadata",
                 return_value=self.metadata,
             ),
             patch(
