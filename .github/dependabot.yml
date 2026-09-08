@@ -16,3 +16,12 @@ updates:
     labels:
       - "dependencies"
       - "github-actions"
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    groups:
+      github-actions:
+        patterns: ["*"]
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
