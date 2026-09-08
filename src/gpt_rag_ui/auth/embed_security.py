@@ -77,8 +77,10 @@ class CopilotSocketRegistry:
         self.max_connections_per_session = max_connections_per_session
         self._session_engineio_sids: dict[str, set[str]] = {}
         self._engineio_sessions: dict[str, str] = {}
+        self._invalidating_engineio_sids: set[str] = set()
         self._session_sockets: dict[str, set[str]] = {}
         self._socket_sessions: dict[str, str] = {}
+        self._socket_engineio_sids: dict[str, str] = {}
         self._socket_chainlit_sessions: dict[str, str] = {}
         self._session_tasks: dict[str, set[asyncio.Task]] = {}
         self._restore_cleanup_tasks: dict[
@@ -92,6 +94,7 @@ class CopilotSocketRegistry:
 
     def _remove_socket_locked(self, socket_id: str) -> None:
         session_id = self._socket_sessions.pop(socket_id, None)
+        self._socket_engineio_sids.pop(socket_id, None)
         self._socket_chainlit_sessions.pop(socket_id, None)
         self._invalidating_sockets.discard(socket_id)
         if not session_id:
@@ -119,7 +122,10 @@ class CopilotSocketRegistry:
         engineio_sid: str,
     ) -> bool:
         async with self._lock:
-            if session_id in self._invalidating_sessions:
+            if (
+                session_id in self._invalidating_sessions
+                or engineio_sid in self._invalidating_engineio_sids
+            ):
                 return False
             existing_session_id = self._engineio_sessions.get(engineio_sid)
             if existing_session_id:
@@ -136,6 +142,7 @@ class CopilotSocketRegistry:
 
     async def release_engineio_transport(self, engineio_sid: str) -> None:
         async with self._lock:
+            self._invalidating_engineio_sids.discard(engineio_sid)
             session_id = self._engineio_sessions.pop(
                 engineio_sid,
                 None,
@@ -253,8 +260,10 @@ class CopilotSocketRegistry:
                 return False
             if (
                 engineio_sid
-                and self._engineio_sessions.get(engineio_sid)
-                != session_id
+                and (
+                    self._engineio_sessions.get(engineio_sid) != session_id
+                    or engineio_sid in self._invalidating_engineio_sids
+                )
             ):
                 return False
             if (
@@ -306,6 +315,11 @@ class CopilotSocketRegistry:
                     self._remove_socket_locked(replaced_socket_id)
                 if session_id in self._invalidating_sessions:
                     return False
+                if engineio_sid and (
+                    self._engineio_sessions.get(engineio_sid) != session_id
+                    or engineio_sid in self._invalidating_engineio_sids
+                ):
+                    return False
                 if (
                     socket_id in self._socket_sessions
                     or socket_id in self._socket_chainlit_sessions
@@ -319,6 +333,8 @@ class CopilotSocketRegistry:
                     return False
                 session_sockets.add(socket_id)
                 self._socket_sessions[socket_id] = session_id
+                if engineio_sid:
+                    self._socket_engineio_sids[socket_id] = engineio_sid
                 if chainlit_session_id:
                     self._socket_chainlit_sessions[
                         socket_id
@@ -373,6 +389,16 @@ class CopilotSocketRegistry:
         async with self._lock:
             if socket_id in self._socket_sessions:
                 self._invalidating_sockets.add(socket_id)
+
+    async def invalidate_engineio_sockets(self, engineio_sid: str) -> None:
+        """Deny bound sockets without depending on a failing manager lookup."""
+        async with self._lock:
+            self._invalidating_engineio_sids.add(engineio_sid)
+            self._invalidating_sockets.update(
+                socket_id
+                for socket_id, transport_id in self._socket_engineio_sids.items()
+                if transport_id == engineio_sid
+            )
 
     async def track_task(
         self,
@@ -1337,6 +1363,10 @@ def configure_copilot_bridge_guards(
                         *args,
                         **kwargs,
                     )
+                # Engine.IO 4.x calls this while closing, before closed=True.
+                # Keep failed cleanup discoverable and deny messages even when
+                # namespace enumeration or SID resolution is unavailable.
+                await registry.invalidate_engineio_sockets(engineio_sid)
                 try:
                     result = await original_engineio_disconnect(
                         engineio_sid,
@@ -1381,6 +1411,7 @@ def configure_copilot_bridge_guards(
                             logger.exception(
                                 "Failed to force Socket.IO manager cleanup"
                             )
+                            continue
                         await registry.unbind_socket(socket_id)
                     result = None
                 await registry.release_engineio_transport(engineio_sid)

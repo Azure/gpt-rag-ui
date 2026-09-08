@@ -958,6 +958,234 @@ class BridgeGuardTests(unittest.IsolatedAsyncioTestCase):
                     await embed_security._copilot_socket_registry.engineio_session("failed-connect")
                 )
 
+    async def _exercise_real_engineio_cleanup_failure(self, stage):
+        from contextlib import ExitStack
+
+        from engineio.async_socket import AsyncSocket
+        from engineio.packet import MESSAGE, Packet
+        from socketio import AsyncServer
+        from socketio.async_server import task_reference_holder
+
+        # Real Engine.IO close -> maintained adapter -> Socket.IO callback ->
+        # real manager. Only the failing dependency is replaced.
+        # Match Chainlit 2.9.4's server configuration, including background
+        # Socket.IO event dispatch (Engine.IO dispatch is synchronous).
+        sio = AsyncServer(cors_allowed_origins=[], async_mode="asgi")
+        delivered = AsyncMock()
+        failing = True
+
+        async def receive_message(transport, message):
+            existing_tasks = set(task_reference_holder)
+            await transport.receive(Packet(
+                MESSAGE, f'2["client_message",{{"message":"{message}"}}]',
+            ))
+            dispatched_tasks = set(task_reference_holder) - existing_tasks
+            if dispatched_tasks:
+                await asyncio.wait_for(asyncio.gather(*dispatched_tasks), 2)
+
+        async def original_disconnect(*args):
+            if failing:
+                raise RuntimeError("application disconnect failed")
+
+        sio.on("disconnect", original_disconnect, namespace="/other")
+        sio.on("disconnect", original_disconnect)
+        sio.on("client_message", delivered)
+        configure_copilot_bridge_guards(
+            sio, sessions=FakeSessions(SimpleNamespace(principal_id="tenant:user")),
+        )
+        registry = embed_security._copilot_socket_registry
+        registry.max_connections_per_session = 1
+        sock = AsyncSocket(sio.eio, "engine")
+        sio.eio.sockets["engine"] = sock
+        await sio.eio.handlers["connect"]("engine", transport_environ())
+        # Lookup failure must precede the independent namespace in the real
+        # manager's insertion order. For callback/manager failure, the other
+        # namespace fails first so root has not been pre-disconnected for us.
+        if stage == "lookup":
+            root = await sio.manager.connect("engine", "/")
+            other = await sio.manager.connect("engine", "/other")
+        else:
+            other = await sio.manager.connect("engine", "/other")
+            root = await sio.manager.connect("engine", "/")
+        # The maintained Chainlit adapter authorizes only the root namespace.
+        self.assertTrue(await registry.bind_connection(
+            session_id=SESSION_ID, socket_id=root,
+            chainlit_session_id="logical-root", engineio_sid="engine",
+            disconnect=embed_security._copilot_disconnect_socket,
+        ))
+
+        lookup = sio.manager.sid_from_eio_sid
+        disconnect = sio.manager.disconnect
+
+        def failing_lookup(eio_sid, namespace):
+            if namespace == "/":
+                raise RuntimeError("lookup failed")
+            return lookup(eio_sid, namespace)
+
+        async def failing_disconnect(sid, namespace, **kwargs):
+            if namespace == "/":
+                raise RuntimeError("manager disconnect failed")
+            return await disconnect(sid, namespace, **kwargs)
+
+        reached_release = asyncio.Event()
+        finish_release = asyncio.Event()
+        release = registry.release_engineio_transport
+
+        async def paused_release(eio_sid):
+            await release(eio_sid)
+            reached_release.set()
+            await finish_release.wait()
+
+        with ExitStack() as stack:
+            if stage == "namespaces":
+                stack.enter_context(patch.object(
+                    sio.manager, "get_namespaces",
+                    side_effect=RuntimeError("enumeration failed"),
+                ))
+            elif stage == "lookup":
+                stack.enter_context(patch.object(
+                    sio.manager, "sid_from_eio_sid", side_effect=failing_lookup,
+                ))
+            elif stage == "disconnect":
+                stack.enter_context(patch.object(
+                    sio.manager, "disconnect", side_effect=failing_disconnect,
+                ))
+            stack.enter_context(patch.object(
+                registry, "release_engineio_transport", side_effect=paused_release,
+            ))
+            with self.assertLogs(level="ERROR"):
+                closing = asyncio.create_task(sock.close(wait=False, abort=True))
+                try:
+                    await asyncio.wait_for(reached_release.wait(), 2)
+                    # Actual installed Engine.IO ordering, not a fake's promise:
+                    self.assertTrue(sock.closing)
+                    self.assertFalse(sock.closed)
+                    self.assertIs(sio.eio._get_socket("engine"), sock)
+                    self.assertIsNone(await registry.engineio_session("engine"))
+                    self.assertFalse(await registry.socket_is_active(root))
+                    self.assertEqual(
+                        await registry.socket_is_tracked(root), stage != "original",
+                    )
+                    if stage != "original":
+                        self.assertFalse(await registry.bind_connection(
+                            session_id=SESSION_ID, socket_id="not-admitted",
+                            chainlit_session_id="different-logical-session",
+                            disconnect=embed_security._copilot_disconnect_socket,
+                        ))
+                    if stage != "namespaces":
+                        self.assertFalse(sio.manager.is_connected(other, "/other"))
+                        self.assertFalse(await registry.socket_is_tracked(other))
+                    else:
+                        self.assertTrue(sio.manager.is_connected(other, "/other"))
+                    # Restore lookup solely for packet dispatch, while teardown
+                    # and application callbacks still fail. Exercise the actual
+                    # Engine.IO -> Socket.IO -> guarded client_message chain.
+                    with patch.object(
+                        sio.manager, "sid_from_eio_sid", side_effect=lookup,
+                    ):
+                        await receive_message(sock, "denied")
+                    delivered.assert_not_awaited()
+                finally:
+                    finish_release.set()
+                    await asyncio.wait_for(closing, 2)
+        self.assertTrue(sock.closed)
+        # Retry through the maintained recovery adapter after dependencies heal.
+        # Retained bindings must remain discoverable until this succeeds.
+        failing = False
+        if await registry.socket_is_tracked(root):
+            await embed_security._copilot_disconnect_socket(root)
+        self.assertFalse(await registry.socket_is_tracked(root))
+        self.assertFalse(sio.manager.is_connected(root, "/"))
+        # A new authenticated transport can reserve capacity after reconciliation.
+        await sio.eio.handlers["connect"]("replacement", transport_environ())
+        self.assertEqual(await registry.engineio_session("replacement"), SESSION_ID)
+        replacement = await sio.manager.connect("replacement", "/")
+        self.assertTrue(await registry.bind_connection(
+            session_id=SESSION_ID, socket_id=replacement,
+            chainlit_session_id="logical-root", engineio_sid="replacement",
+            disconnect=embed_security._copilot_disconnect_socket,
+        ))
+        await receive_message(AsyncSocket(sio.eio, "replacement"), "recovered")
+        delivered.assert_awaited_once()
+
+    async def test_real_engineio_original_failure_denies_messages_while_closing(self):
+        await self._exercise_real_engineio_cleanup_failure("original")
+
+    async def test_real_engineio_enumeration_failure_retains_invalidated_binding(self):
+        await self._exercise_real_engineio_cleanup_failure("namespaces")
+
+    async def test_real_engineio_lookup_failure_isolates_namespaces_and_recovers(self):
+        await self._exercise_real_engineio_cleanup_failure("lookup")
+
+    async def test_real_engineio_manager_failure_retains_binding_until_recovery(self):
+        await self._exercise_real_engineio_cleanup_failure("disconnect")
+
+    async def test_engineio_cancellation_retains_invalidated_association(self):
+        from socketio import AsyncServer
+
+        sio = AsyncServer(async_handlers=False)
+        cancellation = asyncio.CancelledError("cancel teardown")
+
+        async def cancelled_disconnect(*args):
+            raise cancellation
+
+        sio.eio.on("disconnect", cancelled_disconnect)
+        configure_copilot_bridge_guards(
+            sio, sessions=FakeSessions(SimpleNamespace(principal_id="tenant:user")),
+        )
+        registry = embed_security._copilot_socket_registry
+        await sio.eio.handlers["connect"]("engine", transport_environ())
+        root = await sio.manager.connect("engine", "/")
+        self.assertTrue(await registry.bind_connection(
+            session_id=SESSION_ID, socket_id=root,
+            chainlit_session_id="logical-root", engineio_sid="engine",
+            disconnect=embed_security._copilot_disconnect_socket,
+        ))
+        # Engine.IO and Socket.IO swallow CancelledError at event dispatchers;
+        # the maintained callback must not change cancellation into success.
+        with self.assertRaises(asyncio.CancelledError) as raised:
+            await sio.eio.handlers["disconnect"]("engine", "transport close")
+        self.assertIs(raised.exception, cancellation)
+        self.assertTrue(await registry.socket_is_tracked(root))
+        self.assertFalse(await registry.socket_is_active(root))
+        self.assertEqual(await registry.engineio_session("engine"), SESSION_ID)
+        self.assertFalse(await registry.reserve_engineio_transport(SESSION_ID, "engine"))
+
+    async def test_transport_invalidation_blocks_inflight_binding_not_other_transport(self):
+        registry = CopilotSocketRegistry()
+        for engine in ("old", "new", "independent"):
+            self.assertTrue(await registry.reserve_engineio_transport(SESSION_ID, engine))
+        for sid, engine, logical in (
+            ("old-root", "old", "logical"),
+            ("independent-root", "independent", "separate"),
+        ):
+            self.assertTrue(await registry.bind_connection(
+                session_id=SESSION_ID, socket_id=sid,
+                chainlit_session_id=logical, engineio_sid=engine,
+                disconnect=AsyncMock(),
+            ))
+
+        async def disconnect_replaced(sid):
+            # The replacement is awaiting cleanup when its own transport ends.
+            await registry.invalidate_engineio_sockets("new")
+            await registry.release_engineio_transport("new")
+
+        self.assertFalse(await registry.bind_connection(
+            session_id=SESSION_ID, socket_id="new-root",
+            chainlit_session_id="logical", engineio_sid="new",
+            disconnect=disconnect_replaced,
+        ))
+        self.assertFalse(await registry.socket_is_tracked("new-root"))
+        self.assertTrue(await registry.socket_is_active("independent-root"))
+        await registry.invalidate_engineio_sockets("independent")
+        self.assertFalse(await registry.bind_connection(
+            session_id=SESSION_ID, socket_id="another-root",
+            chainlit_session_id="another", engineio_sid="independent",
+            disconnect=AsyncMock(),
+        ))
+        self.assertTrue(await registry.socket_is_tracked("independent-root"))
+        self.assertFalse(await registry.socket_is_active("independent-root"))
+
     async def test_engineio_cleanup_dependency_failures_release_transport_reservation(self):
         for stage in ("namespaces", "lookup", "disconnect"):
             with self.subTest(stage=stage):

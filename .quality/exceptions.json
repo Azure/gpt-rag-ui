@@ -309,16 +309,18 @@
       "module_id": "embed_security",
       "symbol": "configure_copilot_bridge_guards.guarded_engineio_disconnect",
       "review": "Proposed in Azure/gpt-rag-ui#110; pending maintainer review coordinated in Azure/GPT-RAG#689. Not approved.",
-      "handler_fingerprint": "46c8675c61b6caf2e6e8d12cb8589d6bddac1f01a44764cbdfbc2921add13c05",
+      "handler_fingerprint": "4ac0d7b3caeac5a1bc46a3e0b61139458a46947fbb78ba13f887e6f57196bab1",
       "caught_types": [
         "Exception"
       ],
       "boundary": "Engine.IO original disconnect handler",
-      "reason": "An arbitrary original disconnect failure triggers explicit namespace cleanup rather than abandoning the reserved transport slot.",
+      "reason": "Invalidate bound sockets before the original callback so a still-closing transport cannot dispatch application messages. An ordinary callback failure triggers explicit namespace cleanup; unresolved bindings stay inactive and capacity-counted until successful reconciliation.",
       "failure_outcome": "contractual-best-effort",
-      "diagnostic_path": "logger.exception; namespace fallback and release_engineio_transport",
+      "diagnostic_path": "logger.exception; namespace fallback and Engine.IO reservation release, with unresolved Socket.IO bindings retained",
       "evidence_tests": [
-        "tests/test_embed_security.py::BridgeGuardTests.test_engineio_cleanup_dependency_failures_release_transport_reservation"
+        "tests/test_embed_security.py::BridgeGuardTests.test_real_engineio_original_failure_denies_messages_while_closing",
+        "tests/test_embed_security.py::BridgeGuardTests.test_engineio_cancellation_retains_invalidated_association",
+        "tests/test_embed_security.py::BridgeGuardTests.test_transport_invalidation_blocks_inflight_binding_not_other_transport"
       ],
       "state": "proposed",
       "review_by_stage": "blocking",
@@ -334,11 +336,11 @@
         "Exception"
       ],
       "boundary": "Socket.IO namespace enumeration during failed teardown",
-      "reason": "The physical transport is ending; failed manager enumeration is logged and reservation release still occurs instead of retaining a capacity leak.",
+      "reason": "Stored Engine.IO associations allow invalidation even when namespace enumeration fails. Release the Engine.IO reservation after ordinary failure handling, but retain unresolved Socket.IO bindings and their capacity until successful reconciliation; callback completion is not proof of physical shutdown.",
       "failure_outcome": "contractual-best-effort",
-      "diagnostic_path": "logger.exception; release_engineio_transport despite enumeration failure",
+      "diagnostic_path": "logger.exception; release Engine.IO reservation while retaining invalidated, capacity-counted Socket.IO bindings",
       "evidence_tests": [
-        "tests/test_embed_security.py::BridgeGuardTests.test_engineio_cleanup_dependency_failures_release_transport_reservation"
+        "tests/test_embed_security.py::BridgeGuardTests.test_real_engineio_enumeration_failure_retains_invalidated_binding"
       ],
       "state": "proposed",
       "review_by_stage": "blocking",
@@ -354,11 +356,11 @@
         "Exception"
       ],
       "boundary": "Per-namespace Socket.IO ID resolution during teardown",
-      "reason": "One manager lookup failure must be logged without stopping independent namespace cleanup or final transport reservation release.",
+      "reason": "One manager lookup failure must be logged without stopping independent namespace cleanup or final Engine.IO reservation release. The unresolved Socket.IO association remains invalidated and capacity-counted until successful reconciliation.",
       "failure_outcome": "contractual-best-effort",
-      "diagnostic_path": "logger.exception; continue namespace cleanup and release transport",
+      "diagnostic_path": "logger.exception; continue independent namespace cleanup and release Engine.IO reservation, retaining unresolved bindings",
       "evidence_tests": [
-        "tests/test_embed_security.py::BridgeGuardTests.test_engineio_cleanup_dependency_failures_release_transport_reservation"
+        "tests/test_embed_security.py::BridgeGuardTests.test_real_engineio_lookup_failure_isolates_namespaces_and_recovers"
       ],
       "state": "proposed",
       "review_by_stage": "blocking",
@@ -369,16 +371,16 @@
       "module_id": "embed_security",
       "symbol": "configure_copilot_bridge_guards.guarded_engineio_disconnect",
       "review": "Proposed in Azure/gpt-rag-ui#110; pending maintainer review coordinated in Azure/GPT-RAG#689. Not approved.",
-      "handler_fingerprint": "ceb8bbe7ef1967073771e38ea5f53368cee4e33defd71f090a3f8688d7ebf9e6",
+      "handler_fingerprint": "63616d3ef8bcf5d51354e23eb3ca5c5ba36004d9e99e0189f42de771a70db981",
       "caught_types": [
         "Exception"
       ],
       "boundary": "Per-namespace manager disconnect fallback",
-      "reason": "An arbitrary fallback manager failure must remain observable while registry unbinding and transport reservation release still execute.",
+      "reason": "An ordinary fallback manager failure remains observable without unbinding an unresolved socket. Retain its invalidated association and capacity until successful reconciliation, while continuing independent namespace cleanup and releasing the Engine.IO reservation.",
       "failure_outcome": "contractual-best-effort",
-      "diagnostic_path": "logger.exception; registry unbind and reservation release",
+      "diagnostic_path": "logger.exception; retain failed bindings, unbind only after successful manager cleanup, and release Engine.IO reservation",
       "evidence_tests": [
-        "tests/test_embed_security.py::BridgeGuardTests.test_engineio_cleanup_dependency_failures_release_transport_reservation"
+        "tests/test_embed_security.py::BridgeGuardTests.test_real_engineio_manager_failure_retains_binding_until_recovery"
       ],
       "state": "proposed",
       "review_by_stage": "blocking",
