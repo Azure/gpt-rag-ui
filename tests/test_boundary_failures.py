@@ -131,6 +131,102 @@ class BoundaryFailureTests(unittest.IsolatedAsyncioTestCase):
                 }))
         toast.assert_awaited_once_with("An unexpected error occurred while submitting feedback.", "error")
 
+    async def test_feedback_form_cleanup_preserves_submission_outcome(self):
+        from gpt_rag_ui.api import feedback
+
+        for outcome in (RuntimeError("backend-private"), True, False, asyncio.CancelledError()):
+            for cleanup_fails in (False, True, "cancel"):
+                with self.subTest(outcome=outcome, cleanup_fails=cleanup_fails):
+                    callbacks = {}
+                    def register(name):
+                        def decorator(callback):
+                            callbacks[name] = callback
+                            return callback
+                        return decorator
+
+                    form = SimpleNamespace(send=AsyncMock(), remove=AsyncMock(
+                        side_effect=asyncio.CancelledError() if cleanup_fails == "cancel" else
+                        RuntimeError("cleanup-private") if cleanup_fails else None,
+                    ))
+                    toast = AsyncMock()
+                    backend = AsyncMock(
+                        side_effect=outcome if isinstance(outcome, BaseException) else None,
+                        return_value=outcome,
+                    )
+                    action = SimpleNamespace(payload={
+                        "questionId": "question", "conversationId": "conversation", "rating": 5,
+                    })
+                    with (
+                        patch.object(feedback, "cl", SimpleNamespace(
+                            action_callback=register, Message=Mock(return_value=form),
+                            CustomElement=Mock(),
+                            context=SimpleNamespace(emitter=SimpleNamespace(send_toast=toast)),
+                        )),
+                        patch.object(feedback, "FEEDBACK_RATING", True),
+                        patch.object(feedback, "call_orchestrator_for_feedback", backend),
+                        patch.object(feedback.logging, "error") as diagnostic,
+                    ):
+                        feedback.register_feedback_handlers(
+                            lambda: {"authorized": True, "client_principal_id": "no-auth"},
+                            allow_standalone_anonymous=True,
+                        )
+                        await callbacks["show_feedback_form"](action)
+                        if isinstance(outcome, asyncio.CancelledError) or cleanup_fails == "cancel":
+                            with self.assertRaises(asyncio.CancelledError):
+                                await callbacks["submit_feedback"](action)
+                            backend.assert_awaited_once()
+                            toast.assert_not_awaited()
+                            self.assertEqual(
+                                0 if isinstance(outcome, asyncio.CancelledError) else 1,
+                                form.remove.await_count,
+                            )
+                            continue
+                        await callbacks["submit_feedback"](action)
+                    backend.assert_awaited_once()
+                    form.remove.assert_awaited_once()
+                    expected = (
+                        ("An unexpected error occurred while submitting feedback.", "error")
+                        if isinstance(outcome, Exception) else
+                        ("Thank you for your feedback!", "success") if outcome else
+                        ("Error: Failed to submit feedback", "error")
+                    )
+                    toast.assert_awaited_once_with(*expected)
+                    if isinstance(outcome, Exception) or cleanup_fails:
+                        self.assertTrue(diagnostic.called)
+                        self.assertNotIn("private", str(diagnostic.call_args_list))
+
+    async def test_feedback_notification_failure_does_not_retry_written_feedback(self):
+        from gpt_rag_ui.api import feedback
+        callbacks = {}
+        def register(name):
+            def decorator(callback):
+                callbacks[name] = callback
+                return callback
+            return decorator
+
+        failure = RuntimeError("notification")
+        toast = AsyncMock(side_effect=failure)
+        backend = AsyncMock(return_value=True)
+        with (
+            patch.object(feedback, "cl", SimpleNamespace(
+                action_callback=register,
+                context=SimpleNamespace(emitter=SimpleNamespace(send_toast=toast)),
+            )),
+            patch.object(feedback, "FEEDBACK_RATING", False),
+            patch.object(feedback, "call_orchestrator_for_feedback", backend),
+        ):
+            feedback.register_feedback_handlers(
+                lambda: {"authorized": True, "client_principal_id": "no-auth"},
+                allow_standalone_anonymous=True,
+            )
+            with self.assertRaises(RuntimeError) as raised:
+                await callbacks["submit_feedback"](SimpleNamespace(payload={
+                    "questionId": "question", "conversationId": "conversation",
+                }))
+        self.assertIs(failure, raised.exception)
+        backend.assert_awaited_once()
+        toast.assert_awaited_once_with("Thank you for your feedback!", "success")
+
     async def test_invalidation_callback_failure_does_not_skip_other_sessions(self):
         callback = AsyncMock(side_effect=[RuntimeError("disconnect failure"), None])
         store = CopilotSessionStore(max_sessions=2, ttl_seconds=120, on_invalidate=callback)

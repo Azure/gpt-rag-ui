@@ -2,6 +2,43 @@
   "schema_version": 1,
   "entries": [
     {
+      "id": "ui-boundary-02-cleanup",
+      "module_id": "gpt_rag_ui.api.feedback",
+      "symbol": "register_feedback_handlers.handle_feedback",
+      "review": "Stage 2 P1 ui-boundary-02 companion site; proposed only, pending maintainer review. Not approved.",
+      "handler_fingerprint": "9601a863df38f68150ffe5e5e271bcca00a3aa72b29aef0908922b67e312c832",
+      "caught_types": ["Exception"],
+      "boundary": "Optional feedback form removal after backend outcome",
+      "reason": "A removal failure must not block notification of the established backend outcome or trigger another write. Retain the form reference for explicit later cleanup; cancellation propagates.",
+      "failure_outcome": "contractual-best-effort",
+      "diagnostic_path": "Static logging.error without exception payload; original outcome toast attempted once.",
+      "evidence_tests": [
+        "tests/test_boundary_failures.py::BoundaryFailureTests.test_feedback_form_cleanup_preserves_submission_outcome"
+      ],
+      "state": "proposed",
+      "review_by_stage": "blocking",
+      "expires_on": "2026-10-06"
+    },
+    {
+      "id": "ui-boundary-11-cleanup",
+      "module_id": "embed_security",
+      "symbol": "configure_copilot_bridge_guards.disconnect_socket",
+      "review": "Stage 2 P1 ui-boundary-11 companion site; proposed only, pending maintainer review. Not approved.",
+      "handler_fingerprint": "2d819a865b36cc04496168f08aea00216a82347f49d65411f9faa4ab1b9a6ec8",
+      "caught_types": ["Exception"],
+      "boundary": "Secondary Engine.IO close failure during failed disconnect",
+      "reason": "Record ordinary secondary failure without replacing the primary disconnect exception. Cancellation is not suppressed; no claim of successful termination or lifecycle reconciliation.",
+      "failure_outcome": "cleanup-propagation",
+      "diagnostic_path": "Static logger.error without exception payload followed by outer primary re-raise.",
+      "evidence_tests": [
+        "tests/test_embed_security.py::BridgeGuardTests.test_disconnect_double_failure_preserves_primary_with_safe_diagnostic",
+        "tests/test_embed_security.py::BridgeGuardTests.test_disconnect_cancellation_remains_distinct"
+      ],
+      "state": "proposed",
+      "review_by_stage": "blocking",
+      "expires_on": "2026-10-06"
+    },
+    {
       "id": "ui-boundary-01",
       "module_id": "gpt_rag_ui.api.download_routes",
       "symbol": "register_secure_download_route.download_blob_file",
@@ -26,16 +63,18 @@
       "module_id": "gpt_rag_ui.api.feedback",
       "symbol": "register_feedback_handlers.handle_feedback",
       "review": "Proposed in Azure/gpt-rag-ui#110; pending maintainer review coordinated in Azure/GPT-RAG#689. Not approved.",
-      "handler_fingerprint": "960a5e976e25e1e71e579ca4d06749b5e3ec868e375ff47353f60884ddf28fd4",
+      "handler_fingerprint": "5754b34c00eb31d439a9770d6ee1ef8e2bf6c44c77193ef80f64c00d0e20d26a",
       "caught_types": [
         "Exception"
       ],
       "boundary": "Chainlit feedback action callback",
-      "reason": "The callback composes injected auth and backend operations; arbitrary failures must remove stale feedback UI and emit an error toast, never a success acknowledgement.",
+      "reason": "Auth/validation/backend exceptions select an error notification and are diagnosed before optional form removal. Cleanup failure cannot change the backend outcome or retry the write; cancellation propagates.",
       "failure_outcome": "failure-translation",
-      "diagnostic_path": "logging.exception; error toast",
+      "diagnostic_path": "Static logging.error before optional cleanup; error toast attempted independently of removal failure. Notification transport failure propagates.",
       "evidence_tests": [
-        "tests/test_boundary_failures.py::BoundaryFailureTests.test_feedback_boundary_emits_failure_toast_not_success"
+        "tests/test_boundary_failures.py::BoundaryFailureTests.test_feedback_boundary_emits_failure_toast_not_success",
+        "tests/test_boundary_failures.py::BoundaryFailureTests.test_feedback_form_cleanup_preserves_submission_outcome",
+        "tests/test_boundary_failures.py::BoundaryFailureTests.test_feedback_notification_failure_does_not_retry_written_feedback"
       ],
       "state": "proposed",
       "review_by_stage": "blocking",
@@ -207,16 +246,18 @@
       "module_id": "embed_security",
       "symbol": "configure_copilot_bridge_guards.disconnect_socket",
       "review": "Proposed in Azure/gpt-rag-ui#110; pending maintainer review coordinated in Azure/GPT-RAG#689. Not approved.",
-      "handler_fingerprint": "f33d760a3bd5d791b6b43556292ecd9a6982463b182f4fd59381af6fb6580161",
+      "handler_fingerprint": "3e7d5533c6158c88d52cd614b75ca662d6c061055693f4aaabcfe710485db7c8",
       "caught_types": [
         "Exception"
       ],
       "boundary": "Chainlit/Socket.IO teardown callback",
-      "reason": "Arbitrary callback failure must close the associated Engine.IO transport before re-raising the original error; the enclosing invalidation boundary decides retry policy.",
+      "reason": "Callback failure attempts Engine.IO closure and re-raises the identical primary exception even if closure raises an ordinary exception. Cancellation remains distinct and propagates. This does not guarantee transport termination.",
       "failure_outcome": "cleanup-propagation",
-      "diagnostic_path": "re-raise after _close_engineio_transport; enclosing invalidation logger.exception",
+      "diagnostic_path": "Static logger.error on secondary closure failure; bare re-raise of primary; enclosing invalidation boundary owns further handling.",
       "evidence_tests": [
-        "tests/test_embed_security.py::BridgeGuardTests.test_disconnect_callback_failure_closes_transport_then_propagates"
+        "tests/test_embed_security.py::BridgeGuardTests.test_disconnect_callback_failure_closes_transport_then_propagates",
+        "tests/test_embed_security.py::BridgeGuardTests.test_disconnect_double_failure_preserves_primary_with_safe_diagnostic",
+        "tests/test_embed_security.py::BridgeGuardTests.test_disconnect_cancellation_remains_distinct"
       ],
       "state": "proposed",
       "review_by_stage": "blocking",

@@ -1032,6 +1032,37 @@ class BridgeGuardTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(failure, raised.exception)
         close.assert_awaited_once_with(sio, "engine-socket")
 
+    async def test_disconnect_double_failure_preserves_primary_with_safe_diagnostic(self):
+        sio = RealChainlitSio(AsyncMock())
+        failure = RuntimeError("disconnect-private")
+        sio.disconnect.side_effect = failure
+        configure_copilot_bridge_guards(sio, sessions=FakeSessions())
+        with (
+            patch.object(embed_security, "_close_engineio_transport",
+                         AsyncMock(side_effect=ValueError("close-private"))) as close,
+            self.assertLogs(embed_security.logger, level="ERROR") as logs,
+        ):
+            with self.assertRaises(RuntimeError) as raised:
+                await embed_security._copilot_disconnect_socket("socket")
+        self.assertIs(failure, raised.exception)
+        close.assert_awaited_once_with(sio, "engine-socket")
+        self.assertNotIn("private", "".join(logs.output))
+        self.assertIn("transport", "".join(logs.output))
+
+    async def test_disconnect_cancellation_remains_distinct(self):
+        for cancel_close in (False, True):
+            with self.subTest(cancel_close=cancel_close):
+                sio = RealChainlitSio(AsyncMock())
+                cancellation = asyncio.CancelledError()
+                sio.disconnect.side_effect = RuntimeError("disconnect") if cancel_close else cancellation
+                configure_copilot_bridge_guards(sio, sessions=FakeSessions())
+                with patch.object(embed_security, "_close_engineio_transport",
+                                  AsyncMock(side_effect=cancellation)) as close:
+                    with self.assertRaises(asyncio.CancelledError) as raised:
+                        await embed_security._copilot_disconnect_socket("socket")
+                self.assertIs(cancellation, raised.exception)
+                self.assertEqual(int(cancel_close), close.await_count)
+
     async def test_rejected_socket_remains_denied_if_transport_close_fails(self):
         sio = RealChainlitSio(AsyncMock())
         configure_copilot_bridge_guards(sio, sessions=FakeSessions())

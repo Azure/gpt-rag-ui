@@ -3,6 +3,7 @@
 import inspect
 import logging
 from collections.abc import Awaitable, Callable
+from typing import Literal
 
 import chainlit as cl
 
@@ -63,6 +64,7 @@ def register_feedback_handlers(
         """Handle feedback submission"""
         nonlocal feedback_msg
         nonlocal last_feedback_context
+        notification_type: Literal["success", "error"]
         try:
             logging.info("[feedback] Received submit_feedback action")
             question_id = action.payload.get("questionId")
@@ -122,25 +124,28 @@ def register_feedback_handlers(
                 feedback_text=text,
                 auth_info=auth_payload,
             )
-            # Remove the feedback form message
-            if feedback_msg is not None:
-                await feedback_msg.remove()
-                feedback_msg = None
-
-            # Send appropriate response
+        except Exception:
+            # Record the primary outcome before attempting optional presentation cleanup.
+            logging.error("[feedback] Error while handling feedback submission")
+            notification = "An unexpected error occurred while submitting feedback."
+            notification_type = "error"
+        else:
             if orc_feedback_response:
-                return await cl.context.emitter.send_toast("Thank you for your feedback!", "success")
+                notification = "Thank you for your feedback!"
+                notification_type = "success"
             else:
-                return await cl.context.emitter.send_toast("Error: Failed to submit feedback", "error")
+                notification = "Error: Failed to submit feedback"
+                notification_type = "error"
 
-        except Exception as e:
-            if feedback_msg is not None:
+        # A presentation failure must not reclassify or repeat a completed write.
+        if feedback_msg is not None:
+            try:
                 await feedback_msg.remove()
+            except Exception:
+                logging.error("[feedback] Failed to remove feedback form; submission outcome unchanged")
+            else:
                 feedback_msg = None
-            logging.exception("[feedback] Error while handling feedback submission")
-            return await cl.context.emitter.send_toast(
-                "An unexpected error occurred while submitting feedback.", "error"
-            )
+        return await cl.context.emitter.send_toast(notification, notification_type)
 
     @cl.action_callback("close_feedback_popup")
     async def close_feedback_handler(action):

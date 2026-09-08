@@ -1235,7 +1235,11 @@ def configure_copilot_bridge_guards(
                 try:
                     await sio.disconnect(socket_id)
                 except Exception:
-                    await _close_engineio_transport(sio, engineio_sid)
+                    try:
+                        await _close_engineio_transport(sio, engineio_sid)
+                    except Exception:
+                        # Do not expose transport details or replace the primary failure.
+                        logger.error("Failed to close Copilot transport after disconnect failure")
                     raise
                 if completion.done():
                     completion.result()
