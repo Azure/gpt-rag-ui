@@ -213,13 +213,20 @@ assert schema["paths"] == {}
 assert schema["info"]["version"] == chainlit_app.version
 assert chainlit_app.openapi() is schema
 from gpt_rag_ui.clients.blob import BlobClient
+from azure.core.exceptions import ResourceNotFoundError
 from fastapi.testclient import TestClient
 with TestClient(main.app) as client, patch.object(BlobClient, "__init__", return_value=None):
-    for message, expected_status in (("BlobNotFound", 404), ("download failure", 500)):
-        with patch.object(BlobClient, "download_blob", side_effect=RuntimeError(message)), TestCase().assertLogs(level="ERROR"):
+    for failure, expected_status, body in (
+        (ResourceNotFoundError("private-backend"), 404, "Blob not found."),
+        (RuntimeError("private-backend BlobNotFound"), 500, "Internal server error."),
+        (RuntimeError("private-backend"), 500, "Internal server error."),
+    ):
+        with patch.object(BlobClient, "download_blob", side_effect=failure), TestCase().assertLogs(level="ERROR") as logs:
             response = client.get("/api/download/documents/synthetic.pdf")
         assert response.status_code == expected_status, response.status_code
-        assert message in response.text
+        assert response.text == body
+        assert "private-backend" not in response.text
+        assert "private-backend" not in str(logs.output)
     assert client.get("/api/download/not-allowed/synthetic.pdf").status_code == 404
 """)
 

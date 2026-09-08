@@ -85,6 +85,48 @@ class BoundaryFailureTests(unittest.IsolatedAsyncioTestCase):
             ))
         self.assertIn("File ingestion failed", response.content)
         self.assertNotIn("processed successfully", response.content)
+        self.assertNotIn("uploaded_docs", [call.args[0] for call in fake_cl.user_session.set.call_args_list])
+
+    async def test_upload_bookkeeping_requires_confirmation_and_preserves_question_continuation(self):
+        chat = self.chat()
+        for outcome in (True, False, RuntimeError("private-ingestion")):
+            with self.subTest(outcome=outcome), ExitStack() as stack:
+                state = {"uploaded_docs": ["previous.pdf"]}
+                response = AsyncMock()
+                response.content = ""
+                calls = []
+
+                async def stream(*args, **kwargs):
+                    calls.append((args, kwargs))
+                    if False:
+                        yield
+
+                fake_cl = SimpleNamespace(
+                    File=SimpleNamespace, Message=Mock(return_value=response),
+                    user_session=SimpleNamespace(get=state.get, set=lambda key, value: state.__setitem__(key, value)),
+                    chat_context=SimpleNamespace(to_openai=lambda: []),
+                )
+                ingestion = AsyncMock(
+                    return_value=outcome if not isinstance(outcome, Exception) else None,
+                    side_effect=outcome if isinstance(outcome, Exception) else None,
+                )
+                for name, value in {
+                    "cl": fake_cl, "tracer": MagicMock(), "CHAT_BACKEND": "orchestrator",
+                    "SHOW_STATISTICS": False, "ENABLE_FEEDBACK": False,
+                    "get_auth_info": AsyncMock(return_value={"authorized": True}),
+                    "ingest_files_session": ingestion, "call_orchestrator_stream": stream,
+                }.items():
+                    stack.enter_context(patch.object(chat, name, value))
+                if isinstance(outcome, Exception):
+                    stack.enter_context(self.assertLogs(chat.logger, level="ERROR"))
+                await chat.handle_message(SimpleNamespace(
+                    id="upload-reference", content="question",
+                    elements=[SimpleNamespace(mime="application/pdf", name="new.pdf", path="new.pdf", size=1)],
+                ))
+                ingestion.assert_awaited_once()
+                self.assertEqual(["previous.pdf", "new.pdf"] if outcome is True else ["previous.pdf"], state["uploaded_docs"])
+                self.assertEqual(1, len(calls))  # Existing continuation; H6 remains pending.
+                self.assertNotIn("private-ingestion", response.content)
 
     async def test_oauth_refresh_failure_clears_session_and_denies_request(self):
         chat = self.chat()

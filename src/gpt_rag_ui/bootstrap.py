@@ -8,6 +8,7 @@ from io import BytesIO
 from pathlib import Path
 from urllib.parse import quote
 
+from azure.core.exceptions import ResourceNotFoundError
 from fastapi import FastAPI, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
@@ -803,7 +804,7 @@ def _create_chainlit_app(
 
     blob_download_app = None
     if not embed_settings.enabled:
-        # Preserve the existing standalone route and response contract. Copilot
+        # Preserve the existing standalone route. Copilot
         # mode registers a different, authenticated grant route on host_app.
         blob_download_app = FastAPI()
 
@@ -816,18 +817,18 @@ def _create_chainlit_app(
                         status_code=404,
                         media_type="text/plain",
                     )
-            except Exception as exc:
-                error_message = str(exc)
-                status_code = 404 if "BlobNotFound" in error_message else 500
-                logger.exception("Download error for '%s'", file_path)
+            except ResourceNotFoundError:
+                logger.error("Standalone download blob not found")
                 return Response(
-                    (
-                        "Blob not found"
-                        if status_code == 404
-                        else "Internal server error"
-                    )
-                    + f": {error_message}.",
-                    status_code=status_code,
+                    "Blob not found.",
+                    status_code=404,
+                    media_type="text/plain",
+                )
+            except Exception:
+                logger.error("Standalone download failed")
+                return Response(
+                    "Internal server error.",
+                    status_code=500,
                     media_type="text/plain",
                 )
 

@@ -525,6 +525,49 @@ class DownloadSecurityTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(500, backend_failure.status_code)
         self.assertNotIn("backend-secret", backend_failure.text)
+        self.assertEqual("no-store", backend_failure.headers["Cache-Control"])
+
+    async def test_download_acquisition_boundary_excludes_resolver_and_late_iteration(self):
+        from gpt_rag_ui.api import download_routes
+
+        manager = DownloadTokenManager(secret="secret", public_url="https://chat.example.com")
+        token = manager.issue(
+            principal_id=PRINCIPAL, session_id=SESSION_ID,
+            conversation_id=CONVERSATION_ID, container="documents", blob_name="file.pdf",
+        ).rsplit("/", 1)[-1]
+        failure = RuntimeError("private-dependency")
+
+        def chunks():
+            yield b"first"
+            raise failure
+
+        downloader = Mock(return_value=DownloadStream(chunks=chunks(), size=10))
+        resolver = AsyncMock(side_effect=failure)
+        app = FastAPI()
+        register_secure_download_route(
+            app, manager=manager, download_blob=downloader,
+            allowed_containers={"documents"}, conversation_container="conversation-documents",
+            shared_containers={"documents"}, sessions=SimpleNamespace(),
+            conversation_resolver=resolver,
+        )
+        endpoint = next(route.endpoint for route in app.routes if route.path == "/api/download/{grant_token}")
+        principal = SimpleNamespace(principal_id=PRINCIPAL, session_id=SESSION_ID, metadata=METADATA)
+        with (
+            patch.object(download_routes, "resolve_download_principal", AsyncMock(return_value=principal)),
+            patch.object(download_routes.logger, "exception") as acquisition_error,
+        ):
+            with self.assertRaises(RuntimeError) as caught:
+                await endpoint(token, SimpleNamespace())
+            self.assertIs(failure, caught.exception)
+            downloader.assert_not_called()
+            resolver.side_effect = None
+            resolver.return_value = {"id": CONVERSATION_ID}
+            response = await endpoint(token, SimpleNamespace())
+            self.assertEqual(b"first", await anext(response.body_iterator))
+            with self.assertRaises(RuntimeError) as caught:
+                await anext(response.body_iterator)
+            self.assertIs(failure, caught.exception)
+            acquisition_error.assert_not_called()
 
     async def test_copilot_grant_rejects_standalone_chainlit_session(self):
         manager = DownloadTokenManager(

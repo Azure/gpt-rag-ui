@@ -630,11 +630,10 @@ async def handle_message(message: cl.Message):
                 await response_msg.stream_token(_fail_msg)
                 ingestion_success = False
 
-            session_docs = cl.user_session.get("uploaded_docs") or []
-            session_docs.extend([f["name"] for f in uploaded_files])
-            cl.user_session.set("uploaded_docs", session_docs)
-
             if ingestion_success:
+                session_docs = cl.user_session.get("uploaded_docs") or []
+                session_docs.extend([f["name"] for f in uploaded_files])
+                cl.user_session.set("uploaded_docs", session_docs)
                 _ok_msg = f"{len(uploaded_files)} file(s) processed successfully.\n\n"
                 file_reply_parts.append(_ok_msg)
                 await response_msg.stream_token(_ok_msg)

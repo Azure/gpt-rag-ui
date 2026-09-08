@@ -47,12 +47,13 @@
       "caught_types": [
         "Exception"
       ],
-      "boundary": "Authorized download operation and injected downloader",
-      "reason": "Unexpected authorized resolver/downloader failures must become generic HTTP 500, not disclose backend diagnostics or return file content.",
+      "boundary": "Authorized synchronous downloader acquisition via asyncio.to_thread only",
+      "reason": "Stage 2 P2: unexpected downloader acquisition failures become generic HTTP 500 with no-store after grant, principal, ownership and target checks. Conversation resolution occurs before this try and lazy DownloadStream iteration occurs after it; neither is translated by this catch. No resolver/late-stream response guarantee or new boundary design is proposed.",
       "failure_outcome": "failure-translation",
       "diagnostic_path": "logger.exception; generic 500 response with no-store",
       "evidence_tests": [
-        "tests/test_download_security.py::DownloadSecurityTests.test_secure_download_route_fails_closed"
+        "tests/test_download_security.py::DownloadSecurityTests.test_secure_download_route_fails_closed",
+        "tests/test_download_security.py::DownloadSecurityTests.test_download_acquisition_boundary_excludes_resolver_and_late_iteration"
       ],
       "state": "proposed",
       "review_by_stage": "blocking",
@@ -428,14 +429,14 @@
       "module_id": "main",
       "symbol": "_create_chainlit_app.handle_file_download",
       "review": "Proposed in Azure/gpt-rag-ui#110; pending maintainer review coordinated in Azure/GPT-RAG#689. Not approved.",
-      "handler_fingerprint": "3c9d182751070ab794e358cbda085758a40232508aa6834d6510b420075e37df",
+      "handler_fingerprint": "f12b32d3233cf4a947884face7bdc8a86851c3f502456545ad3271c0f315e487",
       "caught_types": [
         "Exception"
       ],
       "boundary": "Existing standalone legacy download endpoint",
-      "reason": "Preserve the existing non-Copilot 404 BlobNotFound and 500 text response contract for arbitrary client failures. This does not authorize that route for Copilot sessions.",
+      "reason": "Stage 2 P2: standalone downloader failures return fixed generic text. Only typed ResourceNotFoundError maps to 404; arbitrary errors containing BlobNotFound remain 500. No dependency message is exposed to the client or failure diagnostic. This does not authorize that route for Copilot sessions.",
       "failure_outcome": "failure-translation",
-      "diagnostic_path": "logger.exception; existing standalone 404/500 response",
+      "diagnostic_path": "Static logger.error without exception payload or file path; generic standalone 404/500 text",
       "evidence_tests": [
         "tests/test_installed_package.py::InstalledPackageTests.test_installed_startup_preserves_documented_failure_boundaries"
       ],
@@ -493,11 +494,12 @@
         "Exception"
       ],
       "boundary": "Uploaded-file ingestion interaction",
-      "reason": "The message event must surface arbitrary ingestion/client failure as a reference-bearing error rather than a processed-success response.",
+      "reason": "Stage 2 P2 partial closure only: ingestion exceptions surface a reference-bearing error, and uploaded_docs changes only after confirmed batch ingestion. False returns and raised failures preserve previous confirmed names. The existing question continuation after failed attachments is preserved, not approved: H6 remains pending. The boolean client contract does not expose per-file partial success, so no partial batch is claimed confirmed.",
       "failure_outcome": "failure-translation",
       "diagnostic_path": "logger.exception; streamed ingestion failure with question reference",
       "evidence_tests": [
-        "tests/test_boundary_failures.py::BoundaryFailureTests.test_ingestion_failure_does_not_claim_processed_success"
+        "tests/test_boundary_failures.py::BoundaryFailureTests.test_ingestion_failure_does_not_claim_processed_success",
+        "tests/test_boundary_failures.py::BoundaryFailureTests.test_upload_bookkeeping_requires_confirmation_and_preserves_question_continuation"
       ],
       "state": "proposed",
       "review_by_stage": "blocking",
