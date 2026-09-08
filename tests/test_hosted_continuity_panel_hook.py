@@ -105,6 +105,56 @@ class OwnerIndexHookTests(unittest.IsolatedAsyncioTestCase):
         frames = await self._run(coordinator, stream_fn)
         self.assertTrue(frames)
 
+    async def test_failed_index_write_hides_and_denies_panel_operations(self):
+        from gpt_rag_ui.clients.panel_cosmos import PanelStoreError
+        from gpt_rag_ui.services.panel_store import upsert_owner_index_row
+        from test_panel_routes import _Harness
+
+        harness = _Harness()
+        self.addCleanup(harness.close)
+
+        async def hook(oid, conversation_id):
+            await upsert_owner_index_row(
+                client=harness.cosmos,
+                principal_id=oid,
+                conversation_id=conversation_id,
+            )
+
+        coordinator, _ = await self._make_coordinator(on_conversation_created=hook)
+        stream_fn, _ = await _fake_stream_factory([("hi there", {})])
+        with unittest.mock.patch.object(
+            harness.cosmos,
+            "upsert_item",
+            side_effect=PanelStoreError("owner index unavailable"),
+        ) as write, self.assertLogs(level="ERROR") as logs:
+            frames = await self._run(coordinator, stream_fn)
+
+        write.assert_awaited_once()
+        self.assertTrue(any(text == "hi there" for text, _ in frames))
+        self.assertIn("denies panel read/feedback/delete access", " ".join(logs.output))
+        conversation_id = frames[0][1]["conversation_id"]
+        harness.store.seed(conversation_id, OID_A, [("assistant", "hi there")])
+        headers = harness.auth(OID_A)
+        response = harness.client.get("/panel/conversations", headers=headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["items"], [])
+
+        prefix = f"/panel/conversations/{conversation_id}"
+        responses = [
+            harness.client.get(f"{prefix}/messages", headers=headers),
+            harness.client.get(f"{prefix}/feedback", headers=headers),
+            harness.client.post(
+                f"{prefix}/feedback",
+                headers=headers,
+                json={"feedback_id": "fb-1", "message_ref": "item-0"},
+            ),
+            harness.client.delete(prefix, headers=headers),
+        ]
+        self.assertEqual([response.status_code for response in responses], [404] * 4)
+        self.assertEqual(harness.store.list_calls, [])
+        self.assertEqual(harness.store.delete_calls, [])
+        self.assertEqual(harness.cosmos.all_documents(), [])
+
 
 if __name__ == "__main__":
     unittest.main()

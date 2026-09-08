@@ -913,8 +913,8 @@ def _create_chainlit_app(
                 routes=chainlit_app.routes,
             )
         except Exception:
-            logger.exception("OpenAPI generation failed; returning fallback schema")
-            chainlit_app.openapi_schema = {
+            logger.exception("OpenAPI generation failed; returning uncached fallback schema")
+            return {
                 "openapi": "3.0.0",
                 "info": {"title": chainlit_app.title, "version": chainlit_app.version},
                 "paths": {},

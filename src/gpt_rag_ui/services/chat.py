@@ -622,13 +622,14 @@ async def handle_message(message: cl.Message):
                     conversation_id or "new",
                     message.id,
                 )
-                _fail_msg = (
-                    "File ingestion failed. Please contact the application support team and share reference "
-                    f"{message.id}.\n\n"
-                )
-                file_reply_parts.append(_fail_msg)
-                await response_msg.stream_token(_fail_msg)
                 ingestion_success = False
+            else:
+                if not ingestion_success:
+                    logger.warning(
+                        "File ingestion was not confirmed: conversation=%s question_id=%s",
+                        conversation_id or "new",
+                        message.id,
+                    )
 
             if ingestion_success:
                 session_docs = cl.user_session.get("uploaded_docs") or []
@@ -637,6 +638,13 @@ async def handle_message(message: cl.Message):
                 _ok_msg = f"{len(uploaded_files)} file(s) processed successfully.\n\n"
                 file_reply_parts.append(_ok_msg)
                 await response_msg.stream_token(_ok_msg)
+            else:
+                _fail_msg = (
+                    "File ingestion failed. Please contact the application support team and share reference "
+                    f"{message.id}.\n\n"
+                )
+                file_reply_parts.append(_fail_msg)
+                await response_msg.stream_token(_fail_msg)
 
         user_ask = (message.content or "").strip()
         if CHAT_BACKEND == "hosted_agent" and not user_ask:

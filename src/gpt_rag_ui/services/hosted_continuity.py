@@ -160,8 +160,9 @@ class HostedContinuityCoordinator:
         # *presented* (existing) conversation reference, and never given a
         # caller-supplied conversation id. Best-effort: any exception is
         # logged and swallowed here so a panel metadata hiccup never fails
-        # the user's turn -- a missed write only yields a stale/absent list
-        # row, never content disclosure (see ADR-0004 consequences).
+        # the user's turn. A missing row hides the conversation from the
+        # panel and denies its read/feedback/delete routes, never disclosing
+        # content (see ADR-0004 consequences).
         self._on_conversation_created = on_conversation_created
 
     @property
@@ -355,7 +356,8 @@ class HostedContinuityCoordinator:
                 logger.exception(
                     "Panel owner-index write failed for a newly created "
                     "hosted conversation; continuing the turn (a missed "
-                    "write only yields a stale/absent panel list row, "
+                    "write hides the panel list row and denies panel "
+                    "read/feedback/delete access, "
                     "never content disclosure)."
                 )
 

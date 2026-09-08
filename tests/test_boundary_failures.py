@@ -76,14 +76,15 @@ class BoundaryFailureTests(unittest.IsolatedAsyncioTestCase):
             patch.object(chat, "CHAT_BACKEND", "orchestrator"),
             patch.object(chat, "SHOW_STATISTICS", False),
             patch.object(chat, "get_auth_info", AsyncMock(return_value={"authorized": True})),
-            patch.object(chat, "ingest_files_session", AsyncMock(side_effect=RuntimeError("ingestion failure"))),
-            self.assertLogs(chat.logger, level="ERROR"),
+            patch.object(chat, "ingest_files_session", AsyncMock(return_value=False)),
+            self.assertLogs(chat.logger, level="WARNING"),
         ):
             await chat.handle_message(SimpleNamespace(
                 id="upload-reference", content="",
                 elements=[SimpleNamespace(mime="application/pdf", name="test.pdf", path="test.pdf", size=1)],
             ))
         self.assertIn("File ingestion failed", response.content)
+        self.assertNotIn("Files received.", response.content)
         self.assertNotIn("processed successfully", response.content)
         self.assertNotIn("uploaded_docs", [call.args[0] for call in fake_cl.user_session.set.call_args_list])
 
@@ -127,6 +128,14 @@ class BoundaryFailureTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(["previous.pdf", "new.pdf"] if outcome is True else ["previous.pdf"], state["uploaded_docs"])
                 self.assertEqual(1, len(calls))  # Existing continuation; H6 remains pending.
                 self.assertNotIn("private-ingestion", response.content)
+                notices = "".join(call.args[0] for call in response.stream_token.await_args_list)
+                if outcome is True:
+                    self.assertIn("processed successfully", notices)
+                    self.assertNotIn("File ingestion failed", notices)
+                else:
+                    self.assertIn("File ingestion failed", notices)
+                    self.assertIn("upload-reference", notices)
+                    self.assertNotIn("processed successfully", notices)
 
     async def test_oauth_refresh_failure_clears_session_and_denies_request(self):
         chat = self.chat()

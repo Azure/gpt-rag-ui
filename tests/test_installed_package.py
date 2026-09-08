@@ -203,7 +203,10 @@ class Config:
     def get_value(self, key, default=None, allow_none=False, type=str):
         return self.get(key, default, type)
 dependencies.__dict__["__config"] = Config()
-with patch("fastapi.openapi.utils.get_openapi", side_effect=RuntimeError("schema failure")):
+recovered_schema = {"openapi": "3.0.0", "info": {"title": "Recovered", "version": "test"}, "paths": {"/ready": {}}}
+with patch("fastapi.openapi.utils.get_openapi", side_effect=[
+    RuntimeError("schema failure"), RuntimeError("schema failure again"), recovered_schema,
+]) as generate:
     import main
 assert_installed(main)
 from chainlit.server import app as chainlit_app
@@ -211,7 +214,14 @@ with TestCase().assertLogs(level="ERROR"):
     schema = chainlit_app.openapi()
 assert schema["paths"] == {}
 assert schema["info"]["version"] == chainlit_app.version
-assert chainlit_app.openapi() is schema
+assert chainlit_app.openapi_schema is None
+with TestCase().assertLogs(level="ERROR"):
+    second_fallback = chainlit_app.openapi()
+assert second_fallback["paths"] == {}
+assert chainlit_app.openapi_schema is None
+assert chainlit_app.openapi() is recovered_schema
+assert chainlit_app.openapi() is recovered_schema
+assert generate.call_count == 3
 from gpt_rag_ui.clients.blob import BlobClient
 from azure.core.exceptions import ResourceNotFoundError
 from fastapi.testclient import TestClient

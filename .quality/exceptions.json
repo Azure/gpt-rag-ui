@@ -451,14 +451,14 @@
       "module_id": "main",
       "symbol": "_create_chainlit_app._safe_openapi",
       "review": "Proposed in Azure/gpt-rag-ui#110; pending maintainer review coordinated in Azure/GPT-RAG#689. Not approved.",
-      "handler_fingerprint": "362e2634ddc54a64a9ccb55ce7f04722bd7d0d1e1d18f53b6bcae77484367205",
+      "handler_fingerprint": "ec83ae416c3f080eda2a6c9fc936b913fca2d0d85f8c4d14b4fd7a0f7ff9baee",
       "caught_types": [
         "Exception"
       ],
       "boundary": "Optional framework OpenAPI generation",
-      "reason": "Failure of generated schema introspection must be logged while retaining application startup; the existing cached fallback exposes metadata with no paths, not fabricated operations.",
+      "reason": "Stage 2 bounded recovery: failed schema introspection is logged and returns the existing metadata-only fallback without caching it. A later request retries generation; only successful schemas are cached. Retaining the fallback response remains subject to H3 maintainer disposition, not an approved exception.",
       "failure_outcome": "contractual-best-effort",
-      "diagnostic_path": "logger.exception; cached empty-path OpenAPI schema",
+      "diagnostic_path": "logger.exception; uncached empty-path OpenAPI response with later regeneration",
       "evidence_tests": [
         "tests/test_installed_package.py::InstalledPackageTests.test_installed_startup_preserves_documented_failure_boundaries"
       ],
@@ -491,14 +491,14 @@
       "module_id": "app",
       "symbol": "handle_message",
       "review": "Proposed in Azure/gpt-rag-ui#110; pending maintainer review coordinated in Azure/GPT-RAG#689. Not approved.",
-      "handler_fingerprint": "28432097d5e316c53871f35a15bae778d07207b7d5bfe4456053b36d6c2d0d4a",
+      "handler_fingerprint": "b1b0561a84d3188d82a2b8640cfc758f118e0a1886cc95bc1419bd3406abd4d2",
       "caught_types": [
         "Exception"
       ],
       "boundary": "Uploaded-file ingestion interaction",
-      "reason": "Stage 2 P2 partial closure only: ingestion exceptions surface a reference-bearing error, and uploaded_docs changes only after confirmed batch ingestion. False returns and raised failures preserve previous confirmed names. The existing question continuation after failed attachments is preserved, not approved: H6 remains pending. The boolean client contract does not expose per-file partial success, so no partial batch is claimed confirmed.",
+      "reason": "Stage 2 P2 partial closure only: both false ingestion results and exceptions surface a reference-bearing failure notice, and uploaded_docs changes only after confirmed batch ingestion. Unconfirmed uploads never report Files received and preserve previous confirmed names. The existing question continuation after failed attachments is preserved, not approved: H6 remains pending. The boolean client contract does not expose per-file partial success, so no partial batch is claimed confirmed.",
       "failure_outcome": "failure-translation",
-      "diagnostic_path": "logger.exception; streamed ingestion failure with question reference",
+      "diagnostic_path": "logger.exception for raised failures or logger.warning for false results; streamed ingestion failure with question reference",
       "evidence_tests": [
         "tests/test_boundary_failures.py::BoundaryFailureTests.test_ingestion_failure_does_not_claim_processed_success",
         "tests/test_boundary_failures.py::BoundaryFailureTests.test_upload_bookkeeping_requires_confirmation_and_preserves_question_continuation"
@@ -592,16 +592,17 @@
       "module_id": "hosted_continuity",
       "symbol": "HostedContinuityCoordinator.run_turn",
       "review": "Proposed in Azure/gpt-rag-ui#110; pending maintainer review coordinated in Azure/GPT-RAG#689. Not approved.",
-      "handler_fingerprint": "dc6e603ecd7756c1eb6ae4ec785ef18eff71de07bf79d56f150443c1b4157363",
+      "handler_fingerprint": "125d1074b5a22ef6e49576c90fbfbfdaaec5edc6ca705f17ca0eaaedbbb71b30",
       "caught_types": [
         "Exception"
       ],
       "boundary": "Optional post-create panel owner-index hook",
-      "reason": "The durable conversation/owner operation has succeeded; failure of the optional panel indexing hook must be logged without losing the turn. Missing index entries reduce listing, not ownership checks.",
+      "reason": "The existing turn continues after a logged owner-index hook failure, but a missing row both hides the conversation from panel listing and causes panel read/feedback/delete to fail closed before accessing managed content. This availability trade-off remains pending H4 maintainer disposition; the failure evidence is not approval and no authorization bypass or automatic repair is added.",
       "failure_outcome": "contractual-best-effort",
-      "diagnostic_path": "logger.exception; main streaming turn continues",
+      "diagnostic_path": "logger.exception identifies panel list and read/feedback/delete unavailability; main streaming turn continues",
       "evidence_tests": [
-        "tests/test_hosted_continuity_panel_hook.py::OwnerIndexHookTests.test_hook_failure_does_not_fail_the_turn"
+        "tests/test_hosted_continuity_panel_hook.py::OwnerIndexHookTests.test_hook_failure_does_not_fail_the_turn",
+        "tests/test_hosted_continuity_panel_hook.py::OwnerIndexHookTests.test_failed_index_write_hides_and_denies_panel_operations"
       ],
       "state": "proposed",
       "review_by_stage": "blocking",
