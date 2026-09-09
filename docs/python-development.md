@@ -9,7 +9,7 @@ mocked-boundary evidence is not live Azure integration evidence.
 
 ## Setup and unchanged startup
 
-Use Python 3.12:
+Run these contributor commands from the repository root with Python 3.12:
 
 ```text
 python -m pip install -r requirements.txt
