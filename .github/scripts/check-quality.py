@@ -1392,6 +1392,22 @@ def run_checks(root, base, requested, *, test_evidence=None):
                     output.append(finding("nested-config", folder.relative_to(root).as_posix(), 0, name))
     config_text = base_text(root, base_sha, "pyproject.toml") if base_policy_text else None
     config_text = config_text or (root / "pyproject.toml").read_text(encoding="utf-8")
+    approved_handler_sites = set()
+    if {"lint", "exceptions"} & set(requested):
+        handler_sites = [(paths[name], dict(h, module_id=module_ids.get(name, name)))
+                         for name, source in sources.items() for h in broad_handlers(name, source)]
+        handlers = [handler for _, handler in handler_sites]
+        entries = base_records["exceptions"]["entries"] if base_policy_text else []
+        exception_findings, used = validate_exception_records(
+            handlers, entries, root, verified_tests=verified,
+            stage=records["typing-scope"]["coverage_stage"])
+        fields = ("module_id", "symbol", "handler_fingerprint")
+        approved = {tuple(entry[field] for field in fields)
+                    for entry in entries if entry["id"] in used}
+        approved_handler_sites = {
+            (path, handler["line"])
+            for path, handler in handler_sites if tuple(handler[field] for field in fields) in approved
+        }
     with tempfile.TemporaryDirectory(prefix="gpt-rag-quality-") as temporary:
         config_path = Path(temporary) / "pyproject.toml"
         config_path.write_text(config_text, encoding="utf-8")
@@ -1402,7 +1418,10 @@ def run_checks(root, base, requested, *, test_evidence=None):
             if result.returncode and not diagnostics:
                 raise PolicyError("Ruff failed without structured diagnostics")
             for d in diagnostics:
-                findings["lint"].append(finding(d["code"], Path(d["filename"]).relative_to(root).as_posix(),
+                path = Path(d["filename"]).relative_to(root).as_posix()
+                if d["code"] == "BLE001" and (path, d["location"]["row"]) in approved_handler_sites:
+                    continue
+                findings["lint"].append(finding(d["code"], path,
                                                  d["location"]["row"], d["message"]))
         if "typing" in requested:
             targets = [paths[n] for n in sources if module_ids.get(n, n) in scope]
@@ -1447,13 +1466,7 @@ def run_checks(root, base, requested, *, test_evidence=None):
             if not graph_report["passed"]:
                 findings["architecture"].append(finding("import-linter", "", 0, graph_report["output"][-3000:]))
         if "exceptions" in requested:
-            handlers = [dict(h, module_id=module_ids.get(name, name))
-                        for name, source in sources.items() for h in broad_handlers(name, source)]
-            entries = base_records["exceptions"]["entries"] if base_policy_text else []
-            output, used = validate_exception_records(
-                handlers, entries, root, verified_tests=verified,
-                stage=records["typing-scope"]["coverage_stage"])
-            findings["exceptions"].extend(output)
+            findings["exceptions"].extend(exception_findings)
             reports["exception_ids_used"] = used
             reports["handler_inventory"] = handlers
     if source_digest(root) != source_hash:

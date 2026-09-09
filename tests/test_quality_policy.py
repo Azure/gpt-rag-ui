@@ -605,6 +605,106 @@ class EvidenceIntegrationTests(unittest.TestCase):
                          "commit", "--quiet", "-m", "protected policy"], cwd=root)
         return quality.git(root, "rev-parse", "HEAD")
 
+    def test_ruff_allowance_requires_exact_protected_handler_and_bound_evidence(self):
+        source = (
+            "def boundary(callback):\n"
+            "    try:\n"
+            "        return callback()\n"
+            "    except Exception:\n"
+            "        return None\n"
+        )
+        selector = "tests/test_boundary.py::Boundary.test_failure"
+        for case in ("active", "proposed", "stale", "missing-evidence", "expired",
+                     "other-rule", "other-handler", "other-module", "candidate-activation", "bootstrap",
+                     "stale-receipt", "failed-evidence", "skipped-evidence"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                bootstrap_base = self.protected_fixture(root)
+                bootstrap_base = quality.git(root, "rev-parse", f"{bootstrap_base}^")
+                (root / "sample.py").write_text(source, encoding="utf-8")
+                (root / "tests" / "test_boundary.py").write_text(
+                    "import os, sys, unittest\nfrom pathlib import Path\n"
+                    "sys.path.insert(0, str(Path(__file__).resolve().parents[1]))\n"
+                    "from sample import boundary\n"
+                    "class Boundary(unittest.TestCase):\n"
+                    " def test_failure(self):\n"
+                    "  mode = os.environ.get('FIXTURE_MODE')\n"
+                    "  if mode == 'skipped': self.skipTest('fixture')\n"
+                    "  self.assertNotEqual(mode, 'failed')\n"
+                    "  def fail(): raise RuntimeError('dependency')\n"
+                    "  self.assertIsNone(boundary(fail))\n"
+                    "  self.assertEqual(7, boundary(lambda: 7))\n", encoding="utf-8")
+                handler = quality.broad_handlers("sample", source)[0]
+                entry = {
+                    **{key: handler[key] for key in
+                       ("module_id", "symbol", "handler_fingerprint", "caught_types")},
+                    "id": "reviewed-boundary", "state": "active",
+                    "boundary": "Injected callback", "reason": "Translate callback failure",
+                    "failure_outcome": "failure-translation", "diagnostic_path": "Explicit None result",
+                    "review": "Protected test fixture", "review_by_stage": "strict",
+                    "expires_on": "2099-01-01", "evidence_tests": [selector],
+                }
+                if case in ("proposed", "candidate-activation"):
+                    entry["state"] = "proposed"
+                if case == "expired":
+                    entry["expires_on"] = "2000-01-01"
+                ledger = root / ".quality" / "exceptions.json"
+                ledger.write_text(json.dumps({"schema_version": 1, "entries": [entry]}), encoding="utf-8")
+                with (root / "pyproject.toml").open("a", encoding="utf-8") as config:
+                    config.write('\n[tool.ruff.lint]\nselect=["BLE001", "F821"]\n')
+                quality.execute(["git", "add", "."], cwd=root)
+                quality.execute(["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                                 "commit", "--quiet", "-m", "protected exception fixture"], cwd=root)
+                base = quality.git(root, "rev-parse", "HEAD") if case != "bootstrap" else bootstrap_base
+                if case == "candidate-activation":
+                    entry["state"] = "active"
+                    ledger.write_text(json.dumps({"schema_version": 1, "entries": [entry]}), encoding="utf-8")
+                if case == "stale":
+                    (root / "sample.py").write_text(
+                        source.replace("return None", "return None if callback else False"), encoding="utf-8")
+                if case == "other-rule":
+                    (root / "sample.py").write_text(source + "\ndef other():\n    return undefined_name\n", encoding="utf-8")
+                if case == "other-handler":
+                    (root / "sample.py").write_text(source + "\n" + source.replace("boundary", "other"), encoding="utf-8")
+                if case == "other-module":
+                    (root / "other.py").write_text(source, encoding="utf-8")
+                evidence = root / "evidence.json"
+                with patch.dict(os.environ, {"QUALITY_RUN_ID": "ruff-fixture:1", "GITHUB_RUN_ID": ""}):
+                    if case != "missing-evidence":
+                        mode = {"failed-evidence": "failed", "skipped-evidence": "skipped"}.get(case, "passed")
+                        result = subprocess.run(
+                            [sys.executable, str(SCRIPT.with_name("run-unittest.py")),
+                             "--base-ref", base, "--report", str(evidence)],
+                            cwd=root, env={**os.environ, "FIXTURE_MODE": mode},
+                            text=True, capture_output=True, timeout=60,
+                        )
+                        self.assertEqual(int(case == "failed-evidence"), result.returncode, result.stderr)
+                    if case == "stale-receipt":
+                        (root / "sample.py").write_text(source + "\n# receipt no longer matches\n", encoding="utf-8")
+                    if case in ("stale-receipt", "failed-evidence"):
+                        with self.assertRaises(quality.PolicyError):
+                            quality.run_checks(root, base, ("lint",), test_evidence=evidence)
+                        continue
+                    report = quality.run_checks(
+                        root, base, ("lint", "exceptions"),
+                        test_evidence=None if case == "missing-evidence" else evidence)
+                    lint = report["checks"]["lint"]["findings"]
+                    expected = [] if case == "active" else ["F821"] if case == "other-rule" else ["BLE001"]
+                    self.assertEqual(expected, [item["rule"] for item in lint])
+                    if case == "other-handler":
+                        self.assertEqual(10, lint[0]["line"])
+                    if case == "other-module":
+                        self.assertEqual("other.py", lint[0]["module"])
+                    if case in ("active", "other-rule", "other-handler", "other-module"):
+                        self.assertEqual(["reviewed-boundary"], report["exception_ids_used"])
+                    else:
+                        self.assertEqual([], report["exception_ids_used"])
+                    # Lint-only execution must enforce the same protected evidence.
+                    lint_only = quality.run_checks(
+                        root, base, ("lint",),
+                        test_evidence=None if case == "missing-evidence" else evidence)
+                    self.assertEqual(lint, lint_only["checks"]["lint"]["findings"])
+
     def test_real_protected_base_rejects_config_codeowners_and_annotation_tampering(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
