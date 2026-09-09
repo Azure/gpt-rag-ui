@@ -1,18 +1,18 @@
 import unittest
 import unittest.mock
 
-from hosted_agent_client import HostedAgentError, InvocationMessage
-from hosted_continuity import (
+from gpt_rag_ui.clients.hosted_agent_client import HostedAgentError, InvocationMessage
+from gpt_rag_ui.services.hosted_continuity import (
     ContinuityPersistenceError,
     ConversationNotFoundError,
     HostedContinuityCoordinator,
 )
-from hosted_continuity_config import HostedContinuitySettings
-from hosted_conversation_capability import (
+from gpt_rag_ui.config.hosted_continuity_config import HostedContinuitySettings
+from gpt_rag_ui.clients.hosted_conversation_capability import (
     ConversationCapabilityError,
     ConversationCapabilityManager,
 )
-from hosted_conversation_store import (
+from gpt_rag_ui.clients.hosted_conversation_store import (
     ConversationIdempotencyCache,
     ConversationItem,
     ConversationLockRegistry,
@@ -187,7 +187,7 @@ class ContinuityTestCase(unittest.IsolatedAsyncioTestCase):
         return coordinator, store
 
     async def _run(self, coordinator, stream_fn, **kwargs):
-        import hosted_continuity as hc
+        import gpt_rag_ui.services.hosted_continuity as hc
 
         defaults = dict(
             capability="",
@@ -429,7 +429,7 @@ class TestReadAppendErrors(ContinuityTestCase):
 
         stream_fn2, _ = await _fake_stream_factory([("second-answer", {})])
         capability = frames[0][1]["capability"]
-        import hosted_continuity as hc
+        import gpt_rag_ui.services.hosted_continuity as hc
 
         collected = []
         with self.assertRaises(ContinuityPersistenceError):
@@ -489,7 +489,7 @@ class TestOneInFlightConcurrency(ContinuityTestCase):
             order.append("end")
             yield ("slow-answer" if is_slow else "fast-answer", {})
 
-        import hosted_continuity as hc
+        import gpt_rag_ui.services.hosted_continuity as hc
 
         async def run_slow():
             async for _ in coordinator.run_turn(

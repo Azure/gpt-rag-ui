@@ -34,6 +34,25 @@ orchestrator, ingestion, App Configuration, identity, and storage contracts.
 
 ## Repository boundaries
 
+Runtime ownership is under `src/gpt_rag_ui/`. Root Python modules and
+`connectors/` are supported compatibility adapters, not implementation owners.
+Do not patch private globals on adapters: patch the canonical owner in tests.
+The frozen legacy export/entrypoint inventory is `.quality/migration.json`;
+the complete current module/type scope is `.quality/policy.json`.
+
+| Canonical area | Responsibility |
+| --- | --- |
+| `bootstrap.py` | ASGI composition, auth-before-Chainlit, route/mount order |
+| `api/` | Routes, callback registration, Chainlit data-layer adapter/factory and session bridge |
+| `services/` | Chat, shared citations, history, continuity, conversation/download policy and panel metadata |
+| `auth/` | Entra, OAuth refresh, embedding identity/session/transport and panel identity |
+| `clients/` | Orchestrator, ingestion, hosted runtime, managed Conversations, Blob and panel Cosmos |
+| `config/` | App Configuration provider/cache, typed settings and staged asset-root resolution |
+| `telemetry/` | Existing instrumentation |
+| `util/` | Pure constants |
+
+The legacy names below remain supported, forwarding to those owners:
+
 - `main.py`: ASGI composition, startup configuration, and embedding policy.
 - `app.py`: Chainlit event wiring and chat interaction composition.
 - `auth_common.py`, `auth_oauth.py`, `entra_token.py`: standalone Entra
@@ -43,8 +62,11 @@ orchestrator, ingestion, App Configuration, identity, and storage contracts.
   transport, conversation, citation, and download security boundaries.
 - `orchestrator_client.py`, `ingestion_client.py`: backend service clients and
   wire contracts.
-- `feedback.py`, `datalayer.py`: feedback, conversation, and Cosmos-backed
-  persistence behavior.
+- `feedback.py`: feedback persistence through its service owner.
+- `datalayer.py`: `api.history.OrchestratorDataLayer` and `get_data_layer`;
+  `services.history.HistoryService` owns orchestrator-backed history/user
+  operations and the single user cache. The API owns consume-once request
+  metadata and Chainlit session selection; services receive explicit context.
 - `connectors/`: focused Azure and external service adapters.
 - `telemetry.py`: logging and instrumentation.
 - `public/`, `.chainlit/`, `chainlit.config.yaml`, `chainlit.md`: theming,
@@ -52,6 +74,8 @@ orchestrator, ingestion, App Configuration, identity, and storage contracts.
 - `scripts/`, `azure.yaml`, `Dockerfile`, `infra/`: deployment and lifecycle
   assets.
 - `tests/`: `unittest` behavior and security regression coverage.
+- `.quality/`, `.github/scripts/check-quality.py`: protected-base
+  lint/type/import/exception policy; see `docs/python-development.md`.
 - `.github/copilot-instructions.md`: branching, versioning, changelog, release,
   and documentation rules.
 - `.github/agents/`: active GitHub Copilot engineering roles.
@@ -113,6 +137,25 @@ orchestrator.
 - Run the narrowest existing tests first, then broaden according to risk.
 - The test suite uses `unittest`; the complete local command is
   `python -m unittest discover -s tests -v`.
+- Install runtime requirements, development requirements from
+  `requirements-quality.txt`, and `python -m pip install --no-deps -e .`
+  before contributor validation. The installed-package tests build a wheel
+  and assert every UI import comes from a separate non-editable installation.
+- Run `python .github/scripts/check-quality.py --check all --base-ref
+  <protected-base-sha> --report .artifacts/quality.json`. Missing execution
+  is an error; the initial broad-handler inventory is not an approved waiver.
+  Do not grow the baseline or weaken policy to turn the bootstrap PR green.
+- Exception/dynamic-import evidence comes from the separate standard-unittest
+  runner `.github/scripts/run-unittest.py`; pass its same-run report through
+  `--test-evidence`. See `docs/python-development.md` for `QUALITY_RUN_ID`,
+  exact-source receipt requirements and protected aggregation.
+- The quality evaluator uses a separate environment built from protected
+  requirements/tool pins and does not install candidate application code.
+  Keep isolated static-tool execution intact. Candidate exception proposals
+  are review requests, never active approvals or blanket inherited waivers.
+- `container-tests` builds an ephemeral Linux image and runs the explicit
+  offline `tests/container_smoke.py` helper with read-only mounted tests.
+  `quality-gate` requires its real result; no image is published or deployed.
 - For security changes, include negative tests that prove unauthorized,
   cross-session, cross-origin, or expired access is denied.
 - For client changes, test payload, header, timeout, retry, and error

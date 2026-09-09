@@ -1,7 +1,7 @@
 import unittest
 from types import SimpleNamespace
 
-from embed_config import (
+from gpt_rag_ui.config.embed_config import (
     configure_chainlit_allowed_origins,
     EmbedConfigError,
     EmbedSettings,

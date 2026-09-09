@@ -1,5 +1,5 @@
 ---
-applyTo: "datalayer.py,feedback.py,tests/test_datalayer*.py,tests/test_feedback_security.py"
+applyTo: "datalayer.py,feedback.py,src/gpt_rag_ui/services/history.py,src/gpt_rag_ui/services/feedback.py,src/gpt_rag_ui/services/panel_store.py,src/gpt_rag_ui/services/hosted_continuity.py,src/gpt_rag_ui/api/history.py,src/gpt_rag_ui/api/feedback.py,tests/test_datalayer*.py,tests/test_feedback_security.py"
 ---
 
 # Persistence and feedback rules

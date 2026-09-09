@@ -1,3 +1,4 @@
+from gpt_rag_ui.api.download_routes import register_secure_download_route
 import hashlib
 import unittest
 from types import SimpleNamespace
@@ -10,16 +11,15 @@ from chainlit.user import User
 from fastapi import FastAPI
 from itsdangerous import URLSafeTimedSerializer
 
-from conversation_security import conversation_belongs_to, get_owned_conversation
-from download_security import (
+from gpt_rag_ui.services.conversation_security import conversation_belongs_to, get_owned_conversation
+from gpt_rag_ui.services.download_security import (
     DownloadStream,
     DownloadTokenManager,
     is_download_target_allowed,
-    register_secure_download_route,
 )
-from embed_auth import COPILOT_SESSION_COOKIE
-from embed_config import EmbedSettings
-from embed_security import CopilotRequestMiddleware
+from gpt_rag_ui.auth.embed_auth import COPILOT_SESSION_COOKIE
+from gpt_rag_ui.config.embed_config import EmbedSettings
+from gpt_rag_ui.auth.embed_security import CopilotRequestMiddleware
 
 
 PRINCIPAL = (
@@ -230,11 +230,11 @@ class DownloadSecurityTests(unittest.IsolatedAsyncioTestCase):
     async def test_owned_conversation_fails_closed(self):
         with (
             patch(
-                "conversation_security.resolve_access_token",
+                "gpt_rag_ui.services.conversation_security.resolve_access_token",
                 AsyncMock(return_value="token"),
             ),
             patch(
-                "conversation_security.call_orchestrator_get_conversation",
+                "gpt_rag_ui.services.conversation_security.call_orchestrator_get_conversation",
                 AsyncMock(
                     return_value={
                         "principal_id": (
@@ -525,6 +525,49 @@ class DownloadSecurityTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(500, backend_failure.status_code)
         self.assertNotIn("backend-secret", backend_failure.text)
+        self.assertEqual("no-store", backend_failure.headers["Cache-Control"])
+
+    async def test_download_acquisition_boundary_excludes_resolver_and_late_iteration(self):
+        from gpt_rag_ui.api import download_routes
+
+        manager = DownloadTokenManager(secret="secret", public_url="https://chat.example.com")
+        token = manager.issue(
+            principal_id=PRINCIPAL, session_id=SESSION_ID,
+            conversation_id=CONVERSATION_ID, container="documents", blob_name="file.pdf",
+        ).rsplit("/", 1)[-1]
+        failure = RuntimeError("private-dependency")
+
+        def chunks():
+            yield b"first"
+            raise failure
+
+        downloader = Mock(return_value=DownloadStream(chunks=chunks(), size=10))
+        resolver = AsyncMock(side_effect=failure)
+        app = FastAPI()
+        register_secure_download_route(
+            app, manager=manager, download_blob=downloader,
+            allowed_containers={"documents"}, conversation_container="conversation-documents",
+            shared_containers={"documents"}, sessions=SimpleNamespace(),
+            conversation_resolver=resolver,
+        )
+        endpoint = next(route.endpoint for route in app.routes if route.path == "/api/download/{grant_token}")
+        principal = SimpleNamespace(principal_id=PRINCIPAL, session_id=SESSION_ID, metadata=METADATA)
+        with (
+            patch.object(download_routes, "resolve_download_principal", AsyncMock(return_value=principal)),
+            patch.object(download_routes.logger, "exception") as acquisition_error,
+        ):
+            with self.assertRaises(RuntimeError) as caught:
+                await endpoint(token, SimpleNamespace())
+            self.assertIs(failure, caught.exception)
+            downloader.assert_not_called()
+            resolver.side_effect = None
+            resolver.return_value = {"id": CONVERSATION_ID}
+            response = await endpoint(token, SimpleNamespace())
+            self.assertEqual(b"first", await anext(response.body_iterator))
+            with self.assertRaises(RuntimeError) as caught:
+                await anext(response.body_iterator)
+            self.assertIs(failure, caught.exception)
+            acquisition_error.assert_not_called()
 
     async def test_copilot_grant_rejects_standalone_chainlit_session(self):
         manager = DownloadTokenManager(
@@ -566,11 +609,11 @@ class DownloadSecurityTests(unittest.IsolatedAsyncioTestCase):
         transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
         with (
             patch(
-                "download_security.get_token_from_cookies",
+                "gpt_rag_ui.services.download_security.get_token_from_cookies",
                 return_value="chainlit-token",
             ),
             patch(
-                "download_security.authenticate_user",
+                "gpt_rag_ui.services.download_security.authenticate_user",
                 AsyncMock(return_value=oauth_user),
             ),
         ):
@@ -640,11 +683,11 @@ class DownloadSecurityTests(unittest.IsolatedAsyncioTestCase):
         transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
         with (
             patch(
-                "download_security.get_token_from_cookies",
+                "gpt_rag_ui.services.download_security.get_token_from_cookies",
                 return_value="chainlit-token",
             ),
             patch(
-                "download_security.authenticate_user",
+                "gpt_rag_ui.services.download_security.authenticate_user",
                 AsyncMock(return_value=oauth_user),
             ),
         ):

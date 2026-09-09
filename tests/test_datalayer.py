@@ -4,7 +4,8 @@ from unittest.mock import AsyncMock, patch
 
 from chainlit.user import User
 
-import datalayer
+import gpt_rag_ui.services.history as datalayer
+from gpt_rag_ui.api.history import OrchestratorDataLayer
 
 
 class CopilotUserCacheTests(unittest.IsolatedAsyncioTestCase):
@@ -26,17 +27,17 @@ class CopilotUserCacheTests(unittest.IsolatedAsyncioTestCase):
             display_name="Anonymous Copilot user",
             user_metadata=lambda: metadata,
         )
-        layer = datalayer.OrchestratorDataLayer()
+        layer = OrchestratorDataLayer()
         datalayer._users.clear()
         self.addCleanup(datalayer._users.clear)
 
         with (
             patch(
-                "datalayer.get_request_copilot_session",
+                "gpt_rag_ui.api.history.get_request_copilot_session",
                 return_value=request_session,
             ),
             patch(
-                "datalayer.is_copilot_session_active",
+                "gpt_rag_ui.services.history.is_copilot_session_active",
                 new=AsyncMock(return_value=True),
             ),
         ):

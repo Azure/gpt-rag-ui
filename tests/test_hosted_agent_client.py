@@ -8,12 +8,12 @@ import httpx
 from azure.core.credentials import AccessToken
 from azure.core.exceptions import ClientAuthenticationError
 
-from chat_backend import (
+from gpt_rag_ui.config.chat_backend import (
     load_chat_backend,
     resolve_chat_backend,
     select_upload_conversation_id,
 )
-from hosted_agent_client import (
+from gpt_rag_ui.clients.hosted_agent_client import (
     HostedAgentAuthenticationError,
     HostedAgentCancelledError,
     HostedAgentClient,
@@ -89,7 +89,7 @@ class TestConfiguration(unittest.TestCase):
 
         with (
             patch.dict(os.environ, {}, clear=True),
-            patch("hosted_agent_client.config.get", side_effect=get_value),
+            patch("gpt_rag_ui.clients.hosted_agent_client.config.get", side_effect=get_value),
         ):
             return load_hosted_agent_settings()
 
@@ -172,7 +172,7 @@ class TestStartupValidation(unittest.TestCase):
 
         with (
             patch.dict(os.environ, {}, clear=True),
-            patch("hosted_agent_client.config.get", side_effect=get_value),
+            patch("gpt_rag_ui.clients.hosted_agent_client.config.get", side_effect=get_value),
         ):
             validate_hosted_agent_config()
 
@@ -220,8 +220,8 @@ class TestStartupValidation(unittest.TestCase):
 
     def test_missing_backend_defaults_hosted_and_fails_before_client_creation(self):
         with (
-            patch("hosted_agent_client.httpx.AsyncClient") as http_client,
-            patch("hosted_agent_client._default_credential") as default_credential,
+            patch("gpt_rag_ui.clients.hosted_agent_client.httpx.AsyncClient") as http_client,
+            patch("gpt_rag_ui.clients.hosted_agent_client._default_credential") as default_credential,
         ):
             self.assertEqual(resolve_chat_backend(None), "hosted_agent")
             with self.assertRaisesRegex(
@@ -865,7 +865,7 @@ class TestUserDelegatedAuth(unittest.IsolatedAsyncioTestCase):
         http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         self.addAsyncCleanup(http_client.aclose)
 
-        with patch("hosted_agent_client._default_credential") as default_credential:
+        with patch("gpt_rag_ui.clients.hosted_agent_client._default_credential") as default_credential:
             client = HostedAgentClient(self.settings, http_client=http_client)
             with self.assertRaises(HostedAgentAuthenticationError):
                 async for _ in client.stream(
@@ -908,7 +908,7 @@ class TestUserDelegatedAuth(unittest.IsolatedAsyncioTestCase):
         client = await self._client(capture=capture, credential=credential)
 
         with patch(
-            "hosted_agent_client._acquire_obo_token",
+            "gpt_rag_ui.clients.hosted_agent_client._acquire_obo_token",
             new=AsyncMock(return_value="delegated-data-plane-token"),
         ) as mocked_obo:
             results = [
@@ -978,7 +978,7 @@ class TestUserDelegatedAuth(unittest.IsolatedAsyncioTestCase):
 
         with (
             self.assertLogs("gpt_rag_ui.hosted_agent_client", level="WARNING") as logs,
-            patch("hosted_agent_client._acquire_obo_token", new=_fake_obo),
+            patch("gpt_rag_ui.clients.hosted_agent_client._acquire_obo_token", new=_fake_obo),
         ):
             with self.assertRaises(HostedAgentAuthenticationError) as ctx:
                 async for _ in client.stream(

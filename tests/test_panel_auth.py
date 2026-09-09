@@ -6,8 +6,8 @@ import jwt
 from cryptography.hazmat.primitives.asymmetric import rsa
 from jwt.algorithms import RSAAlgorithm
 
-from entra_token import EntraTokenValidator
-from panel_auth import (
+from gpt_rag_ui.auth.entra_token import EntraTokenValidator
+from gpt_rag_ui.auth.panel_auth import (
     PanelAuthError,
     PanelForbiddenError,
     validate_panel_bearer,
@@ -117,7 +117,7 @@ class PanelBearerValidationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(principal.oid, OID)
 
     async def test_token_without_oid_is_401_from_validator(self):
-        """entra_token.EntraTokenValidator itself requires GUID tid/oid
+        """gpt_rag_ui.auth.entra_token.EntraTokenValidator itself requires GUID tid/oid
         claims and raises before returning; this is indistinguishable from
         any other malformed-token failure here, so it maps to 401 (not the
         403 defense-in-depth branch in ``validate_panel_bearer``, which is

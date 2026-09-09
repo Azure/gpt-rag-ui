@@ -1,6 +1,6 @@
 import unittest
 
-from auth_common import canonical_principal_id, is_user_authorized
+from gpt_rag_ui.auth.auth_common import canonical_principal_id, is_user_authorized
 
 
 TENANT_ID = "11111111-2222-3333-4444-555555555555"

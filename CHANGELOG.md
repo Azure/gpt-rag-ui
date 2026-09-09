@@ -1,5 +1,72 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **Retry failed classic-chat uploads without losing attachments.** Restore the
+  previous session conversation ID when a failed upload allocated a new one.
+  Reattached files are ingested under a fresh conversation before the question
+  runs; existing conversation ownership checks remain unchanged.
+- **Stop questions after unconfirmed ingestion.** False results and raised
+  failures finalize a reference-bearing retry notice without sending the
+  question or claiming successful file processing. Only confirmed batches
+  update uploaded-document bookkeeping.
+- **Keep OpenAPI failures retryable and truthful.** Failed schema generation
+  propagates instead of returning a successful metadata-only schema; later
+  requests retry generation and cache only success.
+- **Expose owner-index repair needs without weakening panel access.** A failed
+  optional index write logs that repair is required while the turn continues;
+  missing ownership rows still hide panel listings and deny read, feedback,
+  and delete operations.
+
+### Changed
+
+- **Preserve dependency failures without masking implementation defects.**
+  Narrow configuration, HTTP/JSON, Blob, JWT, logging and VERSION handlers to
+  their concrete failure contracts. Fix the unbound retry notification and
+  avoid retrying absent in-memory settings. Record retained application
+  boundaries individually as unapproved proposals with failure-test evidence.
+
+- **Separate Chainlit history adaptation from history operations.** Put the
+  data-layer callbacks, factory and consume-once session bridge in `api.history`;
+  keep history authorization, orchestrator operations and the single user cache
+  in `services.history` with explicit context. Preserve legacy exports and
+  ownership-before-session-selection ordering without a storage rewrite.
+
+- **Canonical UI runtime package with legacy adapters.** Move runtime ownership
+  into `src/gpt_rag_ui`, share citation rendering between chat and restored
+  history, and separate callback registration from reusable operations. Keep
+  `uvicorn main:app`, existing configuration/defaults and externally staged
+  Chainlit assets; install the package in the existing container build.
+
+### Added
+
+- **Isolate protected quality-tool execution.** Run static tools without
+  candidate module shadowing or candidate package/build-backend installation
+  in the evaluator; analyze the explicit source graph in an isolated worker.
+  Add executable shadowing and installation-isolation regression fixtures.
+
+- **Proposed protected-base Python quality gates.** Add pinned development-only
+  Ruff, mypy and import tooling, individual typing debt records, full static
+  dependency checks, an explicit broad-handler inventory and a fail-closed
+  `quality-gate` aggregate alongside unittest. Initial handler approvals,
+  bootstrap review and administrator activation remain outstanding; this
+  change does not claim required merge enforcement is active.
+
+- **Exact quality policy and executed failure evidence.** Validate closed
+  governance schemas, stable move/debt identities, annotation/suppression sites,
+  adapter exports and dynamic imports. Bind exception approvals to distinct
+  protected operations and same-run, non-skipped unittest results. Require
+  protected aggregation and ephemeral offline Linux-image acceptance without
+  publishing an image or changing repository settings.
+
+- **Close binding and namespace quality-check bypasses.** Detect qualified
+  suppression decorators on untyped functions, invalidate exception records
+  when effective catch bindings change, and reject unresolved catches.
+  Discover root namespace modules and retain their full typing/import identity
+  without changing application imports or exception behavior.
+
 ## [v2.6.2] - 2026-09-03
 
 ### Fixed

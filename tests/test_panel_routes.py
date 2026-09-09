@@ -20,14 +20,14 @@ from starlette.testclient import TestClient
 
 os.environ.setdefault("CHAINLIT_AUTH_SECRET", "test-secret-for-panel-routes-tests!!")
 
-from entra_token import EntraTokenValidator
-from hosted_conversation_store import (
+from gpt_rag_ui.auth.entra_token import EntraTokenValidator
+from gpt_rag_ui.clients.hosted_conversation_store import (
     ConversationItem,
     ConversationStoreAccessDeniedError,
     ConversationStoreError,
 )
-from panel_config import PanelSettings
-import panel_routes
+from gpt_rag_ui.config.panel_config import PanelSettings
+import gpt_rag_ui.api.panel_routes as panel_routes
 
 TENANT_ID = "11111111-2222-3333-4444-555555555555"
 AUDIENCE = "api://panel/.default"
@@ -121,18 +121,18 @@ class FakePanelCosmosClient:
             container_name == self.settings.owner_index_container
             and self.fail_delete_owner_index
         ):
-            from panel_cosmos import PanelStoreError
+            from gpt_rag_ui.clients.panel_cosmos import PanelStoreError
 
             raise PanelStoreError("simulated owner-index delete failure")
         if item_id in self.fail_delete_feedback_ids:
-            from panel_cosmos import PanelStoreError
+            from gpt_rag_ui.clients.panel_cosmos import PanelStoreError
 
             raise PanelStoreError("simulated feedback delete failure")
         self._data[container_name].pop((item_id, partition_key), None)
 
     async def query_items(self, container_name, *, query, parameters, partition_key):
         if self.fail_query:
-            from panel_cosmos import PanelStoreError
+            from gpt_rag_ui.clients.panel_cosmos import PanelStoreError
 
             raise PanelStoreError("simulated query failure")
         params = {p["name"]: p["value"] for p in parameters}
@@ -201,8 +201,8 @@ class _Harness:
 
         self.app = FastAPI()
         self._patches = [
-            patch("panel_routes.get_panel_cosmos_client", return_value=self.cosmos),
-            patch("panel_routes.EntraTokenValidator", return_value=self.validator),
+            patch("gpt_rag_ui.api.panel_routes.get_panel_cosmos_client", return_value=self.cosmos),
+            patch("gpt_rag_ui.api.panel_routes.EntraTokenValidator", return_value=self.validator),
         ]
         for p in self._patches:
             p.start()
@@ -457,7 +457,7 @@ class CursorSecurityTests(unittest.TestCase):
         self.assertEqual(response.status_code, 422)
 
     def test_expired_cursor_is_422(self):
-        from panel_cursor import PanelCursorManager
+        from gpt_rag_ui.services.panel_cursor import PanelCursorManager
 
         short_ttl_settings = PanelSettings(
             **{**_panel_settings().__dict__, "cursor_ttl_seconds": 1}
@@ -488,7 +488,7 @@ class CursorSecurityTests(unittest.TestCase):
             harness.close()
 
     def test_cursor_minted_for_another_user_is_rejected(self):
-        from panel_cursor import PanelCursorManager
+        from gpt_rag_ui.services.panel_cursor import PanelCursorManager
 
         manager = PanelCursorManager(
             secret=os.environ["CHAINLIT_AUTH_SECRET"], ttl_seconds=60

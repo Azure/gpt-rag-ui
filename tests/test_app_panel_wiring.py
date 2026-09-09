@@ -42,10 +42,10 @@ _PANEL_ENV = {
 def _reload_app_with_env(env: dict[str, str]):
     with (
         patch.dict(os.environ, env, clear=False),
-        patch("telemetry.Telemetry.configure_monitoring"),
-        patch("telemetry.Telemetry.get_tracer", return_value=Mock()),
+        patch("gpt_rag_ui.telemetry.monitoring.Telemetry.configure_monitoring"),
+        patch("gpt_rag_ui.telemetry.monitoring.Telemetry.get_tracer", return_value=Mock()),
     ):
-        import app
+        import gpt_rag_ui.services.chat as app
 
         return importlib.reload(app)
 
@@ -80,12 +80,12 @@ class PanelAppWiringTests(unittest.TestCase):
 
     def test_coordinator_receives_owner_index_writer_only_when_panel_active(self):
         app = _reload_app_with_env(_PANEL_ENV)
-        coordinator = app._get_hosted_continuity_coordinator()
+        coordinator = app.get_hosted_continuity_coordinator()
         self.assertIsNotNone(coordinator._on_conversation_created)
 
     def test_coordinator_has_no_writer_when_panel_inactive(self):
         app = _reload_app_with_env(_CONTINUITY_ENV)
-        coordinator = app._get_hosted_continuity_coordinator()
+        coordinator = app.get_hosted_continuity_coordinator()
         self.assertIsNone(coordinator._on_conversation_created)
 
     def test_invalid_panel_config_fails_fast_at_import(self):

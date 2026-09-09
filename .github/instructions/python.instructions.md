@@ -1,5 +1,5 @@
 ---
-applyTo: "*.py,connectors/**/*.py,tests/**/*.py,.github/scripts/*.py"
+applyTo: "*.py,src/**/*.py,connectors/**/*.py,tests/**/*.py,.github/scripts/*.py"
 ---
 
 # Python implementation rules

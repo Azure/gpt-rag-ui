@@ -1,0 +1,627 @@
+{
+  "schema_version": 1,
+  "source_revision": "c635bc6696714b543feec24b4a062a8a8f3ff6d0",
+  "modules": [
+    {
+      "id": "dependencies",
+      "source_path": "dependencies.py",
+      "path": "src/gpt_rag_ui/config/dependencies.py",
+      "import_name": "gpt_rag_ui.config.dependencies",
+      "area": "config",
+      "public_exports": [
+        "get_config",
+        "handle_exception"
+      ],
+      "legacy_aliases": [
+        "dependencies"
+      ],
+      "source_revision": "c635bc6696714b543feec24b4a062a8a8f3ff6d0"
+    },
+    {
+      "id": "connectors.appconfig",
+      "source_path": "connectors/appconfig.py",
+      "path": "src/gpt_rag_ui/config/appconfig.py",
+      "import_name": "gpt_rag_ui.config.appconfig",
+      "area": "config",
+      "public_exports": [
+        "AppConfigClient"
+      ],
+      "legacy_aliases": [
+        "connectors.appconfig"
+      ],
+      "source_revision": "c635bc6696714b543feec24b4a062a8a8f3ff6d0"
+    },
+    {
+      "id": "constants",
+      "source_path": "constants.py",
+      "path": "src/gpt_rag_ui/util/constants.py",
+      "import_name": "gpt_rag_ui.util.constants",
+      "area": "util",
+      "public_exports": [
+        "APPLICATION_INSIGHTS_CONNECTION_STRING",
+        "APP_NAME",
+        "REFERENCE_REGEX",
+        "SUPPORTED_EXTENSIONS",
+        "TERMINATE_TOKEN",
+        "UUID_REGEX"
+      ],
+      "legacy_aliases": [
+        "constants"
+      ],
+      "source_revision": "c635bc6696714b543feec24b4a062a8a8f3ff6d0"
+    },
+    {
+      "id": "chat_backend",
+      "source_path": "chat_backend.py",
+      "path": "src/gpt_rag_ui/config/chat_backend.py",
+      "import_name": "gpt_rag_ui.config.chat_backend",
+      "area": "config",
+      "public_exports": [
+        "ChatBackend",
+        "ChatBackendConfig",
+        "DEFAULT_CHAT_BACKEND",
+        "load_chat_backend",
+        "resolve_chat_backend",
+        "select_upload_conversation_id"
+      ],
+      "legacy_aliases": [
+        "chat_backend"
+      ],
+      "source_revision": "c635bc6696714b543feec24b4a062a8a8f3ff6d0"
+    },
+    {
+      "id": "embed_config",
+      "source_path": "embed_config.py",
+      "path": "src/gpt_rag_ui/config/embed_config.py",
+      "import_name": "gpt_rag_ui.config.embed_config",
+      "area": "config",
+      "public_exports": [
+        "EmbedConfigError",
+        "EmbedSettings",
+        "configure_chainlit_allowed_origins",
+        "load_embed_settings"
+      ],
+      "legacy_aliases": [
+        "embed_config"
+      ],
+      "source_revision": "c635bc6696714b543feec24b4a062a8a8f3ff6d0"
+    },
+    {
+      "id": "panel_config",
+      "source_path": "panel_config.py",
+      "path": "src/gpt_rag_ui/config/panel_config.py",
+      "import_name": "gpt_rag_ui.config.panel_config",
+      "area": "config",
+      "public_exports": [
+        "EnumerationMode",
+        "PanelConfigError",
+        "PanelSettings",
+        "load_panel_settings"
+      ],
+      "legacy_aliases": [
+        "panel_config"
+      ],
+      "source_revision": "c635bc6696714b543feec24b4a062a8a8f3ff6d0"
+    },
+    {
+      "id": "hosted_continuity_config",
+      "source_path": "hosted_continuity_config.py",
+      "path": "src/gpt_rag_ui/config/hosted_continuity_config.py",
+      "import_name": "gpt_rag_ui.config.hosted_continuity_config",
+      "area": "config",
+      "public_exports": [
+        "HistoryTruncation",
+        "HostedContinuityConfigError",
+        "HostedContinuitySettings",
+        "OwnerBindingMode",
+        "load_hosted_continuity_settings"
+      ],
+      "legacy_aliases": [
+        "hosted_continuity_config"
+      ],
+      "source_revision": "c635bc6696714b543feec24b4a062a8a8f3ff6d0"
+    },
+    {
+      "id": "auth_common",
+      "source_path": "auth_common.py",
+      "path": "src/gpt_rag_ui/auth/auth_common.py",
+      "import_name": "gpt_rag_ui.auth.auth_common",
+      "area": "auth",
+      "public_exports": [
+        "canonical_principal_id",
+        "is_user_authorized",
+        "normalize_guid"
+      ],
+      "legacy_aliases": [
+        "auth_common"
+      ],
+      "source_revision": "c635bc6696714b543feec24b4a062a8a8f3ff6d0"
+    },
+    {
+      "id": "auth_oauth",
+      "source_path": "auth_oauth.py",
+      "path": "src/gpt_rag_ui/auth/oauth.py",
+      "import_name": "gpt_rag_ui.auth.oauth",
+      "area": "auth",
+      "public_exports": [
+        "ensure_fresh_user_access_token",
+        "get_env_var",
+        "oauth_callback",
+        "read_scopes_list",
+        "refresh_access_token"
+      ],
+      "legacy_aliases": [
+        "auth_oauth"
+      ],
+      "source_revision": "c635bc6696714b543feec24b4a062a8a8f3ff6d0"
+    },
+    {
+      "id": "entra_token",
+      "source_path": "entra_token.py",
+      "path": "src/gpt_rag_ui/auth/entra_token.py",
+      "import_name": "gpt_rag_ui.auth.entra_token",
+      "area": "auth",
+      "public_exports": [
+        "EntraTokenError",
+        "EntraTokenValidator",
+        "JwksLoader"
+      ],
+      "legacy_aliases": [
+        "entra_token"
+      ],
+      "source_revision": "c635bc6696714b543feec24b4a062a8a8f3ff6d0"
+    },
+    {
+      "id": "embed_auth",
+      "source_path": "embed_auth.py",
+      "path": "src/gpt_rag_ui/auth/embed_auth.py",
+      "import_name": "gpt_rag_ui.auth.embed_auth",
+      "area": "auth",
+      "public_exports": [
+        "ANONYMOUS_TENANT_ID",
+        "BootstrapRateLimiter",
+        "COPILOT_SESSION_COOKIE",
+        "CopilotSession",
+        "CopilotSessionStore",
+        "SessionInvalidationCallback",
+        "TokenValidator",
+        "bind_request_copilot_session",
+        "bootstrap_rate_limit_key",
+        "clear_copilot_session_cookie",
+        "configure_session_store",
+        "create_embed_session_jwt",
+        "get_request_copilot_session",
+        "get_session_store",
+        "is_copilot_session_active",
+        "is_valid_session_id",
+        "register_copilot_auth_routes",
+        "reset_request_copilot_session",
+        "resolve_access_token",
+        "session_id_from_request",
+        "set_copilot_session_cookie"
+      ],
+      "legacy_aliases": [
+        "embed_auth"
+      ],
+      "source_revision": "c635bc6696714b543feec24b4a062a8a8f3ff6d0"
+    },
+    {
+      "id": "embed_security",
+      "source_path": "embed_security.py",
+      "path": "src/gpt_rag_ui/auth/embed_security.py",
+      "import_name": "gpt_rag_ui.auth.embed_security",
+      "area": "auth",
+      "public_exports": [
+        "CopilotRequestMiddleware",
+        "CopilotSocketRegistry",
+        "DEFAULT_MAX_CONNECTIONS_PER_SESSION",
+        "SocketDisconnect",
+        "canonical_origin",
+        "configure_copilot_bridge_guards",
+        "disconnect_copilot_session"
+      ],
+      "legacy_aliases": [
+        "embed_security"
+      ],
+      "source_revision": "c635bc6696714b543feec24b4a062a8a8f3ff6d0"
+    },
+    {
+      "id": "panel_auth",
+      "source_path": "panel_auth.py",
+      "path": "src/gpt_rag_ui/auth/panel_auth.py",
+      "import_name": "gpt_rag_ui.auth.panel_auth",
+      "area": "auth",
+      "public_exports": [
+        "PanelAuthError",
+        "PanelForbiddenError",
+        "PanelPrincipal",
+        "validate_panel_bearer"
+      ],
+      "legacy_aliases": [
+        "panel_auth"
+      ],
+      "source_revision": "c635bc6696714b543feec24b4a062a8a8f3ff6d0"
+    },
+    {
+      "id": "orchestrator_client",
+      "source_path": "orchestrator_client.py",
+      "path": "src/gpt_rag_ui/clients/orchestrator_client.py",
+      "import_name": "gpt_rag_ui.clients.orchestrator_client",
+      "area": "clients",
+      "public_exports": [
+        "call_orchestrator_delete_conversation",
+        "call_orchestrator_for_feedback",
+        "call_orchestrator_get_conversation",
+        "call_orchestrator_list_conversations",
+        "call_orchestrator_stream",
+        "call_orchestrator_update_conversation",
+        "get_managed_identity_token"
+      ],
+      "legacy_aliases": [
+        "orchestrator_client"
+      ],
+      "source_revision": "c635bc6696714b543feec24b4a062a8a8f3ff6d0"
+    },
+    {
+      "id": "ingestion_client",
+      "source_path": "ingestion_client.py",
+      "path": "src/gpt_rag_ui/clients/ingestion_client.py",
+      "import_name": "gpt_rag_ui.clients.ingestion_client",
+      "area": "clients",
+      "public_exports": [
+        "ingest_files_session"
+      ],
+      "legacy_aliases": [
+        "ingestion_client"
+      ],
+      "source_revision": "c635bc6696714b543feec24b4a062a8a8f3ff6d0"
+    },
+    {
+      "id": "hosted_agent_client",
+      "source_path": "hosted_agent_client.py",
+      "path": "src/gpt_rag_ui/clients/hosted_agent_client.py",
+      "import_name": "gpt_rag_ui.clients.hosted_agent_client",
+      "area": "clients",
+      "public_exports": [
+        "AsyncCredential",
+        "DEFAULT_SSE_IDLE_TIMEOUT_SECONDS",
+        "HostedAgentAuthMode",
+        "HostedAgentAuthenticationError",
+        "HostedAgentCancelledError",
+        "HostedAgentClient",
+        "HostedAgentConfigError",
+        "HostedAgentError",
+        "HostedAgentEvent",
+        "HostedAgentHTTPError",
+        "HostedAgentProtocolError",
+        "HostedAgentResponseError",
+        "HostedAgentSettings",
+        "InvocationMessage",
+        "acquire_obo_token",
+        "acquire_service_identity_token",
+        "build_invocation_messages",
+        "call_hosted_agent_stream",
+        "close_hosted_agent_client",
+        "load_hosted_agent_settings",
+        "validate_hosted_agent_config"
+      ],
+      "legacy_aliases": [
+        "hosted_agent_client"
+      ],
+      "source_revision": "c635bc6696714b543feec24b4a062a8a8f3ff6d0"
+    },
+    {
+      "id": "hosted_conversation_capability",
+      "source_path": "hosted_conversation_capability.py",
+      "path": "src/gpt_rag_ui/clients/hosted_conversation_capability.py",
+      "import_name": "gpt_rag_ui.clients.hosted_conversation_capability",
+      "area": "clients",
+      "public_exports": [
+        "ConversationCapability",
+        "ConversationCapabilityError",
+        "ConversationCapabilityManager"
+      ],
+      "legacy_aliases": [
+        "hosted_conversation_capability"
+      ],
+      "source_revision": "c635bc6696714b543feec24b4a062a8a8f3ff6d0"
+    },
+    {
+      "id": "hosted_conversation_store",
+      "source_path": "hosted_conversation_store.py",
+      "path": "src/gpt_rag_ui/clients/hosted_conversation_store.py",
+      "import_name": "gpt_rag_ui.clients.hosted_conversation_store",
+      "area": "clients",
+      "public_exports": [
+        "ConversationIdempotencyCache",
+        "ConversationItem",
+        "ConversationLockRegistry",
+        "ConversationStoreAccessDeniedError",
+        "ConversationStoreAuthenticationError",
+        "ConversationStoreClient",
+        "ConversationStoreError",
+        "ConversationStoreHTTPError",
+        "ConversationStoreOwnerBinding",
+        "ConversationStoreSettings",
+        "build_bounded_history"
+      ],
+      "legacy_aliases": [
+        "hosted_conversation_store"
+      ],
+      "source_revision": "c635bc6696714b543feec24b4a062a8a8f3ff6d0"
+    },
+    {
+      "id": "panel_cosmos",
+      "source_path": "panel_cosmos.py",
+      "path": "src/gpt_rag_ui/clients/panel_cosmos.py",
+      "import_name": "gpt_rag_ui.clients.panel_cosmos",
+      "area": "clients",
+      "public_exports": [
+        "PanelCosmosClient",
+        "PanelStoreError",
+        "get_panel_cosmos_client",
+        "reset_panel_cosmos_client_for_tests"
+      ],
+      "legacy_aliases": [
+        "panel_cosmos"
+      ],
+      "source_revision": "c635bc6696714b543feec24b4a062a8a8f3ff6d0"
+    },
+    {
+      "id": "connectors.blob",
+      "source_path": "connectors/blob.py",
+      "path": "src/gpt_rag_ui/clients/blob.py",
+      "import_name": "gpt_rag_ui.clients.blob",
+      "area": "clients",
+      "public_exports": [
+        "BlobClient",
+        "BlobContainerClient"
+      ],
+      "legacy_aliases": [
+        "connectors.blob"
+      ],
+      "source_revision": "c635bc6696714b543feec24b4a062a8a8f3ff6d0"
+    },
+    {
+      "id": "conversation_security",
+      "source_path": "conversation_security.py",
+      "path": "src/gpt_rag_ui/services/conversation_security.py",
+      "import_name": "gpt_rag_ui.services.conversation_security",
+      "area": "services",
+      "public_exports": [
+        "canonical_conversation_id",
+        "conversation_belongs_to",
+        "get_owned_conversation",
+        "principal_id_from_metadata",
+        "thread_owner_id_from_metadata"
+      ],
+      "legacy_aliases": [
+        "conversation_security"
+      ],
+      "source_revision": "c635bc6696714b543feec24b4a062a8a8f3ff6d0"
+    },
+    {
+      "id": "download_security",
+      "source_path": "download_security.py",
+      "path": "src/gpt_rag_ui/services/download_security.py",
+      "import_name": "gpt_rag_ui.services.download_security",
+      "area": "services",
+      "public_exports": [
+        "BlobDownloader",
+        "ConversationResolver",
+        "DownloadGrant",
+        "DownloadPrincipal",
+        "DownloadStream",
+        "DownloadTokenManager",
+        "configure_download_tokens",
+        "get_download_tokens",
+        "is_download_target_allowed",
+        "register_secure_download_route",
+        "resolve_download_principal"
+      ],
+      "legacy_aliases": [
+        "download_security"
+      ],
+      "source_revision": "c635bc6696714b543feec24b4a062a8a8f3ff6d0"
+    },
+    {
+      "id": "hosted_continuity",
+      "source_path": "hosted_continuity.py",
+      "path": "src/gpt_rag_ui/services/hosted_continuity.py",
+      "import_name": "gpt_rag_ui.services.hosted_continuity",
+      "area": "services",
+      "public_exports": [
+        "ContinuityPersistenceError",
+        "ConversationNotFoundError",
+        "HostedContinuityCoordinator"
+      ],
+      "legacy_aliases": [
+        "hosted_continuity"
+      ],
+      "source_revision": "c635bc6696714b543feec24b4a062a8a8f3ff6d0"
+    },
+    {
+      "id": "panel_cursor",
+      "source_path": "panel_cursor.py",
+      "path": "src/gpt_rag_ui/services/panel_cursor.py",
+      "import_name": "gpt_rag_ui.services.panel_cursor",
+      "area": "services",
+      "public_exports": [
+        "PanelCursorError",
+        "PanelCursorManager"
+      ],
+      "legacy_aliases": [
+        "panel_cursor"
+      ],
+      "source_revision": "c635bc6696714b543feec24b4a062a8a8f3ff6d0"
+    },
+    {
+      "id": "panel_store",
+      "source_path": "panel_store.py",
+      "path": "src/gpt_rag_ui/services/panel_store.py",
+      "import_name": "gpt_rag_ui.services.panel_store",
+      "area": "services",
+      "public_exports": [
+        "FeedbackRecord",
+        "OwnerIndexRow",
+        "PanelValidationError",
+        "create_feedback",
+        "delete_feedback_for_conversation",
+        "delete_owner_index_row",
+        "get_owner_index_row",
+        "list_feedback_for_conversation",
+        "list_owner_index_rows",
+        "upsert_owner_index_row"
+      ],
+      "legacy_aliases": [
+        "panel_store"
+      ],
+      "source_revision": "c635bc6696714b543feec24b4a062a8a8f3ff6d0"
+    },
+    {
+      "id": "datalayer",
+      "source_path": "datalayer.py",
+      "path": "src/gpt_rag_ui/services/history.py",
+      "import_name": "gpt_rag_ui.services.history",
+      "area": "services",
+      "public_exports": [
+        "OrchestratorDataLayer",
+        "get_data_layer"
+      ],
+      "legacy_aliases": [
+        "datalayer"
+      ],
+      "source_revision": "c635bc6696714b543feec24b4a062a8a8f3ff6d0"
+    },
+    {
+      "id": "feedback",
+      "source_path": "feedback.py",
+      "path": "src/gpt_rag_ui/services/feedback.py",
+      "import_name": "gpt_rag_ui.services.feedback",
+      "area": "services",
+      "public_exports": [
+        "ENABLE_FEEDBACK",
+        "FEEDBACK_RATING",
+        "create_feedback_actions",
+        "register_feedback_handlers"
+      ],
+      "legacy_aliases": [
+        "feedback"
+      ],
+      "source_revision": "c635bc6696714b543feec24b4a062a8a8f3ff6d0"
+    },
+    {
+      "id": "panel_routes",
+      "source_path": "panel_routes.py",
+      "path": "src/gpt_rag_ui/api/panel_routes.py",
+      "import_name": "gpt_rag_ui.api.panel_routes",
+      "area": "api",
+      "public_exports": [
+        "ConversationSummary",
+        "ConversationsListResponse",
+        "DeleteConversationResponse",
+        "FeedbackCreateRequest",
+        "FeedbackListResponse",
+        "FeedbackOut",
+        "MessageOut",
+        "MessagesResponse",
+        "register_panel_routes"
+      ],
+      "legacy_aliases": [
+        "panel_routes"
+      ],
+      "source_revision": "c635bc6696714b543feec24b4a062a8a8f3ff6d0"
+    },
+    {
+      "id": "app",
+      "source_path": "app.py",
+      "path": "src/gpt_rag_ui/services/chat.py",
+      "import_name": "gpt_rag_ui.services.chat",
+      "area": "services",
+      "public_exports": [
+        "CHAT_BACKEND",
+        "CONVERSATION_DOCUMENTS_CONTAINER",
+        "COPILOT_ENABLED",
+        "DOCUMENTS_CONTAINER",
+        "ENABLE_FEEDBACK",
+        "IMAGES_CONTAINER",
+        "IMAGE_EXTENSIONS",
+        "OAUTH_CONFIGURED",
+        "SHARED_DOWNLOAD_CONTAINERS",
+        "SHOW_STATISTICS",
+        "STORAGE_ACCOUNT_NAME",
+        "check_authorization",
+        "extract_conversation_id_from_chunk",
+        "format_hosted_citation_sources",
+        "generate_blob_sas_url",
+        "get_auth_info",
+        "handle_message",
+        "on_chat_resume",
+        "on_chat_start",
+        "replace_source_reference_links",
+        "resolve_reference_href"
+      ],
+      "legacy_aliases": [
+        "app"
+      ],
+      "source_revision": "c635bc6696714b543feec24b4a062a8a8f3ff6d0"
+    },
+    {
+      "id": "telemetry",
+      "source_path": "telemetry.py",
+      "path": "src/gpt_rag_ui/telemetry/monitoring.py",
+      "import_name": "gpt_rag_ui.telemetry.monitoring",
+      "area": "telemetry",
+      "public_exports": [
+        "ExcludeTraceLogsFilter",
+        "Telemetry"
+      ],
+      "legacy_aliases": [
+        "telemetry"
+      ],
+      "source_revision": "c635bc6696714b543feec24b4a062a8a8f3ff6d0"
+    },
+    {
+      "id": "main",
+      "source_path": "main.py",
+      "path": "src/gpt_rag_ui/bootstrap.py",
+      "import_name": "gpt_rag_ui.bootstrap",
+      "area": "bootstrap",
+      "public_exports": [
+        "AuthState",
+        "app",
+        "build_app"
+      ],
+      "legacy_aliases": [
+        "main"
+      ],
+      "source_revision": "c635bc6696714b543feec24b4a062a8a8f3ff6d0"
+    },
+    {
+      "id": "connectors",
+      "source_path": "connectors/__init__.py",
+      "path": "connectors/__init__.py",
+      "import_name": "connectors",
+      "area": "legacy",
+      "public_exports": [
+        "AppConfigClient",
+        "BlobClient",
+        "BlobContainerClient"
+      ],
+      "legacy_aliases": [],
+      "source_revision": "c635bc6696714b543feec24b4a062a8a8f3ff6d0"
+    }
+  ],
+  "assets": [
+    ".chainlit",
+    "public",
+    "chainlit.config.yaml",
+    "chainlit.md",
+    "VERSION"
+  ],
+  "startup": [
+    "uvicorn main:app --host 0.0.0.0 --port 8080",
+    "import app"
+  ],
+  "review": "Proposed UI inventory for Azure/GPT-RAG#681; component PR review required"
+}
