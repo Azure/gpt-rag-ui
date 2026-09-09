@@ -358,7 +358,8 @@ class HostedContinuityCoordinator:
                     "hosted conversation; continuing the turn (a missed "
                     "write hides the panel list row and denies panel "
                     "read/feedback/delete access, "
-                    "never content disclosure)."
+                    "never content disclosure). Owner-index repair is required; "
+                    "the index write was not confirmed and no automatic repair was attempted."
                 )
 
         lock = await self._locks.acquire(conversation_id)

@@ -132,6 +132,9 @@ class OwnerIndexHookTests(unittest.IsolatedAsyncioTestCase):
         write.assert_awaited_once()
         self.assertTrue(any(text == "hi there" for text, _ in frames))
         self.assertIn("denies panel read/feedback/delete access", " ".join(logs.output))
+        self.assertIn("Owner-index repair is required", " ".join(logs.output))
+        self.assertIn("index write was not confirmed", " ".join(logs.output))
+        self.assertIn("no automatic repair was attempted", " ".join(logs.output))
         conversation_id = frames[0][1]["conversation_id"]
         harness.store.seed(conversation_id, OID_A, [("assistant", "hi there")])
         headers = harness.auth(OID_A)

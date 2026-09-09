@@ -640,11 +640,16 @@ async def handle_message(message: cl.Message):
                 await response_msg.stream_token(_ok_msg)
             else:
                 _fail_msg = (
-                    "File ingestion failed. Please contact the application support team and share reference "
+                    "File ingestion failed. Your question was not sent. "
+                    "Please retry by attaching the files and sending your question again. "
+                    "If the problem persists, contact the application support team and share reference "
                     f"{message.id}.\n\n"
                 )
                 file_reply_parts.append(_fail_msg)
                 await response_msg.stream_token(_fail_msg)
+                response_msg.content = "".join(file_reply_parts).strip()
+                await response_msg.update()
+                return
 
         user_ask = (message.content or "").strip()
         if CHAT_BACKEND == "hosted_agent" and not user_ask:

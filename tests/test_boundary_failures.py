@@ -88,7 +88,7 @@ class BoundaryFailureTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("processed successfully", response.content)
         self.assertNotIn("uploaded_docs", [call.args[0] for call in fake_cl.user_session.set.call_args_list])
 
-    async def test_upload_bookkeeping_requires_confirmation_and_preserves_question_continuation(self):
+    async def test_upload_bookkeeping_requires_confirmation_before_question_continuation(self):
         chat = self.chat()
         for outcome in (True, False, RuntimeError("private-ingestion")):
             with self.subTest(outcome=outcome), ExitStack() as stack:
@@ -126,7 +126,7 @@ class BoundaryFailureTests(unittest.IsolatedAsyncioTestCase):
                 ))
                 ingestion.assert_awaited_once()
                 self.assertEqual(["previous.pdf", "new.pdf"] if outcome is True else ["previous.pdf"], state["uploaded_docs"])
-                self.assertEqual(1, len(calls))  # Existing continuation; H6 remains pending.
+                self.assertEqual(1 if outcome is True else 0, len(calls))
                 self.assertNotIn("private-ingestion", response.content)
                 notices = "".join(call.args[0] for call in response.stream_token.await_args_list)
                 if outcome is True:
@@ -136,6 +136,9 @@ class BoundaryFailureTests(unittest.IsolatedAsyncioTestCase):
                     self.assertIn("File ingestion failed", notices)
                     self.assertIn("upload-reference", notices)
                     self.assertNotIn("processed successfully", notices)
+                    self.assertIn("Your question was not sent", response.content)
+                    self.assertIn("attaching the files and sending your question again", response.content)
+                    response.update.assert_awaited_once()
 
     async def test_oauth_refresh_failure_clears_session_and_denies_request(self):
         chat = self.chat()

@@ -210,14 +210,15 @@ with patch("fastapi.openapi.utils.get_openapi", side_effect=[
     import main
 assert_installed(main)
 from chainlit.server import app as chainlit_app
-with TestCase().assertLogs(level="ERROR"):
-    schema = chainlit_app.openapi()
-assert schema["paths"] == {}
-assert schema["info"]["version"] == chainlit_app.version
+with TestCase().assertLogs(level="ERROR"), TestCase().assertRaisesRegex(RuntimeError, "schema failure"):
+    chainlit_app.openapi()
 assert chainlit_app.openapi_schema is None
-with TestCase().assertLogs(level="ERROR"):
-    second_fallback = chainlit_app.openapi()
-assert second_fallback["paths"] == {}
+from fastapi.testclient import TestClient
+with TestClient(chainlit_app, raise_server_exceptions=False) as schema_client, TestCase().assertLogs(level="ERROR"):
+    failed_schema = schema_client.get("/openapi.json")
+assert failed_schema.status_code == 500
+assert "schema failure" not in failed_schema.text
+assert '"openapi"' not in failed_schema.text
 assert chainlit_app.openapi_schema is None
 assert chainlit_app.openapi() is recovered_schema
 assert chainlit_app.openapi() is recovered_schema
