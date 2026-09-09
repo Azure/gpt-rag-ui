@@ -290,6 +290,25 @@ class QualityHardeningTests(unittest.TestCase):
         return {name: json.loads((root / ".quality" / f"{name}.json").read_text())
                 for name in quality.RECORD_NAMES}
 
+    def test_review_lifecycle_metadata_does_not_replace_executed_evidence(self):
+        for state in ("proposed", "maintainer-approved", "active", "retired"):
+            with self.subTest(state=state):
+                records = self.records()
+                records["policy"]["review"]["state"] = state
+                entries = records["exceptions"]["entries"]
+                for entry in entries:
+                    entry["state"] = state
+                quality.validate_records(records)
+                handlers = [
+                    {"line": 1, **{key: entry[key] for key in
+                     ("module_id", "symbol", "handler_fingerprint", "caught_types")}}
+                    for entry in entries
+                ]
+                findings, used = quality.validate_exception_records(
+                    handlers, entries, SCRIPT.parents[2])
+                self.assertTrue(findings)
+                self.assertFalse(used)
+
     def test_four_record_schemas_require_every_field_and_reject_unknowns(self):
         records = self.records()
         quality.validate_records(records)

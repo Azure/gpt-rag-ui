@@ -74,7 +74,7 @@ The legacy names below remain supported, forwarding to those owners:
 - `scripts/`, `azure.yaml`, `Dockerfile`, `infra/`: deployment and lifecycle
   assets.
 - `tests/`: `unittest` behavior and security regression coverage.
-- `.quality/`, `.github/scripts/check-quality.py`: proposed protected-base
+- `.quality/`, `.github/scripts/check-quality.py`: protected-base
   lint/type/import/exception policy; see `docs/python-development.md`.
 - `.github/copilot-instructions.md`: branching, versioning, changelog, release,
   and documentation rules.

@@ -41,7 +41,7 @@ unexpected implementation errors propagate. Blob, diagnostic JWT, VERSION and
 optional logging boundaries catch their documented dependency/validation
 failures rather than arbitrary defects. Existing standalone download, chat,
 feedback, socket invalidation and optional citation/panel-hook outcomes remain
-explicit application boundaries; their proposed exceptions are not approvals.
+explicit application boundaries; exception metadata alone is not approval authority.
 
 ## Ownership and imports
 
@@ -246,25 +246,30 @@ without being described as full-repository typing coverage.
 Ruff selects F821, E722, BLE001, PGH003, PGH004 and RUF100. The supplementary
 AST handler inventory includes logged and re-raised broad handlers that BLE001
 exempts. `.quality/handler-inventory.json` records the remaining sites.
-`exceptions.json` contains individual **proposed**, not approved, boundaries:
+`exceptions.json` contains 30 individually authorized initial-adoption boundaries:
 each identifies its exact operation/catch fingerprint, rationale, diagnostic
-path, observable outcome and executed failure-test selector. Proposals expire
-on 2026-10-06 and require review before the blocking stage. No blanket inherited
+path, observable outcome and executed failure-test selector. Records retain their
+2026-10-06 expiry and blocking review stage. No blanket inherited
 handler waiver is granted. Narrowing removes 35 of the original 63 broad sites;
-the remaining 28 preserve application-level translation, cleanup/propagation
+the remaining 28 plus two companion cleanup sites preserve application-level translation, cleanup/propagation
 or contractual best-effort behavior. Logging alone does not approve them.
 
-Before adoption, maintainers must review each proposed boundary and the
-protected policy through PRs; only protected active, unexpired records with
-same-source passing evidence can authorize an exception. The initial gate
-therefore remains red, rather than reporting candidate proposals as accepted.
+The [explicit authorization by repository administrator @placerda](https://github.com/Azure/GPT-RAG/issues/681#issuecomment-5601804634)
+accepts these exact existing records and the policy for initial administrative
+adoption under Q5. It is not an independent GitHub review, a claim that bootstrap
+checks pass, or authorization for production deployment. Only protected active,
+unexpired records with same-source passing evidence can authorize an exception.
+The initial PR still reports a missing protected policy as `bootstrap-review`;
+candidate activation cannot approve itself. A real reference PR against the
+adopted `develop` base and coordinator-owned required-check controls remain
+necessary before enforcement can be claimed.
 Installed acceptance covers real auth order, upload writes/cleanup and
 standalone download/OpenAPI failures outside the checkout. Linux acceptance
 is supplied by the actual `container-tests` job for the PR head, not inferred
 from local Windows results. The quality fixtures include disposable Git
 repositories and real unittest/aggregate subprocesses for protected-policy,
 receipt and false-green mutations; they do not substitute for controlled
-required-check acceptance PRs. Obtain maintainer review of the concrete policy.
+required-check acceptance PRs. Subsequent policy changes still require maintainer review.
 The bootstrap PR cannot approve itself by editing JSON: a base without policy
 reports `bootstrap-review`. Ordinary PR checks execute the protected base's
 checker and tool config as their minimum, and separately report candidate
@@ -291,7 +296,7 @@ PR evidence remain separate acceptance activities.
 | T037 | Docker package installation, unchanged Uvicorn startup, ephemeral image build and offline `container_smoke.py`; real aggregate dependency and image behavioral suite. |
 | T041 / UI part of T045 | This contributor guide, `AGENTS.md`, PR #110 evidence and coordinated documentation/umbrella handoff. |
 | Dependency failures | `test_failure_contracts.py` exercises real retry/connection parsing and concrete Azure, HTTPX, JWT and logging errors alongside unexpected-defect propagation. |
-| Retained application boundaries | `test_boundary_failures.py`, the socket failure cases in `test_embed_security.py`, existing secure-download/panel-hook tests and installed startup failure acceptance; exact selectors are recorded per proposed site. |
+| Retained application boundaries | `test_boundary_failures.py`, the socket failure cases in `test_embed_security.py`, existing secure-download/panel-hook tests and installed startup failure acceptance; exact selectors are recorded per authorized site. |
 
 ## Recovery and coordinated documentation
 

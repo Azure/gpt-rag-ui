@@ -2282,8 +2282,8 @@
   "dynamic_imports": [],
   "review": {
     "owner": "@placerda",
-    "reference": "Azure/GPT-RAG#689",
-    "state": "proposed",
-    "reason": "Component PR review and protected-base bootstrap required"
+    "reference": "https://github.com/Azure/GPT-RAG/issues/681#issuecomment-5601804634",
+    "state": "active",
+    "reason": "Explicit initial administrative adoption by @placerda under Q5; not independent review. Protected-base reference validation and required-check settings remain separate coordinator controls."
   }
 }
