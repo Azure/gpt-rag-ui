@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Retry failed classic-chat uploads without losing attachments.** Restore the
+  previous session conversation ID when a failed upload allocated a new one.
+  Reattached files are ingested under a fresh conversation before the question
+  runs; existing conversation ownership checks remain unchanged.
+- **Stop questions after unconfirmed ingestion.** False results and raised
+  failures finalize a reference-bearing retry notice without sending the
+  question or claiming successful file processing. Only confirmed batches
+  update uploaded-document bookkeeping.
+- **Keep OpenAPI failures retryable and truthful.** Failed schema generation
+  propagates instead of returning a successful metadata-only schema; later
+  requests retry generation and cache only success.
+- **Expose owner-index repair needs without weakening panel access.** A failed
+  optional index write logs that repair is required while the turn continues;
+  missing ownership rows still hide panel listings and deny read, feedback,
+  and delete operations.
+
 ### Changed
 
 - **Preserve dependency failures without masking implementation defects.**

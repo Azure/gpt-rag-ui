@@ -461,7 +461,8 @@ async def handle_message(message: cl.Message):
     with tracer.start_as_current_span('handle_message', kind=SpanKind.SERVER) as span:
 
         message.id = message.id or str(uuid.uuid4())
-        conversation_id = cl.user_session.get("conversation_id") or ""
+        prior_conversation_id = cl.user_session.get("conversation_id")
+        conversation_id = prior_conversation_id or ""
         existing_conversation_id = str(conversation_id).strip()
         hosted_conversation_id = (
             str(cl.user_session.get("hosted_agent_conversation_id") or "").strip()
@@ -639,6 +640,10 @@ async def handle_message(message: cl.Message):
                 file_reply_parts.append(_ok_msg)
                 await response_msg.stream_token(_ok_msg)
             else:
+                if not upload_conversation_id:
+                    # No turn created this new conversation. Do not make a retry
+                    # treat its abandoned upload ID as an owned history thread.
+                    cl.user_session.set("conversation_id", prior_conversation_id)
                 _fail_msg = (
                     "File ingestion failed. Your question was not sent. "
                     "Please retry by attaching the files and sending your question again. "

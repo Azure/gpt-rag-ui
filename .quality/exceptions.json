@@ -496,12 +496,13 @@
         "Exception"
       ],
       "boundary": "Uploaded-file ingestion interaction",
-      "reason": "H6 bounded implementation: false ingestion results and exceptions stop the accompanying question before backend invocation and finalize a reference-bearing notice requesting reattachment and resubmission. uploaded_docs changes only after confirmed batch ingestion; failures preserve previous confirmed names and never claim Files received. The boolean client contract does not expose per-file partial success, so no partial batch is claimed confirmed. This individual exception proposal remains pending review, not approved.",
+      "reason": "H6 bounded implementation: false ingestion results and exceptions stop the accompanying question before backend invocation and finalize a reference-bearing notice requesting reattachment and resubmission. A failed attempt that allocated a new conversation ID restores the prior session value; retries ingest every reattached file under a fresh ID before a turn, without changing existing conversation ownership checks. uploaded_docs changes only after confirmed batch ingestion; failures preserve previous confirmed names and never claim Files received. The boolean client contract does not expose per-file partial success, so no partial batch is claimed confirmed. This individual exception proposal remains pending review, not approved.",
       "failure_outcome": "failure-translation",
       "diagnostic_path": "logger.exception for raised failures or logger.warning for false results; finalized ingestion failure with question reference and retry guidance, no question continuation",
       "evidence_tests": [
         "tests/test_boundary_failures.py::BoundaryFailureTests.test_ingestion_failure_does_not_claim_processed_success",
-        "tests/test_boundary_failures.py::BoundaryFailureTests.test_upload_bookkeeping_requires_confirmation_before_question_continuation"
+        "tests/test_boundary_failures.py::BoundaryFailureTests.test_upload_bookkeeping_requires_confirmation_before_question_continuation",
+        "tests/test_boundary_failures.py::BoundaryFailureTests.test_failed_upload_retry_ingests_all_files_before_turn"
       ],
       "state": "proposed",
       "review_by_stage": "blocking",

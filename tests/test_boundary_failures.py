@@ -140,6 +140,119 @@ class BoundaryFailureTests(unittest.IsolatedAsyncioTestCase):
                     self.assertIn("attaching the files and sending your question again", response.content)
                     response.update.assert_awaited_once()
 
+    async def test_failed_upload_retry_ingests_all_files_before_turn(self):
+        chat = self.chat()
+        from gpt_rag_ui.clients.ingestion_client import _build_ingest_documents_payload
+
+        for prior_id in (None, "", "owned-conversation"):
+            for failure in (False, RuntimeError("private-ingestion")):
+                with self.subTest(prior_id=prior_id, failure=failure), ExitStack() as stack:
+                    state = {"conversation_id": prior_id, "uploaded_docs": ["previous.pdf"]}
+                    events = []
+                    payloads = []
+                    response = AsyncMock()
+                    response.content = ""
+                    files = [
+                        SimpleNamespace(mime="application/pdf", name=name, path=name, size=1)
+                        for name in ("first.pdf", "second.pdf")
+                    ]
+
+                    async def ingest(**kwargs):
+                        events.append("ingest")
+                        payloads.append(await _build_ingest_documents_payload(**kwargs))
+                        if len(payloads) == 1:
+                            if isinstance(failure, Exception):
+                                raise failure
+                            return failure
+                        return True
+
+                    async def stream(cid, *args):
+                        events.append("turn")
+                        self.assertEqual(payloads[-1]["conversationId"], cid)
+                        if False:
+                            yield
+
+                    owner = AsyncMock(return_value={"id": prior_id} if prior_id else None)
+                    for name, value in {
+                        "cl": SimpleNamespace(
+                            File=SimpleNamespace, Message=Mock(return_value=response),
+                            user_session=SimpleNamespace(
+                                get=state.get, set=lambda key, value: state.__setitem__(key, value),
+                            ),
+                        ),
+                        "tracer": MagicMock(), "CHAT_BACKEND": "orchestrator",
+                        "SHOW_STATISTICS": False, "ENABLE_FEEDBACK": False,
+                        "get_auth_info": AsyncMock(return_value={"authorized": True}),
+                        "get_owned_conversation": owner,
+                        "ingest_files_session": ingest, "call_orchestrator_stream": stream,
+                    }.items():
+                        stack.enter_context(patch.object(chat, name, value))
+                    stack.enter_context(patch(
+                        "gpt_rag_ui.clients.ingestion_client._read_file_bytes", return_value=b"x",
+                    ))
+                    await chat.handle_message(SimpleNamespace(
+                        id="retry-reference", content="question", elements=files,
+                    ))
+                    self.assertEqual(["ingest"], events)
+                    self.assertEqual(prior_id, state["conversation_id"])
+                    self.assertEqual(["previous.pdf"], state["uploaded_docs"])
+                    self.assertIn("Your question was not sent", response.content)
+                    self.assertNotIn("private-ingestion", response.content)
+                    await chat.handle_message(SimpleNamespace(
+                        id="retry-reference", content="question", elements=files,
+                    ))
+                    self.assertEqual(["ingest", "ingest", "turn"], events)
+                    self.assertEqual(["previous.pdf", "first.pdf", "second.pdf"], state["uploaded_docs"])
+                    self.assertEqual(payloads[0]["values"], payloads[1]["values"])
+                    self.assertEqual({"conversationId", "values"}, set(payloads[1]))
+                    if prior_id:
+                        self.assertEqual(prior_id, state["conversation_id"])
+                        self.assertEqual(2, owner.await_count)
+                        self.assertEqual(payloads[0]["conversationId"], payloads[1]["conversationId"])
+                    else:
+                        owner.assert_not_awaited()
+                        self.assertNotEqual(payloads[0]["conversationId"], payloads[1]["conversationId"])
+
+    async def test_upload_retry_does_not_bypass_existing_conversation_ownership(self):
+        chat = self.chat()
+        state = {"conversation_id": "unowned-conversation"}
+        response = AsyncMock()
+        response.content = ""
+        owner = AsyncMock(return_value=None)
+        ingestion = AsyncMock()
+
+        async def stream(*args):
+            if False:
+                yield
+
+        with (
+            patch.object(chat, "cl", SimpleNamespace(
+                File=SimpleNamespace, Message=Mock(return_value=response),
+                user_session=SimpleNamespace(
+                    get=state.get, set=lambda key, value: state.__setitem__(key, value),
+                ),
+            )),
+            patch.object(chat, "tracer", MagicMock()),
+            patch.object(chat, "CHAT_BACKEND", "orchestrator"),
+            patch.object(chat, "SHOW_STATISTICS", False),
+            patch.object(chat, "ENABLE_FEEDBACK", False),
+            patch.object(chat, "get_auth_info", AsyncMock(return_value={"authorized": True})),
+            patch.object(chat, "get_owned_conversation", owner),
+            patch.object(chat, "ingest_files_session", ingestion),
+            patch.object(chat, "call_orchestrator_stream", stream),
+        ):
+            for _ in range(2):
+                await chat.handle_message(SimpleNamespace(
+                    id="denied-reference", content="question",
+                    elements=[SimpleNamespace(mime="application/pdf", name="file.pdf", path="file.pdf", size=1)],
+                ))
+                self.assertEqual("unowned-conversation", state["conversation_id"])
+        self.assertEqual(2, owner.await_count)
+        ingestion.assert_not_awaited()
+        self.assertNotIn("uploaded_docs", state)
+        notices = "".join(call.args[0] for call in response.stream_token.await_args_list)
+        self.assertIn("conversation access denied", notices)
+
     async def test_oauth_refresh_failure_clears_session_and_denies_request(self):
         chat = self.chat()
         user = SimpleNamespace(metadata={"auth_source": "oauth"})
