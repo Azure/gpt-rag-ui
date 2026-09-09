@@ -1,7 +1,7 @@
 import re
 
 APPLICATION_INSIGHTS_CONNECTION_STRING = "APPLICATIONINSIGHTS_CONNECTION_STRING"
-APP_NAME = "gpt-rag-ui"  # noqa: F821
+APP_NAME = "gpt-rag-ui"
 
 # Constants
 UUID_REGEX = re.compile(
