@@ -53,7 +53,7 @@ edit_message = true
 enabled = false
 [UI]
 # Name of the assistant.
-name = "GPT-RAG"
+name = "Agent Landing Zone"
 
 # default_theme = "dark"
 default_theme = "light"

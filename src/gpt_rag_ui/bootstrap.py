@@ -1037,7 +1037,7 @@ def _create_chainlit_app(
             "show_release_footer": show_release_footer,
             "gpt_rag_release": _format_release_value(
                 gpt_rag_release,
-                "gpt-rag release information is missing",
+                "Agent Landing Zone release information is missing",
             ),
             "gpt_rag_ui_release": _format_release_value(
                 gpt_rag_ui_release,
