@@ -9,6 +9,8 @@ from opentelemetry.sdk.resources import SERVICE_NAME, Resource, SERVICE_INSTANCE
 from opentelemetry.trace import Span, Status, StatusCode, Tracer
 from gpt_rag_ui.config.appconfig import AppConfigClient
 
+TELEMETRY_PREFIX = "agentlz."
+
 # Custom filter to exclude trace logs
 class ExcludeTraceLogsFilter(logging.Filter):
     def filter(self, record):
@@ -114,6 +116,8 @@ class Telemetry:
 
     @staticmethod
     def get_tracer(name: str) -> Tracer:
+        if not name.startswith(TELEMETRY_PREFIX):
+            name = TELEMETRY_PREFIX + name
         return trace.get_tracer(name)
 
     @staticmethod

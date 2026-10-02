@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **Agent Landing Zone dual-read and rebrand** (Azure/GPT-RAG#695). App
+  Configuration now loads the `agent-lz` label, which overrides the legacy
+  `gpt-rag` label; `AGENTLZ_*` keys are read before legacy `GPT_RAG_*` keys.
+  Tracer names use the `agentlz.` prefix. Visible branding (assistant name,
+  welcome title, release footer) now reads "Agent Landing Zone". Existing
+  `gpt-rag` deployments keep working unchanged.
+
 ### Fixed
 
 - **Retry failed classic-chat uploads without losing attachments.** Restore the
