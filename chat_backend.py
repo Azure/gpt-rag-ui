@@ -1,47 +1,10 @@
-"""Chat backend selection shared by runtime wiring and focused tests."""
+"""Compatibility exports; implementation lives in gpt_rag_ui.config.chat_backend."""
 
-import os
-from collections.abc import Mapping
-from typing import Literal, Protocol
-
-ChatBackend = Literal["orchestrator", "hosted_agent"]
-DEFAULT_CHAT_BACKEND: ChatBackend = "hosted_agent"
-
-
-class ChatBackendConfig(Protocol):
-    def get(self, key: str, default: str, type: type) -> str: ...
-
-
-def resolve_chat_backend(value: str | None) -> ChatBackend:
-    backend = (value or "").strip().lower() or DEFAULT_CHAT_BACKEND
-    if backend not in {"orchestrator", "hosted_agent"}:
-        raise RuntimeError(
-            f"Unknown CHAT_BACKEND value: {backend!r}. "
-            "Valid values are 'hosted_agent' (default) and 'orchestrator'."
-        )
-    return backend
-
-
-def load_chat_backend(
-    config: ChatBackendConfig,
-    *,
-    environment: Mapping[str, str] | None = None,
-) -> ChatBackend:
-    """Resolve the env-over-App-Configuration backend selection."""
-    source = os.environ if environment is None else environment
-    value = source.get("CHAT_BACKEND")
-    if value is None:
-        value = config.get("CHAT_BACKEND", "", str)
-    return resolve_chat_backend(value)
-
-
-def select_upload_conversation_id(
-    backend: ChatBackend,
-    *,
-    classic_conversation_id: str,
-    hosted_conversation_id: str,
-) -> str:
-    """Select only the conversation namespace owned by the active backend."""
-    if backend == "hosted_agent":
-        return hosted_conversation_id.strip()
-    return classic_conversation_id.strip()
+from gpt_rag_ui.config.chat_backend import (
+    ChatBackend as ChatBackend,
+    ChatBackendConfig as ChatBackendConfig,
+    DEFAULT_CHAT_BACKEND as DEFAULT_CHAT_BACKEND,
+    load_chat_backend as load_chat_backend,
+    resolve_chat_backend as resolve_chat_backend,
+    select_upload_conversation_id as select_upload_conversation_id,
+)

@@ -73,11 +73,11 @@
 
   function renderTextNode(target, leftValue, rightValue) {
     target.replaceChildren(
-      createLabel("gpt-rag"),
+      createLabel("Agent Landing Zone"),
       document.createTextNode(" " + leftValue + " "),
       createDivider(),
       document.createTextNode(" "),
-      createLabel("gpt-rag-ui"),
+      createLabel("UI"),
       document.createTextNode(" " + rightValue)
     );
   }
@@ -112,7 +112,7 @@
 
     renderTextNode(
       text,
-      cachedData.gpt_rag_release || "gpt-rag release information is missing",
+      cachedData.gpt_rag_release || "Agent Landing Zone release information is missing",
       cachedData.gpt_rag_ui_release || "gpt-rag-ui release information is missing"
     );
     ensureSpacing();
@@ -122,7 +122,7 @@
 
   async function loadVersionFooter() {
     var fallback = {
-      gpt_rag_release: "gpt-rag release information is missing",
+      gpt_rag_release: "Agent Landing Zone release information is missing",
       gpt_rag_ui_release: "gpt-rag-ui release information is missing",
     };
 

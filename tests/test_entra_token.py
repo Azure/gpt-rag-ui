@@ -7,7 +7,7 @@ import jwt
 from cryptography.hazmat.primitives.asymmetric import rsa
 from jwt.algorithms import RSAAlgorithm
 
-from entra_token import EntraTokenError, EntraTokenValidator
+from gpt_rag_ui.auth.entra_token import EntraTokenError, EntraTokenValidator
 
 
 TENANT_ID = "11111111-2222-3333-4444-555555555555"
@@ -160,7 +160,7 @@ class EntraTokenValidatorTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with patch(
-            "entra_token.time.monotonic",
+            "gpt_rag_ui.auth.entra_token.time.monotonic",
             side_effect=lambda: monotonic_time,
         ):
             with self.assertRaisesRegex(EntraTokenError, "signing key"):

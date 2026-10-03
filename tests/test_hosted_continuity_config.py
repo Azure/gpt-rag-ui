@@ -2,7 +2,7 @@ import os
 import unittest
 from unittest.mock import patch
 
-from hosted_continuity_config import (
+from gpt_rag_ui.config.hosted_continuity_config import (
     HostedContinuityConfigError,
     load_hosted_continuity_settings,
 )

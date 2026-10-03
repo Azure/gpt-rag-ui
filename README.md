@@ -1,4 +1,4 @@
-<!-- 
+<!--
 page_type: sample
 languages:
 - azdeveloper
@@ -28,6 +28,9 @@ The canonical architecture and deployment documentation remains the
 repository-specific security contract and portal integration steps for the
 opt-in Chainlit Copilot widget are documented in
 [Embed GPT-RAG with Chainlit Copilot](docs/copilot-embedding.md).
+
+For Python package ownership, contributor installation, quality checks and
+the staged-asset contract, see [Python development](docs/python-development.md).
 
 Chainlit Copilot embedding is opt-in and disabled by default. Enabling the
 script/widget requires an explicit `anonymous` or `entra` mode, distinct exact
@@ -65,7 +68,7 @@ az login
 
 Initialize the template:
 ```shell
-azd init -t azure/gpt-rag-ui 
+azd init -t azure/gpt-rag-ui
 ```
 > [!IMPORTANT]
 > Use the **same environment name** with `azd init` as in the infrastructure deployment to keep components consistent.
@@ -73,7 +76,7 @@ azd init -t azure/gpt-rag-ui
 Update env variables then deploy:
 ```shell
 azd env refresh
-azd deploy 
+azd deploy
 ```
 > [!IMPORTANT]
 > Run `azd env refresh` with the **same subscription** and **resource group** used in the infrastructure deployment.
@@ -442,7 +445,7 @@ Encountered an error or bug? Help us improve the quality of this accelerator by 
 
 ## Previous Releases
 
-> [!NOTE]  
+> [!NOTE]
 > For earlier versions, use the corresponding release in the GitHub repository (e.g., v1.0.0 for the initial version).
 
 ## 🤝 Contributing

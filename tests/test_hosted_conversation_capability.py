@@ -2,7 +2,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from hosted_conversation_capability import (
+from gpt_rag_ui.clients.hosted_conversation_capability import (
     ConversationCapabilityError,
     ConversationCapabilityManager,
 )

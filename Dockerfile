@@ -9,6 +9,7 @@ RUN pip install -r requirements.txt
 
 # Copy app code
 COPY . .
+RUN pip install --no-deps .
 
 # Expose port 8080
 EXPOSE 8080

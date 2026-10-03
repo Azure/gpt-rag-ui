@@ -18,7 +18,7 @@
     },
     "auth": {
         "login": {
-            "title": "Welcome to GPT-RAG",
+            "title": "Welcome to Agent Landing Zone",
             "form": {
                 "email": {
                     "label": "Email address",

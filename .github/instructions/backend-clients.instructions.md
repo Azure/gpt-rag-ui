@@ -1,5 +1,5 @@
 ---
-applyTo: "orchestrator_client.py,ingestion_client.py,connectors/**/*.py,tests/test_ingestion_security.py"
+applyTo: "orchestrator_client.py,ingestion_client.py,connectors/**/*.py,src/gpt_rag_ui/clients/**/*.py,src/gpt_rag_ui/config/appconfig.py,tests/test_ingestion_security.py"
 ---
 
 # Backend client and connector rules

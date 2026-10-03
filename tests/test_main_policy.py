@@ -3,7 +3,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-import dependencies
+import gpt_rag_ui.config.dependencies as dependencies
 
 
 class FakeConfig:
@@ -17,8 +17,8 @@ class FakeConfig:
 
 dependencies.__dict__["__config"] = FakeConfig()
 
-import main  # noqa: E402
-from embed_config import EmbedConfigError, EmbedSettings  # noqa: E402
+import gpt_rag_ui.bootstrap as main  # noqa: E402
+from gpt_rag_ui.config.embed_config import EmbedConfigError, EmbedSettings  # noqa: E402
 
 
 STRONG_SECRET = "a-secure-test-secret-with-at-least-32-bytes"
@@ -128,7 +128,7 @@ class MainPolicyTests(unittest.TestCase):
                 },
                 clear=True,
             ),
-            patch("main._is_running_in_azure_host", return_value=True),
+            patch("gpt_rag_ui.bootstrap._is_running_in_azure_host", return_value=True),
         ):
             auth_state = main._evaluate_auth_state(config)
             main._configure_auth_environment(config, auth_state)
@@ -157,7 +157,7 @@ class MainPolicyTests(unittest.TestCase):
     def test_standalone_keeps_temporary_secret_fallback(self):
         with (
             patch.dict(os.environ, {}, clear=True),
-            patch("main.secrets.token_urlsafe", return_value="temporary-secret"),
+            patch("gpt_rag_ui.bootstrap.secrets.token_urlsafe", return_value="temporary-secret"),
             self.assertLogs("gpt_rag_ui.main", level="WARNING") as logs,
         ):
             main._configure_chainlit_prereqs(FakeConfig())
@@ -202,7 +202,7 @@ class MainPolicyTests(unittest.TestCase):
         file = object()
 
         with patch(
-            "embed_auth.get_request_copilot_session",
+            "gpt_rag_ui.auth.embed_auth.get_request_copilot_session",
             return_value=SimpleNamespace(auth_mode="entra"),
         ):
             main._configure_copilot_upload_validation(server)
@@ -213,7 +213,7 @@ class MainPolicyTests(unittest.TestCase):
         validate_file_size.assert_called_once_with(file, None)
 
         with patch(
-            "embed_auth.get_request_copilot_session",
+            "gpt_rag_ui.auth.embed_auth.get_request_copilot_session",
             return_value=None,
         ):
             main._configure_copilot_upload_validation(server)

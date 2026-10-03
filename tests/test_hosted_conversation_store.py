@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, patch
 
 import httpx
 
-from hosted_conversation_store import (
+from gpt_rag_ui.clients.hosted_conversation_store import (
     ConversationIdempotencyCache,
     ConversationItem,
     ConversationLockRegistry,
@@ -45,7 +45,7 @@ def _client_with(handler, *, owner_binding: str = "capability") -> tuple[Convers
 class TestConversationStoreClient(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         patcher = patch(
-            "hosted_conversation_store.acquire_obo_token",
+            "gpt_rag_ui.clients.hosted_conversation_store.acquire_obo_token",
             new=AsyncMock(return_value="delegated-token"),
         )
         self.mock_obo = patcher.start()
@@ -234,13 +234,13 @@ class TestConversationStoreDelegatedOwnerBinding(unittest.IsolatedAsyncioTestCas
 
     async def asyncSetUp(self):
         patcher = patch(
-            "hosted_conversation_store.acquire_service_identity_token",
+            "gpt_rag_ui.clients.hosted_conversation_store.acquire_service_identity_token",
             new=AsyncMock(return_value="service-token"),
         )
         self.mock_service_token = patcher.start()
         self.addCleanup(patcher.stop)
         obo_patcher = patch(
-            "hosted_conversation_store.acquire_obo_token",
+            "gpt_rag_ui.clients.hosted_conversation_store.acquire_obo_token",
             new=AsyncMock(side_effect=AssertionError("OBO must not be used in delegated mode")),
         )
         obo_patcher.start()

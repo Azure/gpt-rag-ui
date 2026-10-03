@@ -1,0 +1,613 @@
+{
+  "schema_version": 1,
+  "entries": [
+    {
+      "id": "ui-boundary-02-cleanup",
+      "module_id": "gpt_rag_ui.api.feedback",
+      "symbol": "register_feedback_handlers.handle_feedback",
+      "review": "Initial administrative adoption by @placerda; not independent review: https://github.com/Azure/GPT-RAG/issues/681#issuecomment-5601804634",
+      "handler_fingerprint": "9601a863df38f68150ffe5e5e271bcca00a3aa72b29aef0908922b67e312c832",
+      "caught_types": ["Exception"],
+      "boundary": "Optional feedback form removal after backend outcome",
+      "reason": "A removal failure must not block notification of the established backend outcome or trigger another write. Retain the form reference for explicit later cleanup; cancellation propagates.",
+      "failure_outcome": "contractual-best-effort",
+      "diagnostic_path": "Static logging.error without exception payload; original outcome toast attempted once.",
+      "evidence_tests": [
+        "tests/test_boundary_failures.py::BoundaryFailureTests.test_feedback_form_cleanup_preserves_submission_outcome"
+      ],
+      "state": "active",
+      "review_by_stage": "blocking",
+      "expires_on": "2026-10-06"
+    },
+    {
+      "id": "ui-boundary-11-cleanup",
+      "module_id": "embed_security",
+      "symbol": "configure_copilot_bridge_guards.disconnect_socket",
+      "review": "Initial administrative adoption by @placerda; not independent review: https://github.com/Azure/GPT-RAG/issues/681#issuecomment-5601804634",
+      "handler_fingerprint": "2d819a865b36cc04496168f08aea00216a82347f49d65411f9faa4ab1b9a6ec8",
+      "caught_types": ["Exception"],
+      "boundary": "Secondary Engine.IO close failure during failed disconnect",
+      "reason": "Record ordinary secondary failure without replacing the primary disconnect exception. Cancellation is not suppressed; no claim of successful termination or lifecycle reconciliation.",
+      "failure_outcome": "cleanup-propagation",
+      "diagnostic_path": "Static logger.error without exception payload followed by outer primary re-raise.",
+      "evidence_tests": [
+        "tests/test_embed_security.py::BridgeGuardTests.test_disconnect_double_failure_preserves_primary_with_safe_diagnostic",
+        "tests/test_embed_security.py::BridgeGuardTests.test_disconnect_cancellation_remains_distinct"
+      ],
+      "state": "active",
+      "review_by_stage": "blocking",
+      "expires_on": "2026-10-06"
+    },
+    {
+      "id": "ui-boundary-01",
+      "module_id": "gpt_rag_ui.api.download_routes",
+      "symbol": "register_secure_download_route.download_blob_file",
+      "review": "Initial administrative adoption by @placerda; not independent review: https://github.com/Azure/GPT-RAG/issues/681#issuecomment-5601804634",
+      "handler_fingerprint": "b756bff96eda34351f57aba6b1c3fe329e1d500e669db581dcdb139a1e6e0a2d",
+      "caught_types": [
+        "Exception"
+      ],
+      "boundary": "Authorized synchronous downloader acquisition via asyncio.to_thread only",
+      "reason": "Stage 2 P2: unexpected downloader acquisition failures become generic HTTP 500 with no-store after grant, principal, ownership and target checks. Conversation resolution occurs before this try and lazy DownloadStream iteration occurs after it; neither is translated by this catch. No resolver/late-stream response guarantee or new boundary design is proposed.",
+      "failure_outcome": "failure-translation",
+      "diagnostic_path": "logger.exception; generic 500 response with no-store",
+      "evidence_tests": [
+        "tests/test_download_security.py::DownloadSecurityTests.test_secure_download_route_fails_closed",
+        "tests/test_download_security.py::DownloadSecurityTests.test_download_acquisition_boundary_excludes_resolver_and_late_iteration"
+      ],
+      "state": "active",
+      "review_by_stage": "blocking",
+      "expires_on": "2026-10-06"
+    },
+    {
+      "id": "ui-boundary-02",
+      "module_id": "gpt_rag_ui.api.feedback",
+      "symbol": "register_feedback_handlers.handle_feedback",
+      "review": "Initial administrative adoption by @placerda; not independent review: https://github.com/Azure/GPT-RAG/issues/681#issuecomment-5601804634",
+      "handler_fingerprint": "5754b34c00eb31d439a9770d6ee1ef8e2bf6c44c77193ef80f64c00d0e20d26a",
+      "caught_types": [
+        "Exception"
+      ],
+      "boundary": "Chainlit feedback action callback",
+      "reason": "Auth/validation/backend exceptions select an error notification and are diagnosed before optional form removal. Cleanup failure cannot change the backend outcome or retry the write; cancellation propagates.",
+      "failure_outcome": "failure-translation",
+      "diagnostic_path": "Static logging.error before optional cleanup; error toast attempted independently of removal failure. Notification transport failure propagates.",
+      "evidence_tests": [
+        "tests/test_boundary_failures.py::BoundaryFailureTests.test_feedback_boundary_emits_failure_toast_not_success",
+        "tests/test_boundary_failures.py::BoundaryFailureTests.test_feedback_form_cleanup_preserves_submission_outcome",
+        "tests/test_boundary_failures.py::BoundaryFailureTests.test_feedback_notification_failure_does_not_retry_written_feedback"
+      ],
+      "state": "active",
+      "review_by_stage": "blocking",
+      "expires_on": "2026-10-06"
+    },
+    {
+      "id": "ui-boundary-03",
+      "module_id": "embed_auth",
+      "symbol": "CopilotSessionStore._notify_invalidated",
+      "review": "Initial administrative adoption by @placerda; not independent review: https://github.com/Azure/GPT-RAG/issues/681#issuecomment-5601804634",
+      "handler_fingerprint": "ee84c052306e126a4806e67c8e15feffcf73a63294804d629ae0c1e59d693b62",
+      "caught_types": [
+        "Exception"
+      ],
+      "boundary": "Per-session invalidation notification callback",
+      "reason": "Session invalidation is already committed; a failed injected socket callback must be logged while remaining invalidations continue. Cancellation is not swallowed.",
+      "failure_outcome": "contractual-best-effort",
+      "diagnostic_path": "logger.exception; subsequent callback invocation",
+      "evidence_tests": [
+        "tests/test_boundary_failures.py::BoundaryFailureTests.test_invalidation_callback_failure_does_not_skip_other_sessions",
+        "tests/test_boundary_failures.py::BoundaryFailureTests.test_cancellation_is_not_converted_to_successful_invalidation"
+      ],
+      "state": "active",
+      "review_by_stage": "blocking",
+      "expires_on": "2026-10-06"
+    },
+    {
+      "id": "ui-boundary-04",
+      "module_id": "embed_security",
+      "symbol": "CopilotSocketRegistry.bind_connection",
+      "review": "Initial administrative adoption by @placerda; not independent review: https://github.com/Azure/GPT-RAG/issues/681#issuecomment-5601804634",
+      "handler_fingerprint": "6e6629412e9cc7c57e4a00e23d815331c9645753f8c54b583b2e494c18931a78",
+      "caught_types": [
+        "Exception"
+      ],
+      "boundary": "Bounded socket replacement teardown",
+      "reason": "Replacement must not steal the old association when an injected teardown callback fails; preserve tracking and reject the replacement for retry.",
+      "failure_outcome": "failure-translation",
+      "diagnostic_path": "logger.exception; rejected binding",
+      "evidence_tests": [
+        "tests/test_embed_security.py::BridgeGuardTests.test_failed_replacement_disconnect_keeps_old_association"
+      ],
+      "state": "active",
+      "review_by_stage": "blocking",
+      "expires_on": "2026-10-06"
+    },
+    {
+      "id": "ui-boundary-05",
+      "module_id": "embed_security",
+      "symbol": "CopilotSocketRegistry.disconnect_session",
+      "review": "Initial administrative adoption by @placerda; not independent review: https://github.com/Azure/GPT-RAG/issues/681#issuecomment-5601804634",
+      "handler_fingerprint": "4c0b76598807ea2c2354b694e6dfa8231207d104845e22dd2234d142d5c83a37",
+      "caught_types": [
+        "Exception"
+      ],
+      "boundary": "Invalidated session per-socket teardown",
+      "reason": "Deny the binding before teardown, continue independent socket cleanup on arbitrary callback failure and count only actual disconnects; retain failed associations as inactive.",
+      "failure_outcome": "contractual-best-effort",
+      "diagnostic_path": "logger.exception; inactive retained socket and successful-only count",
+      "evidence_tests": [
+        "tests/test_embed_security.py::BridgeGuardTests.test_failed_session_disconnect_retains_denied_binding"
+      ],
+      "state": "active",
+      "review_by_stage": "blocking",
+      "expires_on": "2026-10-06"
+    },
+    {
+      "id": "ui-boundary-06",
+      "module_id": "embed_security",
+      "symbol": "_target_has_copilot_sockets",
+      "review": "Initial administrative adoption by @placerda; not independent review: https://github.com/Azure/GPT-RAG/issues/681#issuecomment-5601804634",
+      "handler_fingerprint": "f32bcc076c9df5109e20369857d83491585c57dfcaff7fbfd856f9fbc2462095",
+      "caught_types": [
+        "Exception"
+      ],
+      "boundary": "Socket.IO recipient enumeration safety check",
+      "reason": "An unknown manager failure cannot prove the room excludes Copilot clients; conservatively retain the Copilot restriction when any protected sockets exist.",
+      "failure_outcome": "failure-translation",
+      "diagnostic_path": "logger.exception; conservative protected-recipient result",
+      "evidence_tests": [
+        "tests/test_embed_security.py::BridgeGuardTests.test_bridge_recipient_lookup_failure_is_conservative"
+      ],
+      "state": "active",
+      "review_by_stage": "blocking",
+      "expires_on": "2026-10-06"
+    },
+    {
+      "id": "ui-boundary-07",
+      "module_id": "embed_security",
+      "symbol": "disconnect_copilot_session",
+      "review": "Initial administrative adoption by @placerda; not independent review: https://github.com/Azure/GPT-RAG/issues/681#issuecomment-5601804634",
+      "handler_fingerprint": "2a8561cb32d5bc9bbd7d8a97ed77033906a84087036941eb24a435f460d59d61",
+      "caught_types": [
+        "Exception"
+      ],
+      "boundary": "Invalidated session Engine.IO transport cleanup",
+      "reason": "Invalidation already denies the session; one failed transport closure must not abort cleanup of other reserved transports or claim a successful disconnect.",
+      "failure_outcome": "contractual-best-effort",
+      "diagnostic_path": "logger.exception; preserved invalidation and actual disconnect count",
+      "evidence_tests": [
+        "tests/test_embed_security.py::BridgeGuardTests.test_invalidation_transport_failures_are_logged_without_counting_success"
+      ],
+      "state": "active",
+      "review_by_stage": "blocking",
+      "expires_on": "2026-10-06"
+    },
+    {
+      "id": "ui-boundary-08",
+      "module_id": "embed_security",
+      "symbol": "disconnect_copilot_session",
+      "review": "Initial administrative adoption by @placerda; not independent review: https://github.com/Azure/GPT-RAG/issues/681#issuecomment-5601804634",
+      "handler_fingerprint": "767f30df3d2c994058add75878ffceb0b5647093ee1fe4a5d70a9d55c88b135e",
+      "caught_types": [
+        "Exception"
+      ],
+      "boundary": "Legacy per-socket invalidation without registry",
+      "reason": "When no registry exists, close every known socket independently and count only successful callbacks; arbitrary callback failures remain observable.",
+      "failure_outcome": "contractual-best-effort",
+      "diagnostic_path": "logger.exception; successful-only disconnect count",
+      "evidence_tests": [
+        "tests/test_embed_security.py::BridgeGuardTests.test_invalidation_transport_failures_are_logged_without_counting_success"
+      ],
+      "state": "active",
+      "review_by_stage": "blocking",
+      "expires_on": "2026-10-06"
+    },
+    {
+      "id": "ui-boundary-09",
+      "module_id": "embed_security",
+      "symbol": "_terminate_socket",
+      "review": "Initial administrative adoption by @placerda; not independent review: https://github.com/Azure/GPT-RAG/issues/681#issuecomment-5601804634",
+      "handler_fingerprint": "3c54455817d43acb6b53599c65f8068719f50f7cbd87d4a8b7772cd507ef61ce",
+      "caught_types": [
+        "Exception"
+      ],
+      "boundary": "Rejected socket physical teardown",
+      "reason": "Do not untrack an invalidated socket while its arbitrary disconnect callback has failed; return false so callers retain denial and retry capacity.",
+      "failure_outcome": "failure-translation",
+      "diagnostic_path": "logger.exception; false result and retained inactive association",
+      "evidence_tests": [
+        "tests/test_embed_security.py::BridgeGuardTests.test_failed_termination_retains_invalidated_association"
+      ],
+      "state": "active",
+      "review_by_stage": "blocking",
+      "expires_on": "2026-10-06"
+    },
+    {
+      "id": "ui-boundary-10",
+      "module_id": "embed_security",
+      "symbol": "_terminate_socket",
+      "review": "Initial administrative adoption by @placerda; not independent review: https://github.com/Azure/GPT-RAG/issues/681#issuecomment-5601804634",
+      "handler_fingerprint": "4be83a749d9b20b8afcb438353ab909c8a7a8ff11b952de879ff1acea435e8a8",
+      "caught_types": [
+        "Exception"
+      ],
+      "boundary": "Orphaned Chainlit session deletion after disconnect",
+      "reason": "The socket is already disconnected; a framework session deletion failure must be logged while finally unbinding the dead socket. The session stays marked for clearing.",
+      "failure_outcome": "contractual-best-effort",
+      "diagnostic_path": "logger.exception; finally unbind_socket",
+      "evidence_tests": [
+        "tests/test_embed_security.py::BridgeGuardTests.test_failed_session_delete_still_unbinds_terminated_socket"
+      ],
+      "state": "active",
+      "review_by_stage": "blocking",
+      "expires_on": "2026-10-06"
+    },
+    {
+      "id": "ui-boundary-11",
+      "module_id": "embed_security",
+      "symbol": "configure_copilot_bridge_guards.disconnect_socket",
+      "review": "Initial administrative adoption by @placerda; not independent review: https://github.com/Azure/GPT-RAG/issues/681#issuecomment-5601804634",
+      "handler_fingerprint": "3e7d5533c6158c88d52cd614b75ca662d6c061055693f4aaabcfe710485db7c8",
+      "caught_types": [
+        "Exception"
+      ],
+      "boundary": "Chainlit/Socket.IO teardown callback",
+      "reason": "Callback failure attempts Engine.IO closure and re-raises the identical primary exception even if closure raises an ordinary exception. Cancellation remains distinct and propagates. This does not guarantee transport termination.",
+      "failure_outcome": "cleanup-propagation",
+      "diagnostic_path": "Static logger.error on secondary closure failure; bare re-raise of primary; enclosing invalidation boundary owns further handling.",
+      "evidence_tests": [
+        "tests/test_embed_security.py::BridgeGuardTests.test_disconnect_callback_failure_closes_transport_then_propagates",
+        "tests/test_embed_security.py::BridgeGuardTests.test_disconnect_double_failure_preserves_primary_with_safe_diagnostic",
+        "tests/test_embed_security.py::BridgeGuardTests.test_disconnect_cancellation_remains_distinct"
+      ],
+      "state": "active",
+      "review_by_stage": "blocking",
+      "expires_on": "2026-10-06"
+    },
+    {
+      "id": "ui-boundary-12",
+      "module_id": "embed_security",
+      "symbol": "configure_copilot_bridge_guards.close_rejected_socket",
+      "review": "Initial administrative adoption by @placerda; not independent review: https://github.com/Azure/GPT-RAG/issues/681#issuecomment-5601804634",
+      "handler_fingerprint": "db80c8a03d2058c018fb9d7fc1e0a316c3acb5a507ab8fff57657f35d2f07659",
+      "caught_types": [
+        "Exception"
+      ],
+      "boundary": "Transport cleanup after connection rejection",
+      "reason": "Cleanup failure must not replace or undo the established connection denial; log failed closure and retain the Socket.IO refusal.",
+      "failure_outcome": "contractual-best-effort",
+      "diagnostic_path": "logger.exception; SocketIOConnectionRefusedError",
+      "evidence_tests": [
+        "tests/test_embed_security.py::BridgeGuardTests.test_rejected_socket_remains_denied_if_transport_close_fails"
+      ],
+      "state": "active",
+      "review_by_stage": "blocking",
+      "expires_on": "2026-10-06"
+    },
+    {
+      "id": "ui-boundary-13",
+      "module_id": "embed_security",
+      "symbol": "configure_copilot_bridge_guards.guarded_engineio_connect",
+      "review": "Initial administrative adoption by @placerda; not independent review: https://github.com/Azure/GPT-RAG/issues/681#issuecomment-5601804634",
+      "handler_fingerprint": "6f3cb7b0bb2d3b8fe7a19bc2559160c28ba9aa1887bf38fad362232b30592595",
+      "caught_types": [
+        "BaseException"
+      ],
+      "boundary": "Engine.IO admission reservation",
+      "reason": "Release the just-reserved transport slot on every unsuccessful callback exit, including asyncio cancellation, then propagate the same BaseException.",
+      "failure_outcome": "cleanup-propagation",
+      "diagnostic_path": "release_engineio_transport; unchanged re-raise to Engine.IO caller",
+      "evidence_tests": [
+        "tests/test_embed_security.py::BridgeGuardTests.test_engineio_admission_failure_releases_reservation_and_propagates"
+      ],
+      "state": "active",
+      "review_by_stage": "blocking",
+      "expires_on": "2026-10-06"
+    },
+    {
+      "id": "ui-boundary-14",
+      "module_id": "embed_security",
+      "symbol": "configure_copilot_bridge_guards.guarded_engineio_disconnect",
+      "review": "Initial administrative adoption by @placerda; not independent review: https://github.com/Azure/GPT-RAG/issues/681#issuecomment-5601804634",
+      "handler_fingerprint": "4ac0d7b3caeac5a1bc46a3e0b61139458a46947fbb78ba13f887e6f57196bab1",
+      "caught_types": [
+        "Exception"
+      ],
+      "boundary": "Engine.IO original disconnect handler",
+      "reason": "Invalidate bound sockets before the original callback so a still-closing transport cannot dispatch application messages. An ordinary callback failure triggers explicit namespace cleanup; unresolved bindings stay inactive and capacity-counted until successful reconciliation.",
+      "failure_outcome": "contractual-best-effort",
+      "diagnostic_path": "logger.exception; namespace fallback and Engine.IO reservation release, with unresolved Socket.IO bindings retained",
+      "evidence_tests": [
+        "tests/test_embed_security.py::BridgeGuardTests.test_real_engineio_original_failure_denies_messages_while_closing",
+        "tests/test_embed_security.py::BridgeGuardTests.test_engineio_cancellation_retains_invalidated_association",
+        "tests/test_embed_security.py::BridgeGuardTests.test_transport_invalidation_blocks_inflight_binding_not_other_transport"
+      ],
+      "state": "active",
+      "review_by_stage": "blocking",
+      "expires_on": "2026-10-06"
+    },
+    {
+      "id": "ui-boundary-15",
+      "module_id": "embed_security",
+      "symbol": "configure_copilot_bridge_guards.guarded_engineio_disconnect",
+      "review": "Initial administrative adoption by @placerda; not independent review: https://github.com/Azure/GPT-RAG/issues/681#issuecomment-5601804634",
+      "handler_fingerprint": "7ed9c1f24af71facb62bbf72f2bcddb5902b989ffa7b59b4004320b7fe0d218d",
+      "caught_types": [
+        "Exception"
+      ],
+      "boundary": "Socket.IO namespace enumeration during failed teardown",
+      "reason": "Stored Engine.IO associations allow invalidation even when namespace enumeration fails. Release the Engine.IO reservation after ordinary failure handling, but retain unresolved Socket.IO bindings and their capacity until successful reconciliation; callback completion is not proof of physical shutdown.",
+      "failure_outcome": "contractual-best-effort",
+      "diagnostic_path": "logger.exception; release Engine.IO reservation while retaining invalidated, capacity-counted Socket.IO bindings",
+      "evidence_tests": [
+        "tests/test_embed_security.py::BridgeGuardTests.test_real_engineio_enumeration_failure_retains_invalidated_binding"
+      ],
+      "state": "active",
+      "review_by_stage": "blocking",
+      "expires_on": "2026-10-06"
+    },
+    {
+      "id": "ui-boundary-16",
+      "module_id": "embed_security",
+      "symbol": "configure_copilot_bridge_guards.guarded_engineio_disconnect",
+      "review": "Initial administrative adoption by @placerda; not independent review: https://github.com/Azure/GPT-RAG/issues/681#issuecomment-5601804634",
+      "handler_fingerprint": "1abdf18fb4f6b76ab843ebf18b2ea6b0b951603cc8ed5e1e80bf92760f76f55d",
+      "caught_types": [
+        "Exception"
+      ],
+      "boundary": "Per-namespace Socket.IO ID resolution during teardown",
+      "reason": "One manager lookup failure must be logged without stopping independent namespace cleanup or final Engine.IO reservation release. The unresolved Socket.IO association remains invalidated and capacity-counted until successful reconciliation.",
+      "failure_outcome": "contractual-best-effort",
+      "diagnostic_path": "logger.exception; continue independent namespace cleanup and release Engine.IO reservation, retaining unresolved bindings",
+      "evidence_tests": [
+        "tests/test_embed_security.py::BridgeGuardTests.test_real_engineio_lookup_failure_isolates_namespaces_and_recovers"
+      ],
+      "state": "active",
+      "review_by_stage": "blocking",
+      "expires_on": "2026-10-06"
+    },
+    {
+      "id": "ui-boundary-17",
+      "module_id": "embed_security",
+      "symbol": "configure_copilot_bridge_guards.guarded_engineio_disconnect",
+      "review": "Initial administrative adoption by @placerda; not independent review: https://github.com/Azure/GPT-RAG/issues/681#issuecomment-5601804634",
+      "handler_fingerprint": "63616d3ef8bcf5d51354e23eb3ca5c5ba36004d9e99e0189f42de771a70db981",
+      "caught_types": [
+        "Exception"
+      ],
+      "boundary": "Per-namespace manager disconnect fallback",
+      "reason": "An ordinary fallback manager failure remains observable without unbinding an unresolved socket. Retain its invalidated association and capacity until successful reconciliation, while continuing independent namespace cleanup and releasing the Engine.IO reservation.",
+      "failure_outcome": "contractual-best-effort",
+      "diagnostic_path": "logger.exception; retain failed bindings, unbind only after successful manager cleanup, and release Engine.IO reservation",
+      "evidence_tests": [
+        "tests/test_embed_security.py::BridgeGuardTests.test_real_engineio_manager_failure_retains_binding_until_recovery"
+      ],
+      "state": "active",
+      "review_by_stage": "blocking",
+      "expires_on": "2026-10-06"
+    },
+    {
+      "id": "ui-boundary-18",
+      "module_id": "embed_security",
+      "symbol": "configure_copilot_bridge_guards.guarded_connect",
+      "review": "Initial administrative adoption by @placerda; not independent review: https://github.com/Azure/GPT-RAG/issues/681#issuecomment-5601804634",
+      "handler_fingerprint": "6023a5c3b914404c725fb2ccb659e0080e9855a8972b24ea78c54e4e881b33b3",
+      "caught_types": [
+        "Exception"
+      ],
+      "boundary": "Authorized Chainlit connect callback",
+      "reason": "Failure of the framework's session construction must tear down the bound socket and become a connection refusal, never leave an accepted orphan.",
+      "failure_outcome": "failure-translation",
+      "diagnostic_path": "logger.exception; _terminate_socket and SocketIOConnectionRefusedError",
+      "evidence_tests": [
+        "tests/test_embed_security.py::BridgeGuardTests.test_chainlit_connect_failure_disconnects_before_untracking"
+      ],
+      "state": "active",
+      "review_by_stage": "blocking",
+      "expires_on": "2026-10-06"
+    },
+    {
+      "id": "ui-boundary-19",
+      "module_id": "embed_security",
+      "symbol": "configure_copilot_bridge_guards.guarded_disconnect",
+      "review": "Initial administrative adoption by @placerda; not independent review: https://github.com/Azure/GPT-RAG/issues/681#issuecomment-5601804634",
+      "handler_fingerprint": "7ee3c2cc97faa8c215207137892fee1838625a03721792843ddfb6a41e2857a9",
+      "caught_types": [
+        "Exception"
+      ],
+      "boundary": "Chainlit disconnect callback completion",
+      "reason": "Arbitrary callback failure must complete any teardown waiter exceptionally and propagate without incorrectly untracking a still-associated session.",
+      "failure_outcome": "propagation",
+      "diagnostic_path": "completion.set_exception; re-raise to teardown caller",
+      "evidence_tests": [
+        "tests/test_embed_security.py::BridgeGuardTests.test_failed_disconnect_handler_retains_association"
+      ],
+      "state": "active",
+      "review_by_stage": "blocking",
+      "expires_on": "2026-10-06"
+    },
+    {
+      "id": "ui-boundary-20",
+      "module_id": "main",
+      "symbol": "_create_chainlit_app.handle_file_download",
+      "review": "Initial administrative adoption by @placerda; not independent review: https://github.com/Azure/GPT-RAG/issues/681#issuecomment-5601804634",
+      "handler_fingerprint": "f12b32d3233cf4a947884face7bdc8a86851c3f502456545ad3271c0f315e487",
+      "caught_types": [
+        "Exception"
+      ],
+      "boundary": "Existing standalone legacy download endpoint",
+      "reason": "Stage 2 P2: standalone downloader failures return fixed generic text. Only typed ResourceNotFoundError maps to 404; arbitrary errors containing BlobNotFound remain 500. No dependency message is exposed to the client or failure diagnostic. This does not authorize that route for Copilot sessions.",
+      "failure_outcome": "failure-translation",
+      "diagnostic_path": "Static logger.error without exception payload or file path; generic standalone 404/500 text",
+      "evidence_tests": [
+        "tests/test_installed_package.py::InstalledPackageTests.test_installed_startup_preserves_documented_failure_boundaries"
+      ],
+      "state": "active",
+      "review_by_stage": "blocking",
+      "expires_on": "2026-10-06"
+    },
+    {
+      "id": "ui-boundary-21",
+      "module_id": "main",
+      "symbol": "_create_chainlit_app._safe_openapi",
+      "review": "Initial administrative adoption by @placerda; not independent review: https://github.com/Azure/GPT-RAG/issues/681#issuecomment-5601804634",
+      "handler_fingerprint": "2f189faefdf72b8005e7dab4cda547b0fd93e39b1fa193f67a25cd7497522ea1",
+      "caught_types": [
+        "Exception"
+      ],
+      "boundary": "Optional framework OpenAPI generation",
+      "reason": "H3 bounded implementation: failed schema introspection is logged and propagated, never advertised as a valid metadata-only schema. No failed schema is cached; a later request retries and only successful generation is cached. This individual exception proposal remains pending review, not approved.",
+      "failure_outcome": "propagation",
+      "diagnostic_path": "logger.exception; schema generation raises and the HTTP endpoint returns 500, with later regeneration",
+      "evidence_tests": [
+        "tests/test_installed_package.py::InstalledPackageTests.test_installed_startup_preserves_documented_failure_boundaries"
+      ],
+      "state": "active",
+      "review_by_stage": "blocking",
+      "expires_on": "2026-10-06"
+    },
+    {
+      "id": "ui-boundary-22",
+      "module_id": "app",
+      "symbol": "get_auth_info",
+      "review": "Initial administrative adoption by @placerda; not independent review: https://github.com/Azure/GPT-RAG/issues/681#issuecomment-5601804634",
+      "handler_fingerprint": "340bc8608e8c309f545703ffec7de3d0f8593ef209c5ec5fc2926bc4ef62611a",
+      "caught_types": [
+        "Exception"
+      ],
+      "boundary": "Chainlit OAuth refresh boundary",
+      "reason": "An unexpected refresh callback failure must clear the local user and return session_expired without an access token; it cannot preserve authenticated success.",
+      "failure_outcome": "failure-translation",
+      "diagnostic_path": "logger.warning; cleared user session and explicit auth_error",
+      "evidence_tests": [
+        "tests/test_boundary_failures.py::BoundaryFailureTests.test_oauth_refresh_failure_clears_session_and_denies_request"
+      ],
+      "state": "active",
+      "review_by_stage": "blocking",
+      "expires_on": "2026-10-06"
+    },
+    {
+      "id": "ui-boundary-23",
+      "module_id": "app",
+      "symbol": "handle_message",
+      "review": "Initial administrative adoption by @placerda; not independent review: https://github.com/Azure/GPT-RAG/issues/681#issuecomment-5601804634",
+      "handler_fingerprint": "b1b0561a84d3188d82a2b8640cfc758f118e0a1886cc95bc1419bd3406abd4d2",
+      "caught_types": [
+        "Exception"
+      ],
+      "boundary": "Uploaded-file ingestion interaction",
+      "reason": "H6 bounded implementation: false ingestion results and exceptions stop the accompanying question before backend invocation and finalize a reference-bearing notice requesting reattachment and resubmission. A failed attempt that allocated a new conversation ID restores the prior session value; retries ingest every reattached file under a fresh ID before a turn, without changing existing conversation ownership checks. uploaded_docs changes only after confirmed batch ingestion; failures preserve previous confirmed names and never claim Files received. The boolean client contract does not expose per-file partial success, so no partial batch is claimed confirmed. This individual exception proposal remains pending review, not approved.",
+      "failure_outcome": "failure-translation",
+      "diagnostic_path": "logger.exception for raised failures or logger.warning for false results; finalized ingestion failure with question reference and retry guidance, no question continuation",
+      "evidence_tests": [
+        "tests/test_boundary_failures.py::BoundaryFailureTests.test_ingestion_failure_does_not_claim_processed_success",
+        "tests/test_boundary_failures.py::BoundaryFailureTests.test_upload_bookkeeping_requires_confirmation_before_question_continuation",
+        "tests/test_boundary_failures.py::BoundaryFailureTests.test_failed_upload_retry_ingests_all_files_before_turn"
+      ],
+      "state": "active",
+      "review_by_stage": "blocking",
+      "expires_on": "2026-10-06"
+    },
+    {
+      "id": "ui-boundary-24",
+      "module_id": "app",
+      "symbol": "handle_message",
+      "review": "Initial administrative adoption by @placerda; not independent review: https://github.com/Azure/GPT-RAG/issues/681#issuecomment-5601804634",
+      "handler_fingerprint": "745f35b8acf978f9806573704dd103ef503cecb3dcbd1b84eb5df58488d9ebd2",
+      "caught_types": [
+        "Exception"
+      ],
+      "boundary": "Hosted continuity streaming interaction",
+      "reason": "The outer Chainlit event boundary translates arbitrary coordinator/stream failures into a reference-bearing technical error and always closes the generator.",
+      "failure_outcome": "failure-translation",
+      "diagnostic_path": "logger.exception; user-visible technical error; generator.aclose in finally",
+      "evidence_tests": [
+        "tests/test_boundary_failures.py::BoundaryFailureTests.test_chat_failure_boundaries_report_errors_and_close_generators"
+      ],
+      "state": "active",
+      "review_by_stage": "blocking",
+      "expires_on": "2026-10-06"
+    },
+    {
+      "id": "ui-boundary-25",
+      "module_id": "app",
+      "symbol": "handle_message",
+      "review": "Initial administrative adoption by @placerda; not independent review: https://github.com/Azure/GPT-RAG/issues/681#issuecomment-5601804634",
+      "handler_fingerprint": "1c63d8d3596fd52c1ca0c8f8ef8e81cce533d248265762e77b05fed6b31d3a8a",
+      "caught_types": [
+        "Exception"
+      ],
+      "boundary": "Direct hosted-agent streaming interaction",
+      "reason": "Keep the existing user-visible error and generator cleanup if the hosted stream fails outside its narrower authentication/cancellation mappings.",
+      "failure_outcome": "failure-translation",
+      "diagnostic_path": "logger.exception; user-visible technical error; generator.aclose in finally",
+      "evidence_tests": [
+        "tests/test_boundary_failures.py::BoundaryFailureTests.test_chat_failure_boundaries_report_errors_and_close_generators"
+      ],
+      "state": "active",
+      "review_by_stage": "blocking",
+      "expires_on": "2026-10-06"
+    },
+    {
+      "id": "ui-boundary-26",
+      "module_id": "app",
+      "symbol": "handle_message",
+      "review": "Initial administrative adoption by @placerda; not independent review: https://github.com/Azure/GPT-RAG/issues/681#issuecomment-5601804634",
+      "handler_fingerprint": "207aa65b444e45b6567319918d07ecdeebb01080c281dab60bd57326131f6b63",
+      "caught_types": [
+        "Exception"
+      ],
+      "boundary": "Classic orchestrator streaming interaction",
+      "reason": "The Chainlit event must display a reference-bearing technical error on arbitrary orchestrator stream failure and close the generator rather than terminate silently.",
+      "failure_outcome": "failure-translation",
+      "diagnostic_path": "logger.exception; user-visible technical error; generator.aclose in finally",
+      "evidence_tests": [
+        "tests/test_boundary_failures.py::BoundaryFailureTests.test_chat_failure_boundaries_report_errors_and_close_generators"
+      ],
+      "state": "active",
+      "review_by_stage": "blocking",
+      "expires_on": "2026-10-06"
+    },
+    {
+      "id": "ui-boundary-27",
+      "module_id": "gpt_rag_ui.services.citations",
+      "symbol": "_resolve_legacy_reference_href",
+      "review": "Initial administrative adoption by @placerda; not independent review: https://github.com/Azure/GPT-RAG/issues/681#issuecomment-5601804634",
+      "handler_fingerprint": "03cb111ed45f097249afcbd161767a555a30e0614aee2a3a906bdb6120dbc93a",
+      "caught_types": [
+        "Exception"
+      ],
+      "boundary": "Optional legacy citation link rendering",
+      "reason": "A failed optional signing/link callback omits that citation with a warning instead of failing the already-generated answer or emitting a broken link.",
+      "failure_outcome": "contractual-best-effort",
+      "diagnostic_path": "logger.warning; omitted citation",
+      "evidence_tests": [
+        "tests/test_boundary_failures.py::BoundaryFailureTests.test_optional_legacy_citation_failure_is_logged_and_omitted"
+      ],
+      "state": "active",
+      "review_by_stage": "blocking",
+      "expires_on": "2026-10-06"
+    },
+    {
+      "id": "ui-boundary-28",
+      "module_id": "hosted_continuity",
+      "symbol": "HostedContinuityCoordinator.run_turn",
+      "review": "Initial administrative adoption by @placerda; not independent review: https://github.com/Azure/GPT-RAG/issues/681#issuecomment-5601804634",
+      "handler_fingerprint": "d15439dcd8f2a94ee9c6aecc64dbd49fb1d4be3cd8c174047105052f2687fbfc",
+      "caught_types": [
+        "Exception"
+      ],
+      "boundary": "Optional post-create panel owner-index hook",
+      "reason": "H4 bounded implementation: the existing turn continues after an explicitly unconfirmed owner-index write with repair-required logging. A missing row hides the conversation from panel listing and causes panel read/feedback/delete to fail closed before accessing managed content. No successful index write is claimed, no authorization bypass or automatic repair is added, and this individual exception proposal remains pending review, not approved.",
+      "failure_outcome": "contractual-best-effort",
+      "diagnostic_path": "logger.exception identifies panel list and read/feedback/delete unavailability and explicit owner-index repair need; main streaming turn continues",
+      "evidence_tests": [
+        "tests/test_hosted_continuity_panel_hook.py::OwnerIndexHookTests.test_hook_failure_does_not_fail_the_turn",
+        "tests/test_hosted_continuity_panel_hook.py::OwnerIndexHookTests.test_failed_index_write_hides_and_denies_panel_operations"
+      ],
+      "state": "active",
+      "review_by_stage": "blocking",
+      "expires_on": "2026-10-06"
+    }
+  ]
+}
