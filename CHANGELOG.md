@@ -2,6 +2,14 @@
 
 ## [v3.0.0] - 2026-10-03
 
+### Added
+
+- **Keyless service-to-service auth to the orchestrator** (ADR-0019). The UI
+  acquires a Microsoft Entra token with its managed identity (scope from
+  `ORCHESTRATOR_AUTH_AUDIENCE`) and sends it in `X-Service-Authorization`,
+  keeping `Authorization` for the user's OBO token. API key and Dapr remain
+  opt-in fallbacks.
+
 ### Changed
 
 - **Agent Landing Zone dual-read and rebrand** (Azure/GPT-RAG#695). App
