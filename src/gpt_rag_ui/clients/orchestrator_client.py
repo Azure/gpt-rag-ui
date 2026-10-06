@@ -3,9 +3,11 @@ import logging
 import base64
 import json
 import re
+import time
 from typing import Optional
 
 import httpx
+from azure.core.exceptions import AzureError, ClientAuthenticationError
 from azure.identity import ManagedIdentityCredential, AzureCliCredential, ChainedTokenCredential
 
 from gpt_rag_ui.config.dependencies import get_config
@@ -22,6 +24,7 @@ _SENSITIVE_HEADER_KEYS = {
     "set-cookie",
     "dapr-api-token",
     "x-api-key",
+    "x-service-authorization",
 }
 
 _SENSITIVE_JSON_KEY_RE = re.compile(r"(authorization|token|secret|password|api[_-]?key|cookie)", re.IGNORECASE)
@@ -215,12 +218,57 @@ def _build_orchestrator_service_url(path: str) -> tuple[str, dict]:
     return url, {"mode": "dapr", "base_url": None, "dapr_port": str(dapr_port), "app_id": orchestrator_app_id}
 
 
+
+SERVICE_AUTH_HEADER = "X-Service-Authorization"
+_service_token_cache: dict = {"token": None, "expires_on": 0, "scope": None}
+_service_credential = None
+
+
+def _service_token_scope() -> Optional[str]:
+    audience = (_get_config_value("ORCHESTRATOR_AUTH_AUDIENCE", default=os.getenv("ORCHESTRATOR_AUTH_AUDIENCE", "")) or "").strip()
+    if not audience:
+        return None
+    return audience if audience.endswith("/.default") else f"{audience.rstrip('/')}/.default"
+
+
+def _get_service_token() -> Optional[str]:
+    """Return a cached Entra token for the orchestrator audience, or None when keyless auth is not configured."""
+    global _service_credential
+    scope = _service_token_scope()
+    if not scope:
+        return None
+    now = time.time()
+    cache = _service_token_cache
+    if cache["token"] and cache["scope"] == scope and cache["expires_on"] - 300 > now:
+        return cache["token"]
+    try:
+        if _service_credential is None:
+            client_id = os.getenv("AZURE_CLIENT_ID") or None
+            _service_credential = ChainedTokenCredential(
+                ManagedIdentityCredential(client_id=client_id) if client_id else ManagedIdentityCredential(),
+                AzureCliCredential(),
+            )
+        token = _service_credential.get_token(scope)
+    except (ClientAuthenticationError, AzureError, ValueError, OSError) as exc:
+        logger.warning("Failed to acquire orchestrator service token for scope %s: %s", scope, exc)
+        return None
+    cache.update(token=token.token, expires_on=token.expires_on, scope=scope)
+    return token.token
+
+
+def _apply_service_token(headers: dict) -> None:
+    service_token = _get_service_token()
+    if service_token:
+        headers[SERVICE_AUTH_HEADER] = f"Bearer {service_token}"
+
+
 def _headers_summary(headers: dict) -> dict:
     # Never log secrets. Only presence flags.
     return {
         "has_dapr_token": "dapr-api-token" in headers,
         "has_api_key": "X-API-KEY" in headers,
         "has_bearer_token": "Authorization" in headers,
+        "has_service_token": SERVICE_AUTH_HEADER in headers,
     }
 
 
@@ -270,6 +318,8 @@ async def call_orchestrator_stream(conversation_id: str, question: str, auth_inf
     api_key = _get_config_value("ORCHESTRATOR_APP_APIKEY", default=os.getenv("ORCHESTRATOR_APP_APIKEY", ""))
     if api_key:
         headers["X-API-KEY"] = api_key
+
+    _apply_service_token(headers)
 
     # Add Authorization header with Bearer token
     if access_token:
@@ -394,6 +444,8 @@ async def call_orchestrator_for_feedback(
     if api_key:
         headers["X-API-KEY"] = api_key
 
+    _apply_service_token(headers)
+
     # Add Authorization header with Bearer token
     access_token = auth_info.get('access_token')
     if access_token:
@@ -495,6 +547,8 @@ def _build_conversation_headers(access_token: Optional[str] = None) -> dict:
     api_key = _get_config_value("ORCHESTRATOR_APP_APIKEY", default=os.getenv("ORCHESTRATOR_APP_APIKEY", ""))
     if api_key:
         headers["X-API-KEY"] = api_key
+
+    _apply_service_token(headers)
 
     if access_token:
         headers["Authorization"] = f"Bearer {access_token}"
