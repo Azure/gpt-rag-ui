@@ -3,6 +3,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from azure.core.exceptions import ClientAuthenticationError
+
 from gpt_rag_ui.clients import orchestrator_client as oc
 
 
@@ -37,7 +39,7 @@ class ServiceTokenTests(unittest.TestCase):
         self.cred.get_token.assert_called_once_with("abc/.default")
 
     def test_credential_error_returns_none(self):
-        self.cred.get_token.side_effect = RuntimeError("boom")
+        self.cred.get_token.side_effect = ClientAuthenticationError("boom")
         with self._aud("abc"):
             self.assertIsNone(oc._get_service_token())
 

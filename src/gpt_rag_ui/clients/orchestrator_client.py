@@ -7,6 +7,7 @@ import time
 from typing import Optional
 
 import httpx
+from azure.core.exceptions import AzureError, ClientAuthenticationError
 from azure.identity import ManagedIdentityCredential, AzureCliCredential, ChainedTokenCredential
 
 from gpt_rag_ui.config.dependencies import get_config
@@ -248,7 +249,7 @@ def _get_service_token() -> Optional[str]:
                 AzureCliCredential(),
             )
         token = _service_credential.get_token(scope)
-    except Exception as exc:  # noqa: BLE001 - surface and fall back to other auth modes
+    except (ClientAuthenticationError, AzureError, ValueError, OSError) as exc:
         logger.warning("Failed to acquire orchestrator service token for scope %s: %s", scope, exc)
         return None
     cache.update(token=token.token, expires_on=token.expires_on, scope=scope)
