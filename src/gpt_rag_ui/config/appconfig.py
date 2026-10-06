@@ -17,17 +17,10 @@ from tenacity import retry, retry_if_exception_type, wait_random_exponential, st
 from gpt_rag_ui.config.errors import ConfigurationError
 
 BASE_LABEL = 'agent-lz'
-LEGACY_BASE_LABEL = 'gpt-rag'
-KEY_PREFIX = 'AGENTLZ_'
-LEGACY_KEY_PREFIX = 'GPT_RAG_'
 
 
 def candidate_keys(key: str) -> list[str]:
-    """Return lookup keys in precedence order: `AGENTLZ_*` first, then legacy `GPT_RAG_*`."""
-    if key.startswith(KEY_PREFIX):
-        return [key, LEGACY_KEY_PREFIX + key[len(KEY_PREFIX):]]
-    if key.startswith(LEGACY_KEY_PREFIX):
-        return [KEY_PREFIX + key[len(LEGACY_KEY_PREFIX):], key]
+    """Return the lookup keys for ``key``; only the exact key name is read."""
     return [key]
 
 class AppConfigClient:
@@ -65,8 +58,6 @@ class AppConfigClient:
         )
 
         app_label_selector = SettingSelector(label_filter='gpt-rag-ui', key_filter='*')
-        base_label_selector = SettingSelector(label_filter=LEGACY_BASE_LABEL, key_filter='*')
-        # Later selectors win in the provider, so `agent-lz` overrides legacy `gpt-rag`.
         agentlz_label_selector = SettingSelector(label_filter=BASE_LABEL, key_filter='*')
         no_label_selector = SettingSelector(label_filter=None, key_filter='*')
 
@@ -74,10 +65,10 @@ class AppConfigClient:
 
         try:
             logger.info(
-                "Loading Azure App Configuration keys using labels: 'gpt-rag-ui', 'gpt-rag', 'agent-lz', and <no label>"
+                "Loading Azure App Configuration keys using labels: 'gpt-rag-ui', 'agent-lz', and <no label>"
             )
             self.client = load(
-                selects=[app_label_selector, base_label_selector, agentlz_label_selector, no_label_selector],
+                selects=[app_label_selector, agentlz_label_selector, no_label_selector],
                 endpoint=endpoint,
                 credential=self.credential,
                 key_vault_options=AzureAppConfigurationKeyVaultOptions(credential=self.credential),
