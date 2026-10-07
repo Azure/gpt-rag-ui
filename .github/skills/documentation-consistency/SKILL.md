@@ -6,7 +6,7 @@ description: "Keeps GPT-RAG UI developer, user, and operator documentation align
 # GPT-RAG UI documentation consistency
 
 Canonical GPT-RAG product documentation is published from the `docs` branch of
-`Azure/GPT-RAG` at https://azure.github.io/GPT-RAG/. This repository keeps
+`Azure/GPT-RAG` at https://azure.github.io/AI-Landing-Zones/agent-landing-zone/. This repository keeps
 component-specific material in `README.md`, `docs/`, `chainlit.md`, code
 comments, examples, and release metadata.
 
