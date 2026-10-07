@@ -74,7 +74,7 @@ private Container Apps deployment must remain private and be exposed through
 the environment's existing authenticated front door or gateway. Never enable
 public ingress solely to make the widget reachable.
 
-The [canonical GPT-RAG documentation](https://azure.github.io/GPT-RAG/) remains
+The [canonical Agent Landing Zone documentation](https://azure.github.io/AI-Landing-Zones/agent-landing-zone/) remains
 the source for architecture and infrastructure deployment. This repository
 guide defines the widget's application contract; it does not replace ingress,
 gateway, WAF, or private networking controls owned by the GPT-RAG
