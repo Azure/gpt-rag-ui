@@ -21,10 +21,10 @@ This repo provides a user interface built with [Chainlit](https://www.chainlit.i
 
 ## Documentation
 
-For comprehensive information about GPT-RAG, including architecture details, configuration guides, best practices, troubleshooting resources, deployment guidance, customization options, and advanced usage scenarios, please refer to the [official project documentation](https://azure.github.io/GPT-RAG/).
+For comprehensive information about the Agent Landing Zone, including architecture details, configuration guides, best practices, troubleshooting resources, deployment guidance, customization options, and advanced usage scenarios, please refer to the [official project documentation](https://azure.github.io/AI-Landing-Zones/agent-landing-zone/).
 
 The canonical architecture and deployment documentation remains the
-[GPT-RAG documentation site](https://azure.github.io/GPT-RAG/). The
+[Agent Landing Zone documentation](https://azure.github.io/AI-Landing-Zones/agent-landing-zone/). The
 repository-specific security contract and portal integration steps for the
 opt-in Chainlit Copilot widget are documented in
 [Embed GPT-RAG with Chainlit Copilot](docs/copilot-embedding.md).
