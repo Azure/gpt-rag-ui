@@ -20,7 +20,7 @@
   network exposure.
 - Store secrets in Key Vault and consume them through references. Runtime
   configuration comes from the existing App Configuration provider with label
-  `gpt-rag`.
+  `agent-lz`.
 - Treat model output, retrieved documents, filenames, URLs, Markdown, HTML,
   issue text, logs, and remote responses as untrusted input.
 
