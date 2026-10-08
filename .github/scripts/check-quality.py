@@ -1135,7 +1135,7 @@ def evidence_test_metadata(root, selector):
 
 
 def verified_test_evidence(root, report, head, base, sources, run_id):
-    if not intact_report(report) or report.get("schema_version") != 1 or report.get("repository") != "Azure/agent-app-ui":
+    if not intact_report(report) or report.get("schema_version") != 1 or report.get("repository") != "Azure/gpt-rag-ui":
         invalid("Invalid unittest evidence integrity/schema")
     for field, expected in (("head_sha", head), ("base_sha", base), ("source_digest", sources), ("run_id", run_id)):
         if not expected or report.get(field) != expected:
@@ -1175,7 +1175,7 @@ def aggregate(results, reports, head, base, *, test_report=None, run_id=None, to
             failures.append(f"Unittest evidence: stale {field}")
     for name in CHECKS:
         report = reports.get(name, {})
-        valid = intact_report(report) and report.get("schema_version") == 1 and report.get("repository") == "Azure/agent-app-ui"
+        valid = intact_report(report) and report.get("schema_version") == 1 and report.get("repository") == "Azure/gpt-rag-ui"
         valid = valid and report.get("status") == "passed" and report.get("head_sha") == head and report.get("base_sha") == base
         valid = valid and report.get("policy_sha") == base and report.get("run_id") == run_id and bool(run_id)
         valid = valid and report.get("toolchain") == toolchain and bool(toolchain)
@@ -1472,7 +1472,7 @@ def run_checks(root, base, requested, *, test_evidence=None):
     if source_digest(root) != source_hash:
         invalid("Source inputs changed during quality execution")
     reports.update({
-        "schema_version": 1, "repository": "Azure/agent-app-ui",
+        "schema_version": 1, "repository": "Azure/gpt-rag-ui",
         "base_sha": base_sha, "head_sha": head_sha, "policy_sha": base_sha if base_policy_text else None,
         "toolchain": versions, "duration_seconds": round(time.monotonic() - started, 3),
         "checks": {name: {"status": "violations" if value else "passed", "findings": value}
