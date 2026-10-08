@@ -399,7 +399,7 @@ def _evaluate_auth_state(
     if allow_anonymous_source == "default" and running_in_azure_host:
         logger.warning(
             "ALLOW_ANONYMOUS was not provided via env var or App Configuration; using default_allow_anonymous=%s. "
-            "Note: this repo loads App Configuration labels 'gpt-rag-ui', 'agent-lz', and <no label>.",
+            "Note: this repo loads App Configuration labels 'agent-app-ui', 'gpt-rag-ui' (legacy), 'agent-lz', and <no label>.",
             default_allow_anonymous,
         )
 
@@ -582,7 +582,7 @@ def _create_auth_required_app(auth_state: AuthState) -> FastAPI:
             "- OAUTH_AZURE_AD_CLIENT_SECRET\n\n"
             "Recommended setup:\n"
             "Create the keys in Azure App Configuration using label: agent-lz\n"
-            "Optional: use label gpt-rag-ui only for UI-specific overrides.\n\n"
+            "Optional: use label agent-app-ui only for UI-specific overrides.\n\n"
             "Alternative setup:\n"
             "Set the same values as container environment variables.\n"
         )
@@ -1041,7 +1041,7 @@ def _create_chainlit_app(
             ),
             "gpt_rag_ui_release": _format_release_value(
                 gpt_rag_ui_release,
-                "gpt-rag-ui release information is missing",
+                "agent-app-ui release information is missing",
             ),
         }
         return JSONResponse(payload)
