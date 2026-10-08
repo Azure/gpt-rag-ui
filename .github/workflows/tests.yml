@@ -115,12 +115,12 @@ jobs:
       - name: Check out candidate
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Build ephemeral Linux image without publishing
-        run: docker build --tag "gpt-rag-ui-quality:$GITHUB_SHA" .
+        run: docker build --tag "agent-app-ui-quality:$GITHUB_SHA" .
       - name: Check installed origins, startup, resources and behavioral contracts offline
         run: >-
           docker run --rm --network none --env PYTHONDONTWRITEBYTECODE=1
           --mount "type=bind,source=$GITHUB_WORKSPACE/tests,target=/tests,readonly"
-          "gpt-rag-ui-quality:$GITHUB_SHA" python /tests/container_smoke.py
+          "agent-app-ui-quality:$GITHUB_SHA" python /tests/container_smoke.py
 
   quality-gate:
     name: quality-gate
