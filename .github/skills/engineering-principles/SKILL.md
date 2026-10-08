@@ -1,9 +1,9 @@
 ---
 name: engineering-principles
-description: "GPT-RAG UI architecture and implementation principles. Use for design, review, meaningful refactoring, Python, Chainlit, Azure integration, security, accessibility, testing, or operational changes."
+description: "Agent Landing Zone UI architecture and implementation principles. Use for design, review, meaningful refactoring, Python, Chainlit, Azure integration, security, accessibility, testing, or operational changes."
 ---
 
-# GPT-RAG UI engineering principles
+# Agent Landing Zone UI engineering principles
 
 Load only the references needed for the task:
 

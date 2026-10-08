@@ -1,6 +1,6 @@
 # Architecture decisions
 
-Record GPT-RAG UI decisions here when they change a hard-to-reverse boundary,
+Record Agent Landing Zone UI decisions here when they change a hard-to-reverse boundary,
 contract, identity or session model, persistence strategy, accessibility
 approach, deployment topology, or operational characteristic.
 
@@ -11,5 +11,5 @@ next `ADR-NNN` number, compare alternatives including no change, and define
 measurable compliance and a review trigger.
 
 These records cover this UI component. Platform or orchestrator decisions
-belong in the appropriate `Azure/GPT-RAG` repository and should be linked
+belong in the appropriate `Azure/agent-landing-zone` repository and should be linked
 rather than duplicated.

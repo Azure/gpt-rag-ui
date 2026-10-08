@@ -33,7 +33,7 @@ DEFAULT_SSE_IDLE_TIMEOUT_SECONDS = 60.0
 # "user_delegated" (default) performs an OAuth2 On-Behalf-Of exchange of the
 # signed-in Chainlit user's own access token, so Microsoft Foundry resolves the
 # end user as the caller identity. This is required for Toolbox per-user
-# document-level security passthrough (see ADR-0001 in Azure/GPT-RAG), which
+# document-level security passthrough (see ADR-0001 in Azure/agent-landing-zone), which
 # freezes identity passthrough as the required release path and forbids
 # defaulting to a service/group-filter fallback.
 #
@@ -334,7 +334,7 @@ async def _acquire_obo_token(user_access_token: str, resource_scope: str) -> str
     Uses the OAuth2 On-Behalf-Of flow (MSAL) so Microsoft Foundry's gateway
     resolves the *end user*, not this service, as the caller identity. This is
     required for Toolbox per-user document-level security passthrough
-    (ADR-0001 in Azure/GPT-RAG). A fresh confidential client is created for
+    (ADR-0001 in Azure/agent-landing-zone). A fresh confidential client is created for
     each call (matching the pattern in auth_oauth.py); nothing is cached and
     the token value is never logged.
     """

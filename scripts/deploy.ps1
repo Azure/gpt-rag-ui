@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Deploys the GPT-RAG frontend Container App image.
+    Deploys the Agent Landing Zone frontend Container App image.
 #>
 
 $utf8NoBom = [System.Text.UTF8Encoding]::new($false)

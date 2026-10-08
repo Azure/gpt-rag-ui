@@ -1,10 +1,10 @@
 ---
 name: release
-description: "Prepares and validates GPT-RAG UI component releases. Use for VERSION, changelog, release branches, and release evidence; do not use for feature implementation or publish without explicit human approval."
+description: "Prepares and validates Agent Landing Zone UI component releases. Use for VERSION, changelog, release branches, and release evidence; do not use for feature implementation or publish without explicit human approval."
 tools: ["read", "search", "edit", "execute"]
 ---
 
-# GPT-RAG UI release
+# Agent Landing Zone UI release
 
 Follow `AGENTS.md`, the complete release rules in
 `.github/copilot-instructions.md`, and the `component-release` skill.
