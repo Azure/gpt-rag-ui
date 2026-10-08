@@ -2,8 +2,8 @@
 
 This repository uses a small, layered framework for GitHub Copilot engineering
 work. It governs how Copilot helps develop, review, release, and operate
-`gpt-rag-ui`; it does not change Chainlit runtime behavior, product chat
-behavior, or the agent strategies executed by the upstream GPT-RAG
+`agent-app-ui`; it does not change Chainlit runtime behavior, product chat
+behavior, or the agent strategies executed by the upstream Agent Landing Zone
 orchestrator.
 
 ## Progressive disclosure
@@ -41,7 +41,7 @@ overlapping general-purpose agents.
 - `architecture-decision` compares alternatives and records significant
   decisions under `docs/adr/`.
 - `documentation-consistency` coordinates local component guidance with the
-  canonical `Azure/GPT-RAG` documentation site.
+  canonical `Azure/agent-landing-zone` documentation site.
 - `component-release` applies this repository's `develop` to `main`,
   `VERSION`, changelog, and tag rules.
 

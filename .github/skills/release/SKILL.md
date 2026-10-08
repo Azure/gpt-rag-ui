@@ -1,9 +1,9 @@
 ---
 name: release
-description: "Prepare and reconcile gpt-rag-ui releases. Use for release preparation, release branches, semantic versioning, VERSION or changelog updates, release notes, tags, GitHub Releases, packages, container images, or deployment publication; require explicit human approval before publishing anything."
+description: "Prepare and reconcile agent-app-ui releases. Use for release preparation, release branches, semantic versioning, VERSION or changelog updates, release notes, tags, GitHub Releases, packages, container images, or deployment publication; require explicit human approval before publishing anything."
 ---
 
-# gpt-rag-ui release
+# agent-app-ui release
 
 Use this skill only for releases of this repository. Read `AGENTS.md`,
 `.github/copilot-instructions.md`, `VERSION`, and `CHANGELOG.md` before making

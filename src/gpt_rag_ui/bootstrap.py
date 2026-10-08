@@ -106,7 +106,7 @@ def _clear_oauth_env_vars() -> bool:
 
 
 def _startup_banner() -> None:
-    name = "GPT-RAG UI"
+    name = "Agent Landing Zone UI"
     version = _read_local_ui_version()
 
     banner_lines = [
@@ -527,12 +527,12 @@ def _create_not_ready_app() -> FastAPI:
         )
         yield
 
-    app = FastAPI(title="GPT-RAG UI (configuration required)", lifespan=_lifespan)
+    app = FastAPI(title="Agent Landing Zone UI (configuration required)", lifespan=_lifespan)
 
     @app.get("/")
     async def _config_required_root():
         message = (
-            "GPT-RAG UI is not ready. Azure App Configuration is required but could not be reached.\n\n"
+            "Agent Landing Zone UI is not ready. Azure App Configuration is required but could not be reached.\n\n"
             "How to fix:\n"
             "- Ensure Azure CLI is installed and run: az login\n"
             "- Or set APP_CONFIG_ENDPOINT / AZURE_APPCONFIG_CONNECTION_STRING\n"
@@ -570,12 +570,12 @@ def _create_auth_required_app(auth_state: AuthState) -> FastAPI:
         )
         yield
 
-    app = FastAPI(title="GPT-RAG UI (authentication required)", lifespan=_lifespan)
+    app = FastAPI(title="Agent Landing Zone UI (authentication required)", lifespan=_lifespan)
 
     @app.get("/")
     async def _auth_required_root():
         message = (
-            "GPT-RAG UI is not ready. Authentication is required, but OAuth is not configured.\n\n"
+            "Agent Landing Zone UI is not ready. Authentication is required, but OAuth is not configured.\n\n"
             "Required settings:\n"
             "- OAUTH_AZURE_AD_CLIENT_ID\n"
             "- OAUTH_AZURE_AD_TENANT_ID\n"
@@ -896,7 +896,7 @@ def _create_chainlit_app(
     logger.info("Chainlit handlers imported")
 
     # Provide friendly app metadata used by OpenAPI.
-    chainlit_app.title = getattr(chainlit_app, "title", "GPT-RAG UI")
+    chainlit_app.title = getattr(chainlit_app, "title", "Agent Landing Zone UI")
     version = _read_local_ui_version()
     if version:
         chainlit_app.version = version
@@ -929,7 +929,7 @@ def _create_chainlit_app(
 
                 await close_hosted_agent_client()
 
-    host_app = FastAPI(title="GPT-RAG UI host", lifespan=_host_lifespan)
+    host_app = FastAPI(title="Agent Landing Zone UI host", lifespan=_host_lifespan)
     if embed_settings.enabled:
         from gpt_rag_ui.auth.embed_security import (
             configure_copilot_bridge_guards,
