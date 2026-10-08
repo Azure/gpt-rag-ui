@@ -166,7 +166,7 @@ Keep the portal's other CSP directives intact. Do not loosen
 widget.
 
 ```html
-<div id="gpt-rag-status" role="status">Loading assistant...</div>
+<div id="agent-lz-status" role="status">Loading assistant...</div>
 <script>
   const chainlitServer = "https://chat.contoso.com";
 
@@ -193,7 +193,7 @@ widget.
   }
 
   async function startAssistant({ accessToken } = {}) {
-    const status = document.getElementById("gpt-rag-status");
+    const status = document.getElementById("agent-lz-status");
     const response = await bootstrapAssistant(accessToken);
     if (!response.ok) {
       status.textContent =
@@ -225,7 +225,7 @@ widget.
   // startAssistant();
   //
   // Entra:
-  // const token = await portalAuth.getGptRagAccessToken();
+  // const token = await portalAuth.getAgentAccessToken();
   // startAssistant({ accessToken: token });
 </script>
 ```
