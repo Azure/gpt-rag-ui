@@ -79,7 +79,7 @@ explicitly inventoried within `clients/`, not exported as a new shared API.
 
 `api.callbacks.register_callbacks()`, `api.history.register_data_layer()` and
 `api.oauth.register_oauth_callback()` own idempotent registration. The OAuth
-adapter accepts Chainlit 2.9.4's optional fifth argument and delegates to the
+adapter accepts Chainlit 2.12.0's optional fifth argument and delegates to the
 unchanged four-argument OAuth implementation. Classic backend startup does not
 import hosted Conversations or panel Cosmos. `hosted_agent` remains the default.
 

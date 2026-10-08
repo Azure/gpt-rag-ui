@@ -15,7 +15,7 @@ anonymous access.
 
 ## Rendering and token flow
 
-Chainlit 2.9.4 Copilot mode renders a floating widget in an open Shadow DOM. It
+Chainlit 2.12.0 Copilot mode renders a floating widget in an open Shadow DOM. It
 is loaded by a script and does not use an iframe. Embedding therefore does not
 require relaxing `frame-ancestors` or `X-Frame-Options` on the Agent Landing Zone UI
 origin. Do not weaken either protection for this widget; they continue to
@@ -331,7 +331,7 @@ anonymous mode send no token.
 
 ## Operational limitations
 
-- The implementation is pinned and tested against Chainlit 2.9.4.
+- The implementation is pinned and tested against Chainlit 2.12.0.
 - Session, rate-limit, socket, and task state is process-local.
 - Restarts, revision switches, or capacity eviction sign embedded users out.
 - Cross-site embedding requires `SameSite=None; Secure`, but browser
