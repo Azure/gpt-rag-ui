@@ -1,9 +1,9 @@
 ---
 name: component-release
-description: "Prepares a verifiable GPT-RAG UI release. Use for release branches, VERSION, changelog entries, tags, release notes, and compatibility evidence; never publish without explicit human approval."
+description: "Prepares a verifiable Agent Landing Zone UI release. Use for release branches, VERSION, changelog entries, tags, release notes, and compatibility evidence; never publish without explicit human approval."
 ---
 
-# GPT-RAG UI component release
+# Agent Landing Zone UI component release
 
 1. Start from the current `develop` branch and create `release/X.Y.Z`.
 2. Choose a semantic version from the shipped change set. Do not change

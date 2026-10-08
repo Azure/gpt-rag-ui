@@ -1,4 +1,4 @@
-# GPT-RAG UI agent operating contract
+# Agent Landing Zone UI agent operating contract
 
 This file is the stable, repository-wide contract for GitHub Copilot
 engineering agents. Detailed procedures belong in `.github/skills/`, and
@@ -21,13 +21,13 @@ uncertainty and obtain a human decision.
 
 ## What this repository is
 
-`Azure/gpt-rag-ui` is the Python 3.12 Chainlit web client for the GPT-RAG
+`Azure/agent-app-ui` is the Python 3.12 Chainlit web client for the Agent Landing Zone
 solution. It authenticates users with Microsoft Entra ID, sends chat and
 conversation operations to the orchestrator, sends authorized uploads to the
 ingestion service, persists Chainlit feedback and thread data through the
 configured data layer, and provides opt-in secure portal embedding.
 
-This repository is a runtime component of the wider `Azure/GPT-RAG` solution.
+This repository is a runtime component of the wider `Azure/agent-landing-zone` solution.
 The platform repository owns the canonical architecture, infrastructure, and
 published product documentation. Preserve compatibility with the deployed
 orchestrator, ingestion, App Configuration, identity, and storage contracts.
@@ -84,7 +84,7 @@ The legacy names below remain supported, forwarding to those owners:
 
 The engineering agents and skills in `.github/` help develop and operate this
 repository. They do not define product chat behavior or agents executed by
-GPT-RAG. This UI is a client of agent strategies implemented by the upstream
+Agent Landing Zone. This UI is a client of agent strategies implemented by the upstream
 orchestrator.
 
 ## How to work

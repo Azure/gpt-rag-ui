@@ -116,7 +116,7 @@ In this repository:
 - tags and changelog entries DO use the `v` prefix
 - GitHub Release titles MUST be exactly the tag name (for example, `v2.4.2`);
   never prefix release titles with the product or service name (for example,
-  do not use `GPT-RAG UI v2.4.2` or `gpt-rag-ui v2.4.2`).
+  do not use `Agent Landing Zone UI v2.4.2` or `agent-app-ui v2.4.2`).
 
 Examples:
 

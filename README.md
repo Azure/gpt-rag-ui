@@ -9,25 +9,25 @@ products:
 - azure-ai-foundry
 - azure-openai
 - azure-ai-search
-urlFragment: GPT-RAG
+urlFragment: agent-app-ui
 name: Multi-repo ChatGPT and Enterprise data with Azure OpenAI and AI Search
-description: GPT-RAG core is a Retrieval-Augmented Generation pattern running in Azure, using Azure AI Search for retrieval and Azure OpenAI large language models to power ChatGPT-style and Q&A experiences.
+description: Agent Landing Zone core is a Retrieval-Augmented Generation pattern running in Azure, using Azure AI Search for retrieval and Azure OpenAI large language models to power ChatGPT-style and Q&A experiences.
 -->
-# GPT-RAG Web UI
+# Agent Landing Zone Web UI
 
-Part of the [GPT-RAG](https://github.com/Azure/gpt-rag) solution.
+Part of the [Agent Landing Zone](https://github.com/Azure/agent-landing-zone) solution.
 
 This repo provides a user interface built with [Chainlit](https://www.chainlit.io/) to interact with GPT-powered retrieval-augmented generation systems. It is designed to work seamlessly with the Orchestrator backend and supports customization and theming.
 
 ## Documentation
 
-For comprehensive information about GPT-RAG, including architecture details, configuration guides, best practices, troubleshooting resources, deployment guidance, customization options, and advanced usage scenarios, please refer to the [official project documentation](https://azure.github.io/AI-Landing-Zones/agent-landing-zone/).
+For comprehensive information about Agent Landing Zone, including architecture details, configuration guides, best practices, troubleshooting resources, deployment guidance, customization options, and advanced usage scenarios, please refer to the [official project documentation](https://azure.github.io/AI-Landing-Zones/agent-landing-zone/).
 
 The canonical architecture and deployment documentation remains the
-[GPT-RAG documentation site](https://azure.github.io/AI-Landing-Zones/agent-landing-zone/). The
+[Agent Landing Zone documentation site](https://azure.github.io/AI-Landing-Zones/agent-landing-zone/). The
 repository-specific security contract and portal integration steps for the
 opt-in Chainlit Copilot widget are documented in
-[Embed GPT-RAG with Chainlit Copilot](docs/copilot-embedding.md).
+[Embed Agent Landing Zone with Chainlit Copilot](docs/copilot-embedding.md).
 
 For Python package ownership, contributor installation, quality checks and
 the staged-asset contract, see [Python development](docs/python-development.md).
@@ -36,12 +36,12 @@ Chainlit Copilot embedding is opt-in and disabled by default. Enabling the
 script/widget requires an explicit `anonymous` or `entra` mode, distinct exact
 portal and UI origins, and a private or authenticated network boundary; origin
 checks are not authentication. See
-[Embed GPT-RAG with Chainlit Copilot](docs/copilot-embedding.md) for
+[Embed Agent Landing Zone with Chainlit Copilot](docs/copilot-embedding.md) for
 configuration, CSP, deployment, security, rollout, and rollback guidance.
 
 ## Prerequisites
 
-Provision the infrastructure first by following the GPT-RAG repository instructions [GPT-RAG](https://github.com/azure/gpt-rag). This ensures all required Azure resources (e.g., Container App, Storage, AI Search) are in place before deploying the web application.
+Provision the infrastructure first by following the Agent Landing Zone repository instructions [Agent Landing Zone](https://github.com/Azure/agent-landing-zone). This ensures all required Azure resources (e.g., Container App, Storage, AI Search) are in place before deploying the web application.
 
 <details markdown="block">
 <summary>Click to view <strong>software</strong> prerequisites</summary>
@@ -68,7 +68,7 @@ az login
 
 Initialize the template:
 ```shell
-azd init -t azure/gpt-rag-ui
+azd init -t Azure/agent-app-ui
 ```
 > [!IMPORTANT]
 > Use the **same environment name** with `azd init` as in the infrastructure deployment to keep components consistent.
@@ -93,7 +93,7 @@ is absent or blank. Configure these values in Azure App Configuration with the
 | `HOSTED_AGENT_BASE_URL` | In hosted mode | HTTPS base URL of the deployed hosted orchestrator. The UI sends `POST /invocations` to this URL. |
 | `HOSTED_AGENT_RESOURCE_SCOPE` | In hosted mode | Exact deployed data-plane audience as an Entra scope ending in `/.default`, for example `api://<application-id>/.default`. The Azure Resource Manager scope is rejected. |
 | `HOSTED_AGENT_SSE_IDLE_TIMEOUT_SECONDS` | No | Maximum wait for the next SSE data from the hosted runtime. Defaults to 60 seconds and must be finite and positive. |
-| `HOSTED_AGENT_AUTH_MODE` | No | `user_delegated` (default) or `service_identity`. See below — the default is required for Toolbox per-user document authorization ([ADR-0001](https://github.com/Azure/GPT-RAG), [Azure/GPT-RAG#591](https://github.com/Azure/GPT-RAG/issues/591)). |
+| `HOSTED_AGENT_AUTH_MODE` | No | `user_delegated` (default) or `service_identity`. See below — the default is required for Toolbox per-user document authorization ([ADR-0001](https://github.com/Azure/agent-landing-zone), [Azure/agent-landing-zone#591](https://github.com/Azure/agent-landing-zone/issues/591)). |
 
 Hosted configuration, authentication, connection, timeout, protocol, and
 runtime failures are terminal for that request or startup. The UI never
@@ -198,7 +198,7 @@ Conversation is enforced, selected with `HOSTED_CONVERSATION_OWNER_BINDING`:
 
 ##### `delegated` (preferred, default when continuity is enabled)
 
-Live evidence ([Azure/GPT-RAG#591](https://github.com/Azure/GPT-RAG/issues/591),
+Live evidence ([Azure/agent-landing-zone#591](https://github.com/Azure/agent-landing-zone/issues/591),
 "OQ-OWN") showed that Azure AI Foundry hosted agents running responses
 protocol `>= 2.0.0` platform-enforce per-asserted-user ownership of managed
 Conversation/response state when a trusted middle tier authenticates as
@@ -285,7 +285,7 @@ longer the required primary path.
 | `HOSTED_CONTINUITY_ENABLED` | No | `false` by default. Set `true` to opt in; all other settings below are only evaluated when this is `true`. |
 | `HOSTED_CONVERSATION_OWNER_BINDING` | No | `delegated` (preferred, default once continuity is enabled) or `capability` (disabled fallback, still fully supported). `delegated` is only accepted when `HOSTED_CONVERSATION_OWNER_BINDING_VALIDATED=true` and `HOSTED_AGENT_PROTOCOL_VERSION >= 2.0.0` are also both set; it fails closed at startup otherwise. |
 | `HOSTED_CONVERSATION_OWNER_BINDING_VALIDATED` | No | `false` by default. Must be explicitly `true` to allow `HOSTED_CONVERSATION_OWNER_BINDING=delegated`, attesting the middle-tier identity has been granted the custom `UserIdentityImpersonation` data action at the agent scope. |
-| `HOSTED_AGENT_PROTOCOL_VERSION` | In delegated mode | The deployed hosted agent's responses protocol version as `MAJOR.MINOR.PATCH`. Required and must be `>= 2.0.0` when `HOSTED_CONVERSATION_OWNER_BINDING=delegated` (see Azure/GPT-RAG#591). |
+| `HOSTED_AGENT_PROTOCOL_VERSION` | In delegated mode | The deployed hosted agent's responses protocol version as `MAJOR.MINOR.PATCH`. Required and must be `>= 2.0.0` when `HOSTED_CONVERSATION_OWNER_BINDING=delegated` (see Azure/agent-landing-zone#591). |
 | `HOSTED_CONVERSATION_CAPABILITY_KEY` | In capability mode | Signing key for the opaque capability, at least 32 characters. Provide it via a Key Vault reference in App Configuration — never a literal secret in source, environment files, or logs. |
 | `HOSTED_CONVERSATION_CAPABILITY_KEY_ID` | In capability mode | Identifier for the currently active signing key. A capability signed under a previous key id is rejected once this value is rotated, so key rotation retires old capabilities automatically. |
 | `HOSTED_CONVERSATION_CAPABILITY_TTL_SECONDS` | No | Capability lifetime in seconds (capability mode only). Defaults to `900`; must be between `60` and `86400`. |
@@ -309,8 +309,8 @@ Residual operational notes:
 
 #### Optional: administrative panel user-facing surfaces (opt-in, default off)
 
-Issue [Azure/GPT-RAG#611](https://github.com/Azure/GPT-RAG/issues/611) and the
-accepted ADR-0004 (in the `Azure/GPT-RAG` platform repository) add optional
+Issue [Azure/agent-landing-zone#611](https://github.com/Azure/agent-landing-zone/issues/611) and the
+accepted ADR-0004 (in the `Azure/agent-landing-zone` platform repository) add optional
 user-facing conversation history, feedback, and deletion endpoints for the
 administrative panel. These are disabled by default and require **both**
 `DEPLOY_ADMINISTRATIVE_PANEL=true` and `PANEL_HISTORY_ENABLED=true`, plus a
@@ -390,7 +390,7 @@ disclosure (managed Conversations remains the sole system of record for chat
 content either way).
 
 Operator-facing overview metrics and corpus/document curation are out of
-scope for this UI; per ADR-0004 they belong to the `gpt-rag-ingestion` admin
+scope for this UI; per ADR-0004 they belong to the `agent-app-ingestion` admin
 app, which has no conversation-content access.
 
 
@@ -401,17 +401,17 @@ To deploy using a script, first clone the repository, set the App Configuration 
 ##### PowerShell (Windows)
 
 ```powershell
-git clone https://github.com/Azure/gpt-rag-ui.git
+git clone https://github.com/Azure/agent-app-ui.git
 $env:APP_CONFIG_ENDPOINT = "https://<your-app-config-name>.azconfig.io"
-cd gpt-rag-ui
+cd agent-app-ui
 .\scripts\deploy.ps1
 ```
 
 ##### Bash (Linux/macOS)
 ```bash
-git clone https://github.com/Azure/gpt-rag-ui.git
+git clone https://github.com/Azure/agent-app-ui.git
 export APP_CONFIG_ENDPOINT="https://<your-app-config-name>.azconfig.io"
-cd gpt-rag-ui
+cd agent-app-ui
 ./scripts/deploy.sh
 ````
 
@@ -426,12 +426,12 @@ cd gpt-rag-ui
 The UI can show release versions in a subtle footer at the bottom of the page.
 
 - `SHOW_RELEASE_FOOTER` (boolean, default `true`): enables or disables footer display.
-- `RELEASE` (string): GPT-RAG release value from App Configuration.
-- `VERSION` file: GPT-RAG UI release value (local file in this repository).
+- `RELEASE` (string): Agent Landing Zone release value from App Configuration.
+- `VERSION` file: Agent Landing Zone UI release value (local file in this repository).
 
 Display format:
 
-`gpt-rag vX.Y.Z | gpt-rag-ui vA.B.C`
+`Agent Landing Zone vX.Y.Z | agent-app-ui vA.B.C`
 
 Behavior:
 
@@ -441,7 +441,7 @@ Behavior:
 
 ## Found an Issue?
 
-Encountered an error or bug? Help us improve the quality of this accelerator by reporting issues or suggesting enhancements on our [GitHub Issues page](https://github.com/Azure/GPT-RAG/issues). Your feedback helps make GPT-RAG better for everyone!
+Encountered an error or bug? Help us improve the quality of this accelerator by reporting issues or suggesting enhancements on our [GitHub Issues page](https://github.com/Azure/agent-landing-zone/issues). Your feedback helps make Agent Landing Zone better for everyone!
 
 ## Previous Releases
 
@@ -450,7 +450,7 @@ Encountered an error or bug? Help us improve the quality of this accelerator by 
 
 ## 🤝 Contributing
 
-We appreciate contributions! See [CONTRIBUTING](https://github.com/Azure/gpt-rag/blob/main/CONTRIBUTING.md) for guidelines on submitting pull requests.
+We appreciate contributions! See [CONTRIBUTING](https://github.com/Azure/agent-landing-zone/blob/main/CONTRIBUTING.md) for guidelines on submitting pull requests.
 
 ## Trademarks
 

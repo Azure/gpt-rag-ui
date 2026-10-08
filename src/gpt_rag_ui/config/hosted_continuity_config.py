@@ -16,7 +16,7 @@ modes, chosen with ``HOSTED_CONVERSATION_OWNER_BINDING``:
   attaches a platform-trusted ``x-ms-user-identity`` header derived only
   from the caller's validated Entra ``oid`` (never from client input) on
   every Conversations lifecycle call. Live evidence
-  (Azure/GPT-RAG#591, "OQ-OWN") shows Azure AI Foundry hosted agents running
+  (Azure/agent-landing-zone#591, "OQ-OWN") shows Azure AI Foundry hosted agents running
   responses protocol >= 2.0.0 platform-enforce per-asserted-user ownership
   of this state when the middle-tier identity also holds the custom
   ``Microsoft.CognitiveServices/accounts/AIServices/agents/endpoints/UserIdentityImpersonation/action``
@@ -95,7 +95,7 @@ class HostedContinuitySettings:
         """True only once the delegated owner-binding mode has been
         selected, explicitly marked validated, *and* the attested hosted
         agent responses protocol version meets the minimum this behavior was
-        confirmed under (see Azure/GPT-RAG#591, "OQ-OWN"); otherwise it stays
+        confirmed under (see Azure/agent-landing-zone#591, "OQ-OWN"); otherwise it stays
         inert even if ``HOSTED_CONVERSATION_OWNER_BINDING=delegated`` is set
         (this can only happen transiently since
         ``load_hosted_continuity_settings`` rejects that combination
@@ -258,7 +258,7 @@ def load_hosted_continuity_settings(
     if owner_binding == "delegated":
         # Fails closed (the operational equivalent of a 503: the process
         # will not come up in this mode) unless the operator has explicitly
-        # attested BOTH gates live evidence (Azure/GPT-RAG#591, "OQ-OWN")
+        # attested BOTH gates live evidence (Azure/agent-landing-zone#591, "OQ-OWN")
         # showed are required for the platform to enforce per-user ownership
         # of this managed conversation state: the deployed hosted agent runs
         # responses protocol >= 2.0.0, and the middle-tier identity has been
@@ -290,7 +290,7 @@ def load_hosted_continuity_settings(
                 f"{'.'.join(str(part) for part in _MIN_DELEGATED_PROTOCOL_VERSION)} "
                 "as a MAJOR.MINOR.PATCH string (per-user response/session "
                 "ownership enforcement was only confirmed live at or above "
-                "that version; see Azure/GPT-RAG#591)."
+                "that version; see Azure/agent-landing-zone#591)."
             )
 
     capability_key = _read_setting(config, environ, "HOSTED_CONVERSATION_CAPABILITY_KEY")

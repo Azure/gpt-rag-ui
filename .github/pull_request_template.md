@@ -12,7 +12,7 @@
 
 ## Related backlog item or issue
 
-<!-- Link the Azure/GPT-RAG or gpt-rag-ui issue when applicable. -->
+<!-- Link the Azure/agent-landing-zone or agent-app-ui issue when applicable. -->
 
 ## Changes
 
@@ -33,9 +33,9 @@ applicable. -->
 ## Cross-repository dependencies
 
 - [ ] None
-- [ ] [GPT-RAG](https://github.com/Azure/GPT-RAG)
-- [ ] [gpt-rag-orchestrator](https://github.com/Azure/gpt-rag-orchestrator)
-- [ ] [gpt-rag-ingestion](https://github.com/Azure/gpt-rag-ingestion)
+- [ ] [Agent Landing Zone](https://github.com/Azure/agent-landing-zone)
+- [ ] [agent-app-orchestrator](https://github.com/Azure/agent-app-orchestrator)
+- [ ] [agent-app-ingestion](https://github.com/Azure/agent-app-ingestion)
 - [ ] Other: [link]
 
 ## Documentation

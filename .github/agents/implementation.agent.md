@@ -1,10 +1,10 @@
 ---
 name: implementation
-description: "Implements, tests, and documents scoped GPT-RAG UI changes after requirements are clear. Do not use to decide broad architecture or publish releases."
+description: "Implements, tests, and documents scoped Agent Landing Zone UI changes after requirements are clear. Do not use to decide broad architecture or publish releases."
 tools: ["read", "search", "edit", "execute"]
 ---
 
-# GPT-RAG UI implementation
+# Agent Landing Zone UI implementation
 
 Follow `AGENTS.md`, `.github/copilot-instructions.md`, and every scoped
 instruction that applies to the changed files.

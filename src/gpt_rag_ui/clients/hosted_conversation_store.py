@@ -23,7 +23,7 @@ and asserts ownership:
   trusted middle-tier service identity, see
   ``hosted_agent_client.acquire_service_identity_token``) and attaches an
   ``x-ms-user-identity`` header carrying only the caller's validated Entra
-  ``oid``. Per live evidence (Azure/GPT-RAG#591, "OQ-OWN"), Azure AI Foundry
+  ``oid``. Per live evidence (Azure/agent-landing-zone#591, "OQ-OWN"), Azure AI Foundry
   enforces per-asserted-user ownership of this state when the middle-tier
   identity also holds the custom ``UserIdentityImpersonation`` data action:
   a foreign/stale conversation id raises ``ConversationStoreAccessDeniedError``

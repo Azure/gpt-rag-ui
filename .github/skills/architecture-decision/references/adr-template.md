@@ -68,7 +68,7 @@ that prove the decision remains valid.
 
 ## Documentation impact
 
-List affected local and central GPT-RAG documentation.
+List affected local and central Agent Landing Zone documentation.
 
 ## Review trigger
 

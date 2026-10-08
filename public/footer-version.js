@@ -113,7 +113,7 @@
     renderTextNode(
       text,
       cachedData.gpt_rag_release || "Agent Landing Zone release information is missing",
-      cachedData.gpt_rag_ui_release || "gpt-rag-ui release information is missing"
+      cachedData.gpt_rag_ui_release || "agent-app-ui release information is missing"
     );
     ensureSpacing();
   }
@@ -123,7 +123,7 @@
   async function loadVersionFooter() {
     var fallback = {
       gpt_rag_release: "Agent Landing Zone release information is missing",
-      gpt_rag_ui_release: "gpt-rag-ui release information is missing",
+      gpt_rag_ui_release: "agent-app-ui release information is missing",
     };
 
     try {
