@@ -1,9 +1,9 @@
 ---
 name: architecture-decision
-description: "Conducts and records a verifiable GPT-RAG UI architectural decision. Use when a choice alters boundaries, contracts, identity, sessions, persistence, accessibility, deployment, or operation with meaningful reversal cost."
+description: "Conducts and records a verifiable Agent Landing Zone UI architectural decision. Use when a choice alters boundaries, contracts, identity, sessions, persistence, accessibility, deployment, or operation with meaningful reversal cost."
 ---
 
-# GPT-RAG UI architectural decision
+# Agent Landing Zone UI architectural decision
 
 1. Load the relevant `engineering-principles` references.
 2. Define context, constraints, affected users and systems, and up to five

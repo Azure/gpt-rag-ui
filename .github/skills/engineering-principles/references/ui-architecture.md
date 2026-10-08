@@ -1,8 +1,8 @@
-# GPT-RAG UI architecture
+# Agent Landing Zone UI architecture
 
 ## Purpose and boundaries
 
-- The repository is a Python 3.12 Chainlit client, not the GPT-RAG platform or
+- The repository is a Python 3.12 Chainlit client, not the Agent Landing Zone platform or
   orchestrator implementation.
 - Keep `main.py` and `app.py` at the composition boundary. Authentication,
   embedding security, persistence, service clients, connectors, and telemetry

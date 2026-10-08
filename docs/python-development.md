@@ -1,8 +1,8 @@
 # Python development and package migration
 
 This is the UI implementation checkpoint for
-[Azure/GPT-RAG#681](https://github.com/Azure/GPT-RAG/issues/681), coordinated in
-[Azure/GPT-RAG#689](https://github.com/Azure/GPT-RAG/pull/689).
+[Azure/agent-landing-zone#681](https://github.com/Azure/agent-landing-zone/issues/681), coordinated in
+[Azure/agent-landing-zone#689](https://github.com/Azure/agent-landing-zone/pull/689).
 The accepted coordination ADR is ADR-0005 in that PR. The component remains
 compatible by design with orchestrator v4.1.1 and ingestion v2.7.3; local
 mocked-boundary evidence is not live Azure integration evidence.
@@ -254,7 +254,7 @@ handler waiver is granted. Narrowing removes 35 of the original 63 broad sites;
 the remaining 28 plus two companion cleanup sites preserve application-level translation, cleanup/propagation
 or contractual best-effort behavior. Logging alone does not approve them.
 
-The [explicit authorization by repository administrator @placerda](https://github.com/Azure/GPT-RAG/issues/681#issuecomment-5601804634)
+The [explicit authorization by repository administrator @placerda](https://github.com/Azure/agent-landing-zone/issues/681#issuecomment-5601804634)
 accepts these exact existing records and the policy for initial administrative
 adoption under Q5. It is not an independent GitHub review, a claim that bootstrap
 checks pass, or authorization for production deployment. Only protected active,
@@ -309,7 +309,7 @@ do not disable required checks to bypass a checker defect. Production recovery
 has not been rehearsed by this change.
 
 Canonical contributor documentation is coordinated in
-[Azure/GPT-RAG#688](https://github.com/Azure/GPT-RAG/pull/688). Existing local
+[Azure/agent-landing-zone#688](https://github.com/Azure/agent-landing-zone/pull/688). Existing local
 embedding and deployment instructions retain their operator/security claims;
 this change does not redesign those behaviors or publish planned controls as
 already active.

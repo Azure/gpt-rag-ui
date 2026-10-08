@@ -1,10 +1,10 @@
 ---
 name: architecture
-description: "Analyzes GPT-RAG UI boundaries, contracts, identity, accessibility, and trade-offs. Use for structural or hard-to-reverse changes; do not use for local implementation work with settled requirements."
+description: "Analyzes Agent Landing Zone UI boundaries, contracts, identity, accessibility, and trade-offs. Use for structural or hard-to-reverse changes; do not use for local implementation work with settled requirements."
 tools: ["read", "search", "edit"]
 ---
 
-# GPT-RAG UI architecture
+# Agent Landing Zone UI architecture
 
 Follow `AGENTS.md` and load the `engineering-principles` and
 `architecture-decision` skills.

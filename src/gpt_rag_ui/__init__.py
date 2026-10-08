@@ -1,1 +1,1 @@
-"""GPT-RAG UI runtime package. Importing this package has no startup effects."""
+"""Agent Landing Zone UI runtime package. Importing this package has no startup effects."""

@@ -1,12 +1,12 @@
-# Embed GPT-RAG with Chainlit Copilot
+# Embed Agent Landing Zone with Chainlit Copilot
 
-This guide describes the opt-in Chainlit Copilot integration in GPT-RAG UI.
+This guide describes the opt-in Chainlit Copilot integration in Agent Landing Zone UI.
 The feature supports two explicit authentication modes:
 
 | Mode | Intended use | Identity and persistence |
 | --- | --- | --- |
-| `anonymous` | A deliberately public or portal-gated assistant that does not require a GPT-RAG Entra identity | A unique ephemeral principal per opaque session. Durable threads, user-bound uploads, and citation downloads are disabled. |
-| `entra` | A portal where GPT-RAG must validate the signed-in user | A delegated Microsoft Entra v2 token is validated during bootstrap and mapped to the user's tenant and object ID. Existing Entra behavior is preserved. |
+| `anonymous` | A deliberately public or portal-gated assistant that does not require a Agent Landing Zone Entra identity | A unique ephemeral principal per opaque session. Durable threads, user-bound uploads, and citation downloads are disabled. |
+| `entra` | A portal where Agent Landing Zone must validate the signed-in user | A delegated Microsoft Entra v2 token is validated during bootstrap and mapped to the user's tenant and object ID. Existing Entra behavior is preserved. |
 
 Embedding is disabled by default. Enabling it without a valid
 `CHAINLIT_COPILOT_AUTH_MODE` fails startup. The service never infers anonymous
@@ -17,18 +17,18 @@ anonymous access.
 
 Chainlit 2.9.4 Copilot mode renders a floating widget in an open Shadow DOM. It
 is loaded by a script and does not use an iframe. Embedding therefore does not
-require relaxing `frame-ancestors` or `X-Frame-Options` on the GPT-RAG UI
+require relaxing `frame-ancestors` or `X-Frame-Options` on the Agent Landing Zone UI
 origin. Do not weaken either protection for this widget; they continue to
-protect the standalone GPT-RAG UI page from clickjacking.
+protect the standalone Agent Landing Zone UI page from clickjacking.
 
-The portal first calls GPT-RAG's bootstrap endpoint and then mounts the widget.
+The portal first calls Agent Landing Zone's bootstrap endpoint and then mounts the widget.
 In Entra mode, the portal sends its delegated API access token only to:
 
 ```text
 POST https://chat.contoso.com/copilot/auth/bootstrap
 ```
 
-GPT-RAG validates the token and exchanges it for an opaque server-side session.
+Agent Landing Zone validates the token and exchanges it for an opaque server-side session.
 The portal must not pass the Entra token as a widget `accessToken`, and
 `mountChainlitWidget` is called without one. Anonymous bootstrap sends no
 `Authorization` header.
@@ -39,17 +39,17 @@ valid only while the corresponding process-local server session exists.
 
 ## Required topology
 
-Use distinct exact origins for the GPT-RAG UI and embedding portal:
+Use distinct exact origins for the Agent Landing Zone UI and embedding portal:
 
 ```text
-GPT-RAG UI: https://chat.contoso.com
+Agent Landing Zone UI: https://chat.contoso.com
 Portal:     https://portal.contoso.com
 ```
 
 Same-origin path multiplexing is intentionally unsupported. When embedding is
 enabled:
 
-- `CHAINLIT_URL` must be the exact externally visible GPT-RAG UI origin.
+- `CHAINLIT_URL` must be the exact externally visible Agent Landing Zone UI origin.
 - Every value in `CHAINLIT_ALLOWED_ORIGINS` must be an exact portal origin.
 - `CHAINLIT_URL` cannot also appear in `CHAINLIT_ALLOWED_ORIGINS`.
 - A non-empty `CHAINLIT_ROOT_PATH` is rejected.
@@ -65,11 +65,11 @@ select embedded authentication.
 
 Exact-origin enforcement is a browser policy, not authentication. A direct HTTP
 client can set a matching `Origin` header without loading the portal. In
-`anonymous` mode, anyone who can reach the GPT-RAG UI endpoint can create an
+`anonymous` mode, anyone who can reach the Agent Landing Zone UI endpoint can create an
 ephemeral session and consume model and search capacity.
 
 Use Entra mode unless an authenticated gateway or a private network boundary
-authoritatively restricts access before traffic reaches GPT-RAG. A Zero Trust or
+authoritatively restricts access before traffic reaches Agent Landing Zone. A Zero Trust or
 private Container Apps deployment must remain private and be exposed through
 the environment's existing authenticated front door or gateway. Never enable
 public ingress solely to make the widget reachable.
@@ -77,7 +77,7 @@ public ingress solely to make the widget reachable.
 The [canonical Agent Landing Zone documentation](https://azure.github.io/AI-Landing-Zones/agent-landing-zone/) remains
 the source for architecture and infrastructure deployment. This repository
 guide defines the widget's application contract; it does not replace ingress,
-gateway, WAF, or private networking controls owned by the GPT-RAG
+gateway, WAF, or private networking controls owned by the Agent Landing Zone
 infrastructure.
 
 Browsers normally omit `Origin` on top-level download navigation. The secure
@@ -94,14 +94,14 @@ configuration source. Environment variables take precedence.
 | --- | --- | --- |
 | `CHAINLIT_COPILOT_ENABLED` | No | Defaults to `false`. Set to `true` to enable embedding. |
 | `CHAINLIT_COPILOT_AUTH_MODE` | When enabled | Must be exactly `anonymous` or `entra`. |
-| `CHAINLIT_URL` | When enabled | Exact HTTPS origin serving GPT-RAG UI, with no path. |
+| `CHAINLIT_URL` | When enabled | Exact HTTPS origin serving Agent Landing Zone UI, with no path. |
 | `CHAINLIT_ALLOWED_ORIGINS` | When enabled | Comma-separated exact portal origins. The UI origin is not allowed here. This is a CORS-style browser control, not authentication or a network access boundary. |
 | `CHAINLIT_COOKIE_SAMESITE` | No | `lax` by default. Use `none` only when a cross-site portal requires it; HTTPS is mandatory. |
 | `CHAINLIT_COPILOT_SESSION_TTL_SECONDS` | No | Maximum opaque-session lifetime. The session also expires when its Entra token expires. |
 | `CHAINLIT_COPILOT_MAX_SESSIONS` | No | Process-local bound on active embedded sessions. |
 | `CHAINLIT_COPILOT_BOOTSTRAP_RATE_LIMIT_PER_MINUTE` | No | Process-local bootstrap limit. Add authoritative gateway throttling for distributed enforcement. |
 | `CHAINLIT_COPILOT_ENTRA_TENANT_ID` | Entra | Tenant GUID expected in the token. |
-| `CHAINLIT_COPILOT_ENTRA_AUDIENCE` | Entra | GPT-RAG API audience expected in the token. |
+| `CHAINLIT_COPILOT_ENTRA_AUDIENCE` | Entra | Agent Landing Zone API audience expected in the token. |
 | `CHAINLIT_COPILOT_ENTRA_REQUIRED_SCOPE` | No | Delegated scope expected in `scp`; defaults to `user_impersonation`. |
 
 `CHAINLIT_AUTH_SECRET` remains required by Chainlit and must be an
@@ -121,12 +121,12 @@ CHAINLIT_COPILOT_BOOTSTRAP_RATE_LIMIT_PER_MINUTE=60
 ```
 
 Choosing anonymous mode is a security decision. `CHAINLIT_ALLOWED_ORIGINS`
-stops browser pages on unlisted origins from calling GPT-RAG, but a non-browser
-client can forge a matching `Origin` header. Anyone who can reach the GPT-RAG UI
+stops browser pages on unlisted origins from calling Agent Landing Zone, but a non-browser
+client can forge a matching `Origin` header. Anyone who can reach the Agent Landing Zone UI
 endpoint can create an ephemeral assistant session, whether or not they can
-load the portal. The portal's own authentication does not protect the GPT-RAG
+load the portal. The portal's own authentication does not protect the Agent Landing Zone
 endpoint unless an authenticated gateway or private network boundary enforces
-that identity before forwarding the request. Prefer Entra mode when GPT-RAG
+that identity before forwarding the request. Prefer Entra mode when Agent Landing Zone
 must authenticate each user.
 
 ### Entra example
@@ -142,17 +142,17 @@ CHAINLIT_COPILOT_ENTRA_REQUIRED_SCOPE=user_impersonation
 ```
 
 The token validator checks the RS256 signature, exact v2 issuer and token
-version, audience, tenant, delegated scope, expiry, `tid`, and `oid`. GPT-RAG
+version, audience, tenant, delegated scope, expiry, `tid`, and `oid`. Agent Landing Zone
 does not add a new portal-client `azp` allow-list requirement, so existing
 validated Entra deployments retain their behavior.
 
 ## Portal integration
 
-Load the Copilot bundle from the GPT-RAG origin. Bootstrap first, verify that
+Load the Copilot bundle from the Agent Landing Zone origin. Bootstrap first, verify that
 the browser accepted the cookie, and mount only after bootstrap succeeds.
 
 This is a script/widget integration, not an iframe integration. The portal's
-Content Security Policy must allow the GPT-RAG UI origin in `script-src` and
+Content Security Policy must allow the Agent Landing Zone UI origin in `script-src` and
 `connect-src`, including its secure WebSocket endpoint. For example:
 
 ```text
@@ -162,7 +162,7 @@ Content-Security-Policy:
 ```
 
 Keep the portal's other CSP directives intact. Do not loosen
-`frame-ancestors` or `X-Frame-Options` on the portal or GPT-RAG UI for this
+`frame-ancestors` or `X-Frame-Options` on the portal or Agent Landing Zone UI for this
 widget.
 
 ```html
@@ -347,9 +347,9 @@ anonymous mode send no token.
 | --- | --- |
 | Startup fails | Embedding has an explicit mode, origins are distinct and exact, and `CHAINLIT_ROOT_PATH` is empty. |
 | Bootstrap 403 | The browser `Origin` exactly matches `CHAINLIT_ALLOWED_ORIGINS`; in Entra mode also check tenant, audience, delegated scope, and user policy. |
-| Bootstrap 401 | The Entra token is present, unexpired, and issued as a v2 delegated token for the configured GPT-RAG audience. |
+| Bootstrap 401 | The Entra token is present, unexpired, and issued as a v2 delegated token for the configured Agent Landing Zone audience. |
 | Bootstrap succeeds but widget requests return 401 | The browser may have rejected the cookie. Check HTTPS, `CHAINLIT_COOKIE_SAMESITE`, and third-party-cookie policy. |
-| Portal blocks the bundle or socket | Allow the GPT-RAG UI origin in the portal's `script-src` and `connect-src`, including `wss://`; do not change framing protections. |
+| Portal blocks the bundle or socket | Allow the Agent Landing Zone UI origin in the portal's `script-src` and `connect-src`, including `wss://`; do not change framing protections. |
 | Socket connects then closes | Verify exact origin, cookie delivery, affinity, WebSocket upgrade forwarding, and the one-process/one-active-revision/one-replica contract. |
 | Anonymous thread or download returns 403 | This is intentional. Anonymous mode denies durable identity-bound state and private citation downloads. |
 | Standalone OAuth behaves unexpectedly | Ensure the portal origin differs from `CHAINLIT_URL`; a cookie alone must not select embedded policy. |

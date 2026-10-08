@@ -1,12 +1,12 @@
 ---
 name: documentation-consistency
-description: "Keeps GPT-RAG UI developer, user, and operator documentation aligned with shipped behavior. Use for features, configuration keys, security policy, deployment parameters, defaults, UI behavior, or breaking changes."
+description: "Keeps Agent Landing Zone UI developer, user, and operator documentation aligned with shipped behavior. Use for features, configuration keys, security policy, deployment parameters, defaults, UI behavior, or breaking changes."
 ---
 
-# GPT-RAG UI documentation consistency
+# Agent Landing Zone UI documentation consistency
 
-Canonical GPT-RAG product documentation is published from the `docs` branch of
-`Azure/AI-Landing-Zones` at https://azure.github.io/AI-Landing-Zones/agent-landing-zone/. This repository keeps
+Canonical Agent Landing Zone product documentation is published from the `docs` branch of
+`Azure/agent-landing-zone` at https://azure.github.io/AI-Landing-Zones/agent-landing-zone/. This repository keeps
 component-specific material in `README.md`, `docs/`, `chainlit.md`, code
 comments, examples, and release metadata.
 
