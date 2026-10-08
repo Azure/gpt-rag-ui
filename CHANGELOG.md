@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Security
+
+- Upgrade Chainlit to 2.12.0, aiohttp to 3.14.3 and setuptools to 83.0.0 to
+  resolve Dependabot security alerts. Adds `get_favorite_steps` to the data
+  layer, required by Chainlit 2.12.
+
 ## [v3.2.0] - 2026-10-06
 
 ### Removed

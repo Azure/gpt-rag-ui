@@ -603,7 +603,7 @@ class RealChainlitBridgeGuardTests(unittest.IsolatedAsyncioTestCase):
         import chainlit
         from chainlit.config import config
 
-        self.assertEqual("2.9.4", chainlit.__version__)
+        self.assertEqual("2.12.0", chainlit.__version__)
         self.auth_patches = [
             patch.object(config.code, "oauth_callback", None),
             patch.object(config.code, "password_auth_callback", None),
@@ -968,7 +968,7 @@ class BridgeGuardTests(unittest.IsolatedAsyncioTestCase):
 
         # Real Engine.IO close -> maintained adapter -> Socket.IO callback ->
         # real manager. Only the failing dependency is replaced.
-        # Match Chainlit 2.9.4's server configuration, including background
+        # Match Chainlit 2.12.0's server configuration, including background
         # Socket.IO event dispatch (Engine.IO dispatch is synchronous).
         sio = AsyncServer(cors_allowed_origins=[], async_mode="asgi")
         delivered = AsyncMock()

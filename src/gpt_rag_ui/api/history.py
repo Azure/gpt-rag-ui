@@ -152,6 +152,9 @@ class OrchestratorDataLayer(BaseDataLayer):
     async def close(self) -> None:
         pass
 
+    async def get_favorite_steps(self, user_id: str) -> list[StepDict]:
+        return []
+
 
 def get_data_layer() -> OrchestratorDataLayer:
     return OrchestratorDataLayer()
