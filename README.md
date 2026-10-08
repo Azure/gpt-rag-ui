@@ -10,8 +10,8 @@ products:
 - azure-openai
 - azure-ai-search
 urlFragment: agent-app-ui
-name: Multi-repo ChatGPT and Enterprise data with Azure OpenAI and AI Search
-description: Agent Landing Zone core is a Retrieval-Augmented Generation pattern running in Azure, using Azure AI Search for retrieval and Azure OpenAI large language models to power ChatGPT-style and Q&A experiences.
+name: Agent Landing Zone Web UI
+description: Chainlit web UI for Agent Landing Zone, the secure enterprise landing zone for AI agent applications on Microsoft Foundry and Azure AI Search.
 -->
 # Agent Landing Zone Web UI
 
@@ -85,7 +85,7 @@ azd deploy
 
 Fresh deployments use the Microsoft Foundry hosted runtime when `CHAT_BACKEND`
 is absent or blank. Configure these values in Azure App Configuration with the
-`gpt-rag` label (or as environment variables for local development):
+`agent-lz` label (or the `agent-app-ui` label for UI-specific overrides) (or as environment variables for local development):
 
 | Setting | Required | Description |
 | --- | --- | --- |

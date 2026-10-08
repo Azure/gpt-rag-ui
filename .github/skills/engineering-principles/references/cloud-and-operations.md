@@ -1,6 +1,6 @@
 # Cloud and operations
 
-- Use the existing Azure App Configuration provider with label `gpt-rag`.
+- Use the existing Azure App Configuration provider with labels `agent-app-ui` and `agent-lz`.
   Resolve secrets through Key Vault references and prefer managed identity
   with least-privilege RBAC.
 - Keep App Configuration keys, defaults, environment overrides, infrastructure

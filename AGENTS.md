@@ -116,7 +116,7 @@ orchestrator.
 ## Configuration, security, and contracts
 
 - Read runtime settings through the existing Azure App Configuration provider
-  with label `gpt-rag`; resolve secrets through Key Vault references.
+  with label `agent-lz` (UI-specific overrides use `gpt-rag-ui`); resolve secrets through Key Vault references.
 - Never hardcode backend URLs, client identifiers, feature flags, signing
   secrets, or API keys.
 - Preserve Entra validation, delegated identity propagation, exact-origin
