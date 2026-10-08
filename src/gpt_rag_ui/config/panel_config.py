@@ -21,7 +21,7 @@ Every setting here is inert and safe-by-default:
   ``delegated``) — the panel-only listing/read backend.
 * ``PANEL_CONVERSATIONS_TOKEN_AUDIENCE`` — the expected ``aud`` claim on the
   delegated user bearer callers must present to every panel endpoint
-  (analogous to ``HOSTED_RETRIEVAL_TOKEN_AUDIENCE`` in agent-app-ingestion).
+  (analogous to ``HOSTED_RETRIEVAL_TOKEN_AUDIENCE`` in gpt-rag-ingestion).
   Required whenever ``PANEL_HISTORY_ENABLED=true``.
 * ``PANEL_CONVERSATIONS_TENANT_ID`` — the Entra tenant panel bearers must be
   issued from; falls back to ``OAUTH_AZURE_AD_TENANT_ID`` (the tenant users
