@@ -11,13 +11,13 @@ products:
 - azure-ai-search
 urlFragment: agent-app-ui
 name: Agent Landing Zone Web UI
-description: Chainlit web UI for Agent Landing Zone, the secure enterprise landing zone for AI agent applications on Microsoft Foundry and Azure AI Search.
+description: Chainlit web UI for Agent Landing Zone, delivering conversational agent experiences on Microsoft Foundry and Microsoft Agent Framework.
 -->
 # Agent Landing Zone Web UI
 
 Part of the [Agent Landing Zone](https://github.com/Azure/agent-landing-zone) solution.
 
-This repo provides a user interface built with [Chainlit](https://www.chainlit.io/) to interact with GPT-powered retrieval-augmented generation systems. It is designed to work seamlessly with the Orchestrator backend and supports customization and theming.
+This repo provides a user interface built with [Chainlit](https://www.chainlit.io/) for conversational agent experiences. It connects to the Agent Landing Zone orchestrator, streams agent responses with citations and feedback, and supports customization and theming.
 
 ## Documentation
 
