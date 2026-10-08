@@ -17,6 +17,8 @@ from tenacity import retry, retry_if_exception_type, wait_random_exponential, st
 from gpt_rag_ui.config.errors import ConfigurationError
 
 BASE_LABEL = 'agent-lz'
+APP_LABEL = 'agent-app-ui'
+LEGACY_APP_LABEL = 'gpt-rag-ui'
 
 
 def candidate_keys(key: str) -> list[str]:
@@ -57,7 +59,8 @@ class AppConfigClient:
             AsyncAzureCliCredential()
         )
 
-        app_label_selector = SettingSelector(label_filter='gpt-rag-ui', key_filter='*')
+        app_label_selector = SettingSelector(label_filter=APP_LABEL, key_filter='*')
+        legacy_app_label_selector = SettingSelector(label_filter=LEGACY_APP_LABEL, key_filter='*')
         agentlz_label_selector = SettingSelector(label_filter=BASE_LABEL, key_filter='*')
         no_label_selector = SettingSelector(label_filter=None, key_filter='*')
 
@@ -65,10 +68,10 @@ class AppConfigClient:
 
         try:
             logger.info(
-                "Loading Azure App Configuration keys using labels: 'gpt-rag-ui', 'agent-lz', and <no label>"
+                "Loading Azure App Configuration keys using labels: 'agent-app-ui', 'gpt-rag-ui' (legacy), 'agent-lz', and <no label>"
             )
             self.client = load(
-                selects=[app_label_selector, agentlz_label_selector, no_label_selector],
+                selects=[app_label_selector, legacy_app_label_selector, agentlz_label_selector, no_label_selector],
                 endpoint=endpoint,
                 credential=self.credential,
                 key_vault_options=AzureAppConfigurationKeyVaultOptions(credential=self.credential),
