@@ -3,7 +3,7 @@
 
 Every panel endpoint requires a delegated Entra user bearer -- never a
 client-supplied header or claim -- validated exactly like the reference
-fail-closed pattern in gpt-rag-ingestion's ``validate_delegated_user_bearer``
+fail-closed pattern in agent-app-ingestion's ``validate_delegated_user_bearer``
 (``POST /retrieve``): RS256 JWKS signature verification, issuer/audience/
 tenant checks (reusing ``entra_token.EntraTokenValidator``, already used for
 embedded-portal bootstrap tokens in this repo), plus an explicit rejection

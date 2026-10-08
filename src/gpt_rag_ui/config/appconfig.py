@@ -57,7 +57,8 @@ class AppConfigClient:
             AsyncAzureCliCredential()
         )
 
-        app_label_selector = SettingSelector(label_filter='gpt-rag-ui', key_filter='*')
+        legacy_app_label_selector = SettingSelector(label_filter='gpt-rag-ui', key_filter='*')
+        app_label_selector = SettingSelector(label_filter='agent-app-ui', key_filter='*')
         agentlz_label_selector = SettingSelector(label_filter=BASE_LABEL, key_filter='*')
         no_label_selector = SettingSelector(label_filter=None, key_filter='*')
 
@@ -65,10 +66,10 @@ class AppConfigClient:
 
         try:
             logger.info(
-                "Loading Azure App Configuration keys using labels: 'gpt-rag-ui', 'agent-lz', and <no label>"
+                "Loading Azure App Configuration keys using labels: 'gpt-rag-ui' (legacy), 'agent-app-ui', 'agent-lz', and <no label>"
             )
             self.client = load(
-                selects=[app_label_selector, agentlz_label_selector, no_label_selector],
+                selects=[legacy_app_label_selector, app_label_selector, agentlz_label_selector, no_label_selector],
                 endpoint=endpoint,
                 credential=self.credential,
                 key_vault_options=AzureAppConfigurationKeyVaultOptions(credential=self.credential),

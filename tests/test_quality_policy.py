@@ -1026,7 +1026,7 @@ class BindingRegressionTests(unittest.TestCase):
 
 
 def quality_fixture_reports():
-    tests = {"schema_version": 1, "repository": "Azure/gpt-rag-ui", "head_sha": "head",
+    tests = {"schema_version": 1, "repository": "Azure/agent-app-ui", "head_sha": "head",
              "base_sha": "base", "run_id": "run:1", "source_digest": "sources", "status": "passed",
              "tests": [], "tests_run": 1}
     quality.seal_report(tests)

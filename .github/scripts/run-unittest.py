@@ -90,7 +90,7 @@ def run(root, base, pattern):
     unchanged = before == quality.source_digest(root)
     status = "passed" if result.wasSuccessful() and result.testsRun > 0 and unchanged and not result.metadata_errors else "violations"
     return quality.seal_report({
-        "schema_version": 1, "repository": "Azure/gpt-rag-ui", "base_sha": base, "head_sha": head,
+        "schema_version": 1, "repository": "Azure/agent-app-ui", "base_sha": base, "head_sha": head,
         "run_id": run_id, "source_digest": before, "status": status,
         "tests_run": result.testsRun, "tests": result.entries,
         "metadata_errors": result.metadata_errors, "source_unchanged": unchanged,

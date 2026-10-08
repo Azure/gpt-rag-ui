@@ -85,7 +85,7 @@ azd deploy
 
 Fresh deployments use the Microsoft Foundry hosted runtime when `CHAT_BACKEND`
 is absent or blank. Configure these values in Azure App Configuration with the
-`gpt-rag` label (or as environment variables for local development):
+`agent-lz` label (or the `agent-app-ui` label for UI-specific overrides) (or as environment variables for local development):
 
 | Setting | Required | Description |
 | --- | --- | --- |
