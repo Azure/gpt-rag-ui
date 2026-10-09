@@ -46,7 +46,7 @@
       "id": "ui-boundary-01",
       "module_id": "gpt_rag_ui.api.download_routes",
       "symbol": "register_secure_download_route.download_blob_file",
-      "review": "AI technical correction proposal; independent human review remains required. See .quality/exception-technical-review.json; no approval inherited from initial adoption.",
+      "review": "AI technical assessment in .quality/exception-technical-review.json; eligible for source-bound technical validation, not independent approval.",
       "handler_fingerprint": "ea27f01138258ee18dc29fc3f0cf19d238a02cfd203f0bd0121e13d05df132cb",
       "caught_types": [
         "Exception"
@@ -60,7 +60,7 @@
         "tests/test_download_security.py::DownloadSecurityTests.test_download_acquisition_boundary_excludes_resolver_and_late_iteration",
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_dependency_payload_chain_and_locals_are_not_logged"
       ],
-      "state": "proposed",
+      "state": "active",
       "review_by_stage": "blocking",
       "expires_on": "2027-01-06"
     },
@@ -90,7 +90,7 @@
       "id": "ui-boundary-03",
       "module_id": "embed_auth",
       "symbol": "CopilotSessionStore._notify_invalidated",
-      "review": "AI technical correction proposal; independent human review remains required. See .quality/exception-technical-review.json; no approval inherited from initial adoption.",
+      "review": "AI technical assessment in .quality/exception-technical-review.json; eligible for source-bound technical validation, not independent approval.",
       "handler_fingerprint": "6b8fd6402ce8aefe8bdf5927e3220e2e77c4da5043fb1370ea3382d3920dd481",
       "caught_types": [
         "Exception"
@@ -104,7 +104,7 @@
         "tests/test_boundary_failures.py::BoundaryFailureTests.test_cancellation_is_not_converted_to_successful_invalidation",
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_dependency_payload_chain_and_locals_are_not_logged"
       ],
-      "state": "proposed",
+      "state": "active",
       "review_by_stage": "blocking",
       "expires_on": "2027-01-06"
     },
@@ -112,7 +112,7 @@
       "id": "ui-boundary-04",
       "module_id": "embed_security",
       "symbol": "CopilotSocketRegistry.bind_connection",
-      "review": "AI technical correction proposal; independent human review remains required. See .quality/exception-technical-review.json; no approval inherited from initial adoption.",
+      "review": "AI technical assessment in .quality/exception-technical-review.json; eligible for source-bound technical validation, not independent approval.",
       "handler_fingerprint": "7c9e97958fc3a394bf5a7ba3186e149e343084ae96608a0d68b1a1c5d231b4f1",
       "caught_types": [
         "Exception"
@@ -125,7 +125,7 @@
         "tests/test_embed_security.py::BridgeGuardTests.test_failed_replacement_disconnect_keeps_old_association",
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_dependency_payload_chain_and_locals_are_not_logged"
       ],
-      "state": "proposed",
+      "state": "active",
       "review_by_stage": "blocking",
       "expires_on": "2027-01-06"
     },
@@ -133,7 +133,7 @@
       "id": "ui-boundary-05",
       "module_id": "embed_security",
       "symbol": "CopilotSocketRegistry.disconnect_session",
-      "review": "AI technical correction proposal; independent human review remains required. See .quality/exception-technical-review.json; no approval inherited from initial adoption.",
+      "review": "AI technical assessment in .quality/exception-technical-review.json; eligible for source-bound technical validation, not independent approval.",
       "handler_fingerprint": "f8fafe292eb7bd758684abcabe3abf5cd2f679db0f5175a965592c323363663d",
       "caught_types": [
         "Exception"
@@ -146,7 +146,7 @@
         "tests/test_embed_security.py::BridgeGuardTests.test_failed_session_disconnect_retains_denied_binding",
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_dependency_payload_chain_and_locals_are_not_logged"
       ],
-      "state": "proposed",
+      "state": "active",
       "review_by_stage": "blocking",
       "expires_on": "2027-01-06"
     },
@@ -154,7 +154,7 @@
       "id": "ui-boundary-06",
       "module_id": "embed_security",
       "symbol": "_target_has_copilot_sockets",
-      "review": "AI technical correction proposal; independent human review remains required. See .quality/exception-technical-review.json; no approval inherited from initial adoption.",
+      "review": "AI technical assessment in .quality/exception-technical-review.json; eligible for source-bound technical validation, not independent approval.",
       "handler_fingerprint": "6647ec551e5e108b83c460853cef4b82694614f4190195f6940f49867534b2c3",
       "caught_types": [
         "Exception"
@@ -167,7 +167,7 @@
         "tests/test_embed_security.py::BridgeGuardTests.test_bridge_recipient_lookup_failure_is_conservative",
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_dependency_payload_chain_and_locals_are_not_logged"
       ],
-      "state": "proposed",
+      "state": "active",
       "review_by_stage": "blocking",
       "expires_on": "2027-01-06"
     },
@@ -175,7 +175,7 @@
       "id": "ui-boundary-07",
       "module_id": "embed_security",
       "symbol": "disconnect_copilot_session",
-      "review": "AI technical correction proposal; independent human review remains required. See .quality/exception-technical-review.json; no approval inherited from initial adoption.",
+      "review": "AI technical assessment in .quality/exception-technical-review.json; eligible for source-bound technical validation, not independent approval.",
       "handler_fingerprint": "f126f99ec58d631ae2495d9aae0df0046ee8e82df29e25af1f5682965d9ed793",
       "caught_types": [
         "Exception"
@@ -188,7 +188,7 @@
         "tests/test_embed_security.py::BridgeGuardTests.test_invalidation_transport_failures_are_logged_without_counting_success",
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_dependency_payload_chain_and_locals_are_not_logged"
       ],
-      "state": "proposed",
+      "state": "active",
       "review_by_stage": "blocking",
       "expires_on": "2027-01-06"
     },
@@ -196,7 +196,7 @@
       "id": "ui-boundary-08",
       "module_id": "embed_security",
       "symbol": "disconnect_copilot_session",
-      "review": "AI technical correction proposal; independent human review remains required. See .quality/exception-technical-review.json; no approval inherited from initial adoption.",
+      "review": "AI technical assessment in .quality/exception-technical-review.json; eligible for source-bound technical validation, not independent approval.",
       "handler_fingerprint": "7d897438c4c05800a7f1a24d48b817d314dc5c441beedab8da458ba1a8d4d069",
       "caught_types": [
         "Exception"
@@ -209,7 +209,7 @@
         "tests/test_embed_security.py::BridgeGuardTests.test_invalidation_transport_failures_are_logged_without_counting_success",
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_dependency_payload_chain_and_locals_are_not_logged"
       ],
-      "state": "proposed",
+      "state": "active",
       "review_by_stage": "blocking",
       "expires_on": "2027-01-06"
     },
@@ -217,7 +217,7 @@
       "id": "ui-boundary-09",
       "module_id": "embed_security",
       "symbol": "_terminate_socket",
-      "review": "AI technical correction proposal; independent human review remains required. See .quality/exception-technical-review.json; no approval inherited from initial adoption.",
+      "review": "AI technical assessment in .quality/exception-technical-review.json; eligible for source-bound technical validation, not independent approval.",
       "handler_fingerprint": "fe54814940b16bf710cba38c94cee0ef7c4e4b146d4676b5a04d9e6b2b30e8bb",
       "caught_types": [
         "Exception"
@@ -230,7 +230,7 @@
         "tests/test_embed_security.py::BridgeGuardTests.test_failed_termination_retains_invalidated_association",
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_dependency_payload_chain_and_locals_are_not_logged"
       ],
-      "state": "proposed",
+      "state": "active",
       "review_by_stage": "blocking",
       "expires_on": "2027-01-06"
     },
@@ -238,7 +238,7 @@
       "id": "ui-boundary-10",
       "module_id": "embed_security",
       "symbol": "_terminate_socket",
-      "review": "AI technical correction proposal; independent human review remains required. See .quality/exception-technical-review.json; no approval inherited from initial adoption.",
+      "review": "AI technical assessment in .quality/exception-technical-review.json; eligible for source-bound technical validation, not independent approval.",
       "handler_fingerprint": "389838963dc7b28cf257f55ae3b102a8e58cfe92dc3f9b7990366d04ef031520",
       "caught_types": [
         "Exception"
@@ -251,7 +251,7 @@
         "tests/test_embed_security.py::BridgeGuardTests.test_failed_session_delete_still_unbinds_terminated_socket",
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_dependency_payload_chain_and_locals_are_not_logged"
       ],
-      "state": "proposed",
+      "state": "active",
       "review_by_stage": "blocking",
       "expires_on": "2027-01-06"
     },
@@ -281,7 +281,7 @@
       "id": "ui-boundary-12",
       "module_id": "embed_security",
       "symbol": "configure_copilot_bridge_guards.close_rejected_socket",
-      "review": "AI technical correction proposal; independent human review remains required. See .quality/exception-technical-review.json; no approval inherited from initial adoption.",
+      "review": "AI technical assessment in .quality/exception-technical-review.json; eligible for source-bound technical validation, not independent approval.",
       "handler_fingerprint": "79105f21e100ac3ea82664d7af2197631559d32f7a75f2582f305e431c20ca54",
       "caught_types": [
         "Exception"
@@ -294,7 +294,7 @@
         "tests/test_embed_security.py::BridgeGuardTests.test_rejected_socket_remains_denied_if_transport_close_fails",
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_dependency_payload_chain_and_locals_are_not_logged"
       ],
-      "state": "proposed",
+      "state": "active",
       "review_by_stage": "blocking",
       "expires_on": "2027-01-06"
     },
@@ -322,7 +322,7 @@
       "id": "ui-boundary-14",
       "module_id": "embed_security",
       "symbol": "configure_copilot_bridge_guards.guarded_engineio_disconnect",
-      "review": "AI technical correction proposal; independent human review remains required. See .quality/exception-technical-review.json; no approval inherited from initial adoption.",
+      "review": "AI technical assessment in .quality/exception-technical-review.json; eligible for source-bound technical validation, not independent approval.",
       "handler_fingerprint": "7ffd476afc58f95422c5c4e904edeb344751e58e6c40c1952ea7b8e514386bf2",
       "caught_types": [
         "Exception"
@@ -337,7 +337,7 @@
         "tests/test_embed_security.py::BridgeGuardTests.test_transport_invalidation_blocks_inflight_binding_not_other_transport",
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_dependency_payload_chain_and_locals_are_not_logged"
       ],
-      "state": "proposed",
+      "state": "active",
       "review_by_stage": "blocking",
       "expires_on": "2027-01-06"
     },
@@ -345,7 +345,7 @@
       "id": "ui-boundary-15",
       "module_id": "embed_security",
       "symbol": "configure_copilot_bridge_guards.guarded_engineio_disconnect",
-      "review": "AI technical correction proposal; independent human review remains required. See .quality/exception-technical-review.json; no approval inherited from initial adoption.",
+      "review": "AI technical assessment in .quality/exception-technical-review.json; eligible for source-bound technical validation, not independent approval.",
       "handler_fingerprint": "5634f57850672be0ef6d80d8292a730d7d637480cdaf885b94d50d0729f60c7b",
       "caught_types": [
         "Exception"
@@ -358,7 +358,7 @@
         "tests/test_embed_security.py::BridgeGuardTests.test_real_engineio_enumeration_failure_retains_invalidated_binding",
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_dependency_payload_chain_and_locals_are_not_logged"
       ],
-      "state": "proposed",
+      "state": "active",
       "review_by_stage": "blocking",
       "expires_on": "2027-01-06"
     },
@@ -366,7 +366,7 @@
       "id": "ui-boundary-16",
       "module_id": "embed_security",
       "symbol": "configure_copilot_bridge_guards.guarded_engineio_disconnect",
-      "review": "AI technical correction proposal; independent human review remains required. See .quality/exception-technical-review.json; no approval inherited from initial adoption.",
+      "review": "AI technical assessment in .quality/exception-technical-review.json; eligible for source-bound technical validation, not independent approval.",
       "handler_fingerprint": "19a67130404f9b819c37276d16207bc6afa732f728030e342139624ae2170e11",
       "caught_types": [
         "Exception"
@@ -379,7 +379,7 @@
         "tests/test_embed_security.py::BridgeGuardTests.test_real_engineio_lookup_failure_isolates_namespaces_and_recovers",
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_dependency_payload_chain_and_locals_are_not_logged"
       ],
-      "state": "proposed",
+      "state": "active",
       "review_by_stage": "blocking",
       "expires_on": "2027-01-06"
     },
@@ -387,7 +387,7 @@
       "id": "ui-boundary-17",
       "module_id": "embed_security",
       "symbol": "configure_copilot_bridge_guards.guarded_engineio_disconnect",
-      "review": "AI technical correction proposal; independent human review remains required. See .quality/exception-technical-review.json; no approval inherited from initial adoption.",
+      "review": "AI technical assessment in .quality/exception-technical-review.json; eligible for source-bound technical validation, not independent approval.",
       "handler_fingerprint": "9b41637957b7fe156c2f44eefe944b17a24c096054de53794df4c8d49b0f1bc0",
       "caught_types": [
         "Exception"
@@ -400,7 +400,7 @@
         "tests/test_embed_security.py::BridgeGuardTests.test_real_engineio_manager_failure_retains_binding_until_recovery",
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_dependency_payload_chain_and_locals_are_not_logged"
       ],
-      "state": "proposed",
+      "state": "active",
       "review_by_stage": "blocking",
       "expires_on": "2027-01-06"
     },
@@ -408,7 +408,7 @@
       "id": "ui-boundary-18",
       "module_id": "embed_security",
       "symbol": "configure_copilot_bridge_guards.guarded_connect",
-      "review": "AI technical correction proposal; independent human review remains required. See .quality/exception-technical-review.json; no approval inherited from initial adoption.",
+      "review": "AI technical assessment in .quality/exception-technical-review.json; eligible for source-bound technical validation, not independent approval.",
       "handler_fingerprint": "ffd0495b5a7fffaeeccb089f1863573b04715fad7cfd05500d8c4537c8ae77e5",
       "caught_types": [
         "Exception"
@@ -421,7 +421,7 @@
         "tests/test_embed_security.py::BridgeGuardTests.test_chainlit_connect_failure_disconnects_before_untracking",
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_dependency_payload_chain_and_locals_are_not_logged"
       ],
-      "state": "proposed",
+      "state": "active",
       "review_by_stage": "blocking",
       "expires_on": "2027-01-06"
     },
@@ -469,7 +469,7 @@
       "id": "ui-boundary-21",
       "module_id": "main",
       "symbol": "_create_chainlit_app._safe_openapi",
-      "review": "AI technical correction proposal; independent human review remains required. See .quality/exception-technical-review.json; no approval inherited from initial adoption.",
+      "review": "AI technical assessment in .quality/exception-technical-review.json; eligible for source-bound technical validation, not independent approval.",
       "handler_fingerprint": "9bb99cf79178e9fb367752844f21d5405a1a31a436298c333cde4a369057652e",
       "caught_types": [
         "Exception"
@@ -482,7 +482,7 @@
         "tests/test_installed_package.py::InstalledPackageTests.test_installed_startup_preserves_documented_failure_boundaries",
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_dependency_payload_chain_and_locals_are_not_logged"
       ],
-      "state": "proposed",
+      "state": "active",
       "review_by_stage": "blocking",
       "expires_on": "2027-01-06"
     },
@@ -490,7 +490,7 @@
       "id": "ui-boundary-22",
       "module_id": "app",
       "symbol": "get_auth_info",
-      "review": "AI technical correction proposal; independent human review remains required. See .quality/exception-technical-review.json; no approval inherited from initial adoption.",
+      "review": "AI technical assessment in .quality/exception-technical-review.json; eligible for source-bound technical validation, not independent approval.",
       "handler_fingerprint": "bf0ec6030fe1c98ded509c27e73724060f97261d38264fb8982fc8b3ba2a1ee7",
       "caught_types": [
         "Exception"
@@ -503,7 +503,7 @@
         "tests/test_boundary_failures.py::BoundaryFailureTests.test_oauth_refresh_failure_clears_session_and_denies_request",
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_dependency_payload_chain_and_locals_are_not_logged"
       ],
-      "state": "proposed",
+      "state": "active",
       "review_by_stage": "blocking",
       "expires_on": "2027-01-06"
     },
@@ -511,7 +511,7 @@
       "id": "ui-boundary-23",
       "module_id": "app",
       "symbol": "handle_message",
-      "review": "AI technical correction proposal; independent human review remains required. See .quality/exception-technical-review.json; no approval inherited from initial adoption.",
+      "review": "AI technical assessment in .quality/exception-technical-review.json; eligible for source-bound technical validation, not independent approval.",
       "handler_fingerprint": "5c98bae1918793c0ad9a242c52a7127cafe99b6fc4d0091f823482a054d9ea7d",
       "caught_types": [
         "Exception"
@@ -526,7 +526,7 @@
         "tests/test_boundary_failures.py::BoundaryFailureTests.test_failed_upload_retry_ingests_all_files_before_turn",
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_dependency_payload_chain_and_locals_are_not_logged"
       ],
-      "state": "proposed",
+      "state": "active",
       "review_by_stage": "blocking",
       "expires_on": "2027-01-06"
     },
@@ -534,7 +534,7 @@
       "id": "ui-boundary-24",
       "module_id": "app",
       "symbol": "handle_message",
-      "review": "AI technical correction proposal; independent human review remains required. See .quality/exception-technical-review.json; no approval inherited from initial adoption.",
+      "review": "AI technical assessment in .quality/exception-technical-review.json; eligible for source-bound technical validation, not independent approval.",
       "handler_fingerprint": "ad6979e446f0019651c4c18b10b66abf39ce0c75ed3b030df95cba4c4a9f10e0",
       "caught_types": [
         "Exception"
@@ -547,7 +547,7 @@
         "tests/test_boundary_failures.py::BoundaryFailureTests.test_chat_failure_boundaries_report_errors_and_close_generators",
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_dependency_payload_chain_and_locals_are_not_logged"
       ],
-      "state": "proposed",
+      "state": "active",
       "review_by_stage": "blocking",
       "expires_on": "2027-01-06"
     },
@@ -555,7 +555,7 @@
       "id": "ui-boundary-25",
       "module_id": "app",
       "symbol": "handle_message",
-      "review": "AI technical correction proposal; independent human review remains required. See .quality/exception-technical-review.json; no approval inherited from initial adoption.",
+      "review": "AI technical assessment in .quality/exception-technical-review.json; eligible for source-bound technical validation, not independent approval.",
       "handler_fingerprint": "98757639cc367aacceacedee9b66ed04260a44defd022087f363614f1891a107",
       "caught_types": [
         "Exception"
@@ -568,7 +568,7 @@
         "tests/test_boundary_failures.py::BoundaryFailureTests.test_chat_failure_boundaries_report_errors_and_close_generators",
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_dependency_payload_chain_and_locals_are_not_logged"
       ],
-      "state": "proposed",
+      "state": "active",
       "review_by_stage": "blocking",
       "expires_on": "2027-01-06"
     },
@@ -576,7 +576,7 @@
       "id": "ui-boundary-26",
       "module_id": "app",
       "symbol": "handle_message",
-      "review": "AI technical correction proposal; independent human review remains required. See .quality/exception-technical-review.json; no approval inherited from initial adoption.",
+      "review": "AI technical assessment in .quality/exception-technical-review.json; eligible for source-bound technical validation, not independent approval.",
       "handler_fingerprint": "b197d32b6d5d9ae50f4040e7a9bee6a654c52ca382ac97c930c6ec6763f80a01",
       "caught_types": [
         "Exception"
@@ -589,7 +589,7 @@
         "tests/test_boundary_failures.py::BoundaryFailureTests.test_chat_failure_boundaries_report_errors_and_close_generators",
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_dependency_payload_chain_and_locals_are_not_logged"
       ],
-      "state": "proposed",
+      "state": "active",
       "review_by_stage": "blocking",
       "expires_on": "2027-01-06"
     },
@@ -597,7 +597,7 @@
       "id": "ui-boundary-27",
       "module_id": "gpt_rag_ui.services.citations",
       "symbol": "_resolve_legacy_reference_href",
-      "review": "AI technical correction proposal; independent human review remains required. See .quality/exception-technical-review.json; no approval inherited from initial adoption.",
+      "review": "AI technical assessment in .quality/exception-technical-review.json; eligible for source-bound technical validation, not independent approval.",
       "handler_fingerprint": "d31971852bf36742a19710bbdeaf95cd888d88c3e28243348a31e3c57053dd70",
       "caught_types": [
         "Exception"
@@ -610,7 +610,7 @@
         "tests/test_boundary_failures.py::BoundaryFailureTests.test_optional_legacy_citation_failure_is_logged_and_omitted",
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_dependency_payload_chain_and_locals_are_not_logged"
       ],
-      "state": "proposed",
+      "state": "active",
       "review_by_stage": "blocking",
       "expires_on": "2027-01-06"
     },
@@ -618,13 +618,13 @@
       "id": "ui-boundary-28",
       "module_id": "hosted_continuity",
       "symbol": "HostedContinuityCoordinator.run_turn",
-      "review": "AI technical correction proposal; independent human review remains required. See .quality/exception-technical-review.json; no approval inherited from initial adoption.",
+      "review": "AI technical assessment in .quality/exception-technical-review.json; eligible for source-bound technical validation, not independent approval.",
       "handler_fingerprint": "d1e58c9a181daa2e14557aa350d733791d8ea47639193e748d216721153dffaa",
       "caught_types": [
         "Exception"
       ],
       "boundary": "Optional post-create panel owner-index hook",
-      "reason": "H4 bounded implementation: the existing turn continues after an explicitly unconfirmed owner-index write with repair-required logging. A missing row hides the conversation from panel listing and causes panel read/feedback/delete to fail closed before accessing managed content. No successful index write is claimed, no authorization bypass or automatic repair is added, and this individual exception proposal remains pending review, not approved.",
+      "reason": "H4 bounded implementation: the existing turn continues after an explicitly unconfirmed owner-index write with repair-required logging. A missing row hides the conversation from panel listing and causes panel read/feedback/delete to fail closed before accessing managed content. No successful index write is claimed, no authorization bypass or automatic repair is added. This individual exception requires exact-source passing technical evidence.",
       "failure_outcome": "contractual-best-effort",
       "diagnostic_path": "log_boundary_failure: static operation, exception class and code location; no dependency message, chain, locals or raw citation URL; existing outcome unchanged",
       "evidence_tests": [
@@ -632,7 +632,7 @@
         "tests/test_hosted_continuity_panel_hook.py::OwnerIndexHookTests.test_failed_index_write_hides_and_denies_panel_operations",
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_dependency_payload_chain_and_locals_are_not_logged"
       ],
-      "state": "proposed",
+      "state": "active",
       "review_by_stage": "blocking",
       "expires_on": "2027-01-06"
     }

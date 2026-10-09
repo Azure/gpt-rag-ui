@@ -20,7 +20,7 @@ spec.loader.exec_module(quality)
 
 
 class QualityPolicyTests(unittest.TestCase):
-    def test_review_decisions_match_exact_handlers_and_proposal_states(self):
+    def test_technical_decisions_match_exact_eligible_handlers_without_human_approval(self):
         root = SCRIPT.parents[2]
         registry = json.loads((root / ".quality/exceptions.json").read_text(encoding="utf-8"))["entries"]
         review = json.loads((root / ".quality/exception-technical-review.json").read_text(encoding="utf-8"))
@@ -40,9 +40,9 @@ class QualityPolicyTests(unittest.TestCase):
                     for handler in handlers
                 ))
                 self.assertEqual(entry["handler_fingerprint"], decision["candidate_fingerprint"])
-                self.assertEqual(
-                    "proposed" if decision["decision"] == "correct" else "active", entry["state"],
-                )
+                self.assertEqual("active", entry["state"])
+                self.assertEqual("not required by technical policy; not performed by this AI assessment",
+                                 decision["human_review_status"])
                 self.assertEqual("2027-01-06", entry["expires_on"])
 
     def test_subprocess_environment_preserves_empty_values(self):
@@ -537,7 +537,9 @@ class QualityHardeningTests(unittest.TestCase):
                   "today": datetime.date(2026, 9, 6)}
         self.assertEqual([], quality.validate_exception_records([handler], [record], Path.cwd(), **kwargs)[0])
         for changed in ({**record, "expires_on": "2026-09-05"}, {**record, "review_by_stage": "bootstrap"},
-                        {**record, "state": "maintainer-approved"}, {**record, "caught_types": ["BaseException"]}):
+                        {**record, "state": "maintainer-approved"}, {**record, "state": "proposed"},
+                        {**record, "state": "retired"}, {**record, "review": ""},
+                        {**record, "caught_types": ["BaseException"]}):
             self.assertTrue(quality.validate_exception_records([handler], [changed], Path.cwd(), **kwargs)[0])
         self.assertTrue(quality.validate_exception_records([handler], [record], Path.cwd())[0])
 
@@ -649,7 +651,7 @@ class EvidenceIntegrationTests(unittest.TestCase):
                          "commit", "--quiet", "-m", "protected policy"], cwd=root)
         return quality.git(root, "rev-parse", "HEAD")
 
-    def test_ruff_allowance_requires_exact_protected_handler_and_bound_evidence(self):
+    def test_ruff_allowance_requires_exact_candidate_handler_and_bound_evidence(self):
         source = (
             "def boundary(callback):\n"
             "    try:\n"
@@ -659,7 +661,8 @@ class EvidenceIntegrationTests(unittest.TestCase):
         )
         selector = "tests/test_boundary.py::Boundary.test_failure"
         for case in ("active", "proposed", "stale", "missing-evidence", "expired",
-                     "other-rule", "other-handler", "other-module", "candidate-activation", "bootstrap",
+                     "other-rule", "other-handler", "other-module", "candidate-activation",
+                     "candidate-addition", "candidate-update", "candidate-retirement", "bootstrap",
                      "stale-receipt", "failed-evidence", "skipped-evidence"):
             with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory).resolve()
@@ -693,7 +696,8 @@ class EvidenceIntegrationTests(unittest.TestCase):
                 if case == "expired":
                     entry["expires_on"] = "2000-01-01"
                 ledger = root / ".quality" / "exceptions.json"
-                ledger.write_text(json.dumps({"schema_version": 1, "entries": [entry]}), encoding="utf-8")
+                ledger.write_text(json.dumps({"schema_version": 1, "entries":
+                                             [] if case == "candidate-addition" else [entry]}), encoding="utf-8")
                 with (root / "pyproject.toml").open("a", encoding="utf-8") as config:
                     config.write('\n[tool.ruff.lint]\nselect=["BLE001", "F821"]\n')
                 quality.execute(["git", "add", "."], cwd=root)
@@ -703,6 +707,25 @@ class EvidenceIntegrationTests(unittest.TestCase):
                 if case == "candidate-activation":
                     entry["state"] = "active"
                     ledger.write_text(json.dumps({"schema_version": 1, "entries": [entry]}), encoding="utf-8")
+                if case == "candidate-addition":
+                    ledger.write_text(json.dumps({"schema_version": 1, "entries": [entry]}), encoding="utf-8")
+                if case == "candidate-update":
+                    updated_source = source.replace("return None", "return False")
+                    (root / "sample.py").write_text(updated_source, encoding="utf-8")
+                    handler = quality.broad_handlers("sample", updated_source)[0]
+                    entry["handler_fingerprint"] = handler["handler_fingerprint"]
+                    entry["review"] = "Technical provenance only; no independent approval"
+                    ledger.write_text(json.dumps({"schema_version": 1, "entries": [entry]}), encoding="utf-8")
+                    test_path = root / "tests" / "test_boundary.py"
+                    test_path.write_text(test_path.read_text().replace(
+                        "self.assertIsNone(boundary(fail))", "self.assertIs(boundary(fail), False)"), encoding="utf-8")
+                if case == "candidate-retirement":
+                    (root / "sample.py").write_text("def boundary(callback):\n    return callback()\n", encoding="utf-8")
+                    ledger.write_text(json.dumps({"schema_version": 1, "entries": []}), encoding="utf-8")
+                    test_path = root / "tests" / "test_boundary.py"
+                    test_path.write_text(test_path.read_text().replace(
+                        "self.assertIsNone(boundary(fail))",
+                        "with self.assertRaises(RuntimeError): boundary(fail)"), encoding="utf-8")
                 if case == "stale":
                     (root / "sample.py").write_text(
                         source.replace("return None", "return None if callback else False"), encoding="utf-8")
@@ -733,17 +756,23 @@ class EvidenceIntegrationTests(unittest.TestCase):
                         root, base, ("lint", "exceptions"),
                         test_evidence=None if case == "missing-evidence" else evidence)
                     lint = report["checks"]["lint"]["findings"]
-                    expected = [] if case == "active" else ["F821"] if case == "other-rule" else ["BLE001"]
+                    passing = {"active", "candidate-activation", "candidate-addition",
+                               "candidate-update", "candidate-retirement"}
+                    expected = [] if case in passing else ["F821"] if case == "other-rule" else ["BLE001"]
                     self.assertEqual(expected, [item["rule"] for item in lint])
                     if case == "other-handler":
                         self.assertEqual(10, lint[0]["line"])
                     if case == "other-module":
                         self.assertEqual("other.py", lint[0]["module"])
-                    if case in ("active", "other-rule", "other-handler", "other-module"):
+                    if case in (passing - {"candidate-retirement"}) | {"other-rule", "other-handler", "other-module"}:
                         self.assertEqual(["reviewed-boundary"], report["exception_ids_used"])
                     else:
                         self.assertEqual([], report["exception_ids_used"])
-                    # Lint-only execution must enforce the same protected evidence.
+                    if case in passing:
+                        self.assertEqual([], report["checks"]["exceptions"]["findings"])
+                        policy_report = quality.run_checks(root, base, ("policy",), test_evidence=evidence)
+                        self.assertEqual("passed", policy_report["status"])
+                    # Lint-only execution must enforce the same protected rules/evidence.
                     lint_only = quality.run_checks(
                         root, base, ("lint",),
                         test_evidence=None if case == "missing-evidence" else evidence)

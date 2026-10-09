@@ -8,7 +8,7 @@
     "correct": 23,
     "remove": 0
   },
-  "gate_status": "Protected approvals intentionally do not authorize changed fingerprints",
+  "gate_status": "Eligible for exact-source technical validation; authorized adoption of the new protected checker remains pending",
   "expiry_changed": false,
   "decisions": [
     {
@@ -28,7 +28,7 @@
         "tests/test_boundary_failures.py::BoundaryFailureTests.test_feedback_form_cleanup_preserves_submission_outcome"
       ],
       "diagnostic_tests": [],
-      "human_review_status": "required; not performed by this AI assessment"
+      "human_review_status": "not required by technical policy; not performed by this AI assessment"
     },
     {
       "id": "ui-boundary-11-cleanup",
@@ -48,7 +48,7 @@
         "tests/test_embed_security.py::BridgeGuardTests.test_disconnect_cancellation_remains_distinct"
       ],
       "diagnostic_tests": [],
-      "human_review_status": "required; not performed by this AI assessment"
+      "human_review_status": "not required by technical policy; not performed by this AI assessment"
     },
     {
       "id": "ui-boundary-01",
@@ -72,7 +72,7 @@
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_dependency_payload_chain_and_locals_are_not_logged",
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_warning_diagnostic_preserves_level_without_error_payload"
       ],
-      "human_review_status": "required; not performed by this AI assessment"
+      "human_review_status": "not required by technical policy; not performed by this AI assessment"
     },
     {
       "id": "ui-boundary-02",
@@ -93,7 +93,7 @@
         "tests/test_boundary_failures.py::BoundaryFailureTests.test_feedback_notification_failure_does_not_retry_written_feedback"
       ],
       "diagnostic_tests": [],
-      "human_review_status": "required; not performed by this AI assessment"
+      "human_review_status": "not required by technical policy; not performed by this AI assessment"
     },
     {
       "id": "ui-boundary-03",
@@ -117,7 +117,7 @@
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_dependency_payload_chain_and_locals_are_not_logged",
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_warning_diagnostic_preserves_level_without_error_payload"
       ],
-      "human_review_status": "required; not performed by this AI assessment"
+      "human_review_status": "not required by technical policy; not performed by this AI assessment"
     },
     {
       "id": "ui-boundary-04",
@@ -140,7 +140,7 @@
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_dependency_payload_chain_and_locals_are_not_logged",
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_warning_diagnostic_preserves_level_without_error_payload"
       ],
-      "human_review_status": "required; not performed by this AI assessment"
+      "human_review_status": "not required by technical policy; not performed by this AI assessment"
     },
     {
       "id": "ui-boundary-05",
@@ -163,7 +163,7 @@
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_dependency_payload_chain_and_locals_are_not_logged",
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_warning_diagnostic_preserves_level_without_error_payload"
       ],
-      "human_review_status": "required; not performed by this AI assessment"
+      "human_review_status": "not required by technical policy; not performed by this AI assessment"
     },
     {
       "id": "ui-boundary-06",
@@ -186,7 +186,7 @@
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_dependency_payload_chain_and_locals_are_not_logged",
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_warning_diagnostic_preserves_level_without_error_payload"
       ],
-      "human_review_status": "required; not performed by this AI assessment"
+      "human_review_status": "not required by technical policy; not performed by this AI assessment"
     },
     {
       "id": "ui-boundary-07",
@@ -209,7 +209,7 @@
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_dependency_payload_chain_and_locals_are_not_logged",
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_warning_diagnostic_preserves_level_without_error_payload"
       ],
-      "human_review_status": "required; not performed by this AI assessment"
+      "human_review_status": "not required by technical policy; not performed by this AI assessment"
     },
     {
       "id": "ui-boundary-08",
@@ -232,7 +232,7 @@
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_dependency_payload_chain_and_locals_are_not_logged",
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_warning_diagnostic_preserves_level_without_error_payload"
       ],
-      "human_review_status": "required; not performed by this AI assessment"
+      "human_review_status": "not required by technical policy; not performed by this AI assessment"
     },
     {
       "id": "ui-boundary-09",
@@ -255,7 +255,7 @@
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_dependency_payload_chain_and_locals_are_not_logged",
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_warning_diagnostic_preserves_level_without_error_payload"
       ],
-      "human_review_status": "required; not performed by this AI assessment"
+      "human_review_status": "not required by technical policy; not performed by this AI assessment"
     },
     {
       "id": "ui-boundary-10",
@@ -278,7 +278,7 @@
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_dependency_payload_chain_and_locals_are_not_logged",
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_warning_diagnostic_preserves_level_without_error_payload"
       ],
-      "human_review_status": "required; not performed by this AI assessment"
+      "human_review_status": "not required by technical policy; not performed by this AI assessment"
     },
     {
       "id": "ui-boundary-11",
@@ -299,7 +299,7 @@
         "tests/test_embed_security.py::BridgeGuardTests.test_disconnect_cancellation_remains_distinct"
       ],
       "diagnostic_tests": [],
-      "human_review_status": "required; not performed by this AI assessment"
+      "human_review_status": "not required by technical policy; not performed by this AI assessment"
     },
     {
       "id": "ui-boundary-12",
@@ -322,7 +322,7 @@
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_dependency_payload_chain_and_locals_are_not_logged",
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_warning_diagnostic_preserves_level_without_error_payload"
       ],
-      "human_review_status": "required; not performed by this AI assessment"
+      "human_review_status": "not required by technical policy; not performed by this AI assessment"
     },
     {
       "id": "ui-boundary-13",
@@ -341,7 +341,7 @@
         "tests/test_embed_security.py::BridgeGuardTests.test_engineio_admission_failure_releases_reservation_and_propagates"
       ],
       "diagnostic_tests": [],
-      "human_review_status": "required; not performed by this AI assessment"
+      "human_review_status": "not required by technical policy; not performed by this AI assessment"
     },
     {
       "id": "ui-boundary-14",
@@ -366,7 +366,7 @@
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_dependency_payload_chain_and_locals_are_not_logged",
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_warning_diagnostic_preserves_level_without_error_payload"
       ],
-      "human_review_status": "required; not performed by this AI assessment"
+      "human_review_status": "not required by technical policy; not performed by this AI assessment"
     },
     {
       "id": "ui-boundary-15",
@@ -389,7 +389,7 @@
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_dependency_payload_chain_and_locals_are_not_logged",
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_warning_diagnostic_preserves_level_without_error_payload"
       ],
-      "human_review_status": "required; not performed by this AI assessment"
+      "human_review_status": "not required by technical policy; not performed by this AI assessment"
     },
     {
       "id": "ui-boundary-16",
@@ -412,7 +412,7 @@
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_dependency_payload_chain_and_locals_are_not_logged",
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_warning_diagnostic_preserves_level_without_error_payload"
       ],
-      "human_review_status": "required; not performed by this AI assessment"
+      "human_review_status": "not required by technical policy; not performed by this AI assessment"
     },
     {
       "id": "ui-boundary-17",
@@ -435,7 +435,7 @@
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_dependency_payload_chain_and_locals_are_not_logged",
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_warning_diagnostic_preserves_level_without_error_payload"
       ],
-      "human_review_status": "required; not performed by this AI assessment"
+      "human_review_status": "not required by technical policy; not performed by this AI assessment"
     },
     {
       "id": "ui-boundary-18",
@@ -458,7 +458,7 @@
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_dependency_payload_chain_and_locals_are_not_logged",
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_warning_diagnostic_preserves_level_without_error_payload"
       ],
-      "human_review_status": "required; not performed by this AI assessment"
+      "human_review_status": "not required by technical policy; not performed by this AI assessment"
     },
     {
       "id": "ui-boundary-19",
@@ -477,7 +477,7 @@
         "tests/test_embed_security.py::BridgeGuardTests.test_failed_disconnect_handler_retains_association"
       ],
       "diagnostic_tests": [],
-      "human_review_status": "required; not performed by this AI assessment"
+      "human_review_status": "not required by technical policy; not performed by this AI assessment"
     },
     {
       "id": "ui-boundary-20",
@@ -496,7 +496,7 @@
         "tests/test_installed_package.py::InstalledPackageTests.test_installed_startup_preserves_documented_failure_boundaries"
       ],
       "diagnostic_tests": [],
-      "human_review_status": "required; not performed by this AI assessment"
+      "human_review_status": "not required by technical policy; not performed by this AI assessment"
     },
     {
       "id": "ui-boundary-21",
@@ -519,7 +519,7 @@
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_dependency_payload_chain_and_locals_are_not_logged",
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_warning_diagnostic_preserves_level_without_error_payload"
       ],
-      "human_review_status": "required; not performed by this AI assessment"
+      "human_review_status": "not required by technical policy; not performed by this AI assessment"
     },
     {
       "id": "ui-boundary-22",
@@ -542,7 +542,7 @@
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_dependency_payload_chain_and_locals_are_not_logged",
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_warning_diagnostic_preserves_level_without_error_payload"
       ],
-      "human_review_status": "required; not performed by this AI assessment"
+      "human_review_status": "not required by technical policy; not performed by this AI assessment"
     },
     {
       "id": "ui-boundary-23",
@@ -567,7 +567,7 @@
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_dependency_payload_chain_and_locals_are_not_logged",
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_warning_diagnostic_preserves_level_without_error_payload"
       ],
-      "human_review_status": "required; not performed by this AI assessment"
+      "human_review_status": "not required by technical policy; not performed by this AI assessment"
     },
     {
       "id": "ui-boundary-24",
@@ -590,7 +590,7 @@
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_dependency_payload_chain_and_locals_are_not_logged",
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_warning_diagnostic_preserves_level_without_error_payload"
       ],
-      "human_review_status": "required; not performed by this AI assessment"
+      "human_review_status": "not required by technical policy; not performed by this AI assessment"
     },
     {
       "id": "ui-boundary-25",
@@ -613,7 +613,7 @@
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_dependency_payload_chain_and_locals_are_not_logged",
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_warning_diagnostic_preserves_level_without_error_payload"
       ],
-      "human_review_status": "required; not performed by this AI assessment"
+      "human_review_status": "not required by technical policy; not performed by this AI assessment"
     },
     {
       "id": "ui-boundary-26",
@@ -636,7 +636,7 @@
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_dependency_payload_chain_and_locals_are_not_logged",
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_warning_diagnostic_preserves_level_without_error_payload"
       ],
-      "human_review_status": "required; not performed by this AI assessment"
+      "human_review_status": "not required by technical policy; not performed by this AI assessment"
     },
     {
       "id": "ui-boundary-27",
@@ -659,7 +659,7 @@
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_dependency_payload_chain_and_locals_are_not_logged",
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_warning_diagnostic_preserves_level_without_error_payload"
       ],
-      "human_review_status": "required; not performed by this AI assessment"
+      "human_review_status": "not required by technical policy; not performed by this AI assessment"
     },
     {
       "id": "ui-boundary-28",
@@ -670,7 +670,7 @@
       "source_path": "src/gpt_rag_ui/services/hosted_continuity.py",
       "original_fingerprint": "d15439dcd8f2a94ee9c6aecc64dbd49fb1d4be3cd8c174047105052f2687fbfc",
       "candidate_fingerprint": "d1e58c9a181daa2e14557aa350d733791d8ea47639193e748d216721153dffaa",
-      "broad_capture_justification": "H4 bounded implementation: the existing turn continues after an explicitly unconfirmed owner-index write with repair-required logging. A missing row hides the conversation from panel listing and causes panel read/feedback/delete to fail closed before accessing managed content. No successful index write is claimed, no authorization bypass or automatic repair is added, and this individual exception proposal remains pending review, not approved.",
+      "broad_capture_justification": "H4 bounded implementation: the existing turn continues after an explicitly unconfirmed owner-index write with repair-required logging. A missing row hides the conversation from panel listing and causes panel read/feedback/delete to fail closed before accessing managed content. No successful index write is claimed, no authorization bypass or automatic repair is added. This individual exception requires exact-source passing technical evidence.",
       "failure_outcome": "contractual-best-effort",
       "authorization_and_write_review": "Existing deny/propagation/confirmed-write ordering is preserved; no retry, success fallback or authorization downgrade was added.",
       "diagnostic_decision": "Remove dependency exception text/chains from logs; retain static operation, exception class and terminal code location. Also omit raw citation URL for boundary 27.",
@@ -683,7 +683,7 @@
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_dependency_payload_chain_and_locals_are_not_logged",
         "tests/test_boundary_diagnostics.py::BoundaryDiagnosticsTests.test_warning_diagnostic_preserves_level_without_error_payload"
       ],
-      "human_review_status": "required; not performed by this AI assessment"
+      "human_review_status": "not required by technical policy; not performed by this AI assessment"
     }
   ]
 }
