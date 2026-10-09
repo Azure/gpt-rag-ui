@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [v3.2.1] - 2026-10-08
+
 ### Security
 
 - Upgrade Chainlit to 2.12.0, aiohttp to 3.14.3 and setuptools to 83.0.0 to
