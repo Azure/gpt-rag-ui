@@ -249,10 +249,24 @@ exempts. `.quality/handler-inventory.json` records the remaining sites.
 `exceptions.json` contains 30 individually authorized initial-adoption boundaries:
 each identifies its exact operation/catch fingerprint, rationale, diagnostic
 path, observable outcome and executed failure-test selector. Records retain their
-2026-10-06 expiry and blocking review stage. No blanket inherited
+2027-01-06 expiry and blocking review stage. No blanket inherited
 handler waiver is granted. Narrowing removes 35 of the original 63 broad sites;
 the remaining 28 plus two companion cleanup sites preserve application-level translation, cleanup/propagation
 or contractual best-effort behavior. Logging alone does not approve them.
+
+The technical review in `.quality/exception-technical-review.json` records a
+decision for every initial-adoption boundary. It is an AI technical assessment,
+not independent human approval. Twenty-three diagnostic paths needed correction:
+dependency exception text, exception chains and raw citation URLs must not enter
+their logs. `telemetry.boundary_diagnostics.log_boundary_failure` preserves a
+static operation description, exception class and terminal code location without
+exception text, chained messages, source lines or local variables. The seven
+unchanged boundaries retain their existing propagation/static-diagnostic behavior.
+Changed handler fingerprints are submitted as `proposed`; protected-base
+approvals are not copied onto changed code. The gate must continue rejecting those
+changes until the required protected review/adoption is completed. This review
+does not extend expiry, reduce typing coverage, suppress checks or authorize
+production deployment.
 
 The [explicit authorization by repository administrator @placerda](https://github.com/Azure/agent-landing-zone/issues/681#issuecomment-5601804634)
 accepts these exact existing records and the policy for initial administrative

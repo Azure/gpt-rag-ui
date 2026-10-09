@@ -20,6 +20,31 @@ spec.loader.exec_module(quality)
 
 
 class QualityPolicyTests(unittest.TestCase):
+    def test_review_decisions_match_exact_handlers_and_proposal_states(self):
+        root = SCRIPT.parents[2]
+        registry = json.loads((root / ".quality/exceptions.json").read_text(encoding="utf-8"))["entries"]
+        review = json.loads((root / ".quality/exception-technical-review.json").read_text(encoding="utf-8"))
+        decisions = {entry["id"]: entry for entry in review["decisions"]}
+        self.assertEqual(30, len(registry))
+        self.assertEqual({entry["id"] for entry in registry}, set(decisions))
+        self.assertEqual({"reviewed": 30, "keep": 7, "correct": 23, "remove": 0}, review["summary"])
+        for entry in registry:
+            with self.subTest(exception_id=entry["id"]):
+                decision = decisions[entry["id"]]
+                handlers = quality.broad_handlers(
+                    entry["module_id"], (root / decision["source_path"]).read_text(encoding="utf-8"),
+                )
+                self.assertTrue(any(
+                    handler["symbol"] == entry["symbol"]
+                    and handler["handler_fingerprint"] == entry["handler_fingerprint"]
+                    for handler in handlers
+                ))
+                self.assertEqual(entry["handler_fingerprint"], decision["candidate_fingerprint"])
+                self.assertEqual(
+                    "proposed" if decision["decision"] == "correct" else "active", entry["state"],
+                )
+                self.assertEqual("2027-01-06", entry["expires_on"])
+
     def test_subprocess_environment_preserves_empty_values(self):
         with patch.dict(os.environ, {"GPT_RAG_EMPTY_ENV_FIXTURE": ""}):
             result = quality.execute(
