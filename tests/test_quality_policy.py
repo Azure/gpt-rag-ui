@@ -796,6 +796,9 @@ class EvidenceIntegrationTests(unittest.TestCase):
                 try:
                     report = quality.run_checks(root, base, ("policy",))
                     self.assertIn(rule, {f["rule"] for f in report["checks"]["policy"]["findings"]})
+                    for item in report["checks"]["policy"]["findings"]:
+                        self.assertNotIn("review required", item["reason"].lower())
+                        self.assertNotIn("requires protected review", item["reason"].lower())
                 finally:
                     if old is None:
                         target.unlink()
@@ -805,6 +808,19 @@ class EvidenceIntegrationTests(unittest.TestCase):
             report = quality.run_checks(root, base, ("typing",))
             self.assertEqual("violations", report["status"])
             self.assertIn("new", report["coverage"]["blocking"])
+
+    def test_bootstrap_still_blocks_without_requesting_human_approval(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            base = self.protected_fixture(root)
+            pre_policy_base = quality.git(root, "rev-parse", f"{base}^")
+            report = quality.run_checks(root, pre_policy_base, ("policy",))
+            self.assertEqual("violations", report["status"])
+            bootstrap = [item for item in report["checks"]["policy"]["findings"]
+                         if item["rule"] == "bootstrap-review"]
+            self.assertEqual(1, len(bootstrap))
+            self.assertNotIn("approval", bootstrap[0]["reason"].lower())
+            self.assertNotIn("administrator", bootstrap[0]["reason"].lower())
 
     def test_auto_typed_new_module_scope_must_survive_the_next_pr(self):
         with tempfile.TemporaryDirectory() as directory:

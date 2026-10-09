@@ -315,6 +315,11 @@ evaluator before claiming this policy is enforced remotely. Revert evaluator
 and registry together if rolling back; do not disable checks or fabricate green
 results to bridge adoption. Runtime behavior, expiry (2027-01-06), tool pins,
 workflow permissions and aggregate requirements are unchanged.
+Policy diagnostics describe differences from the protected files/settings,
+not requests for human approval. The legacy `bootstrap-review` rule name is
+retained for report compatibility; it denotes a missing protected policy, not
+a requirement to solicit reviewers or obtain an administrative statement.
+`CODEOWNERS` routes ownership but does not mandate latest-head approval.
 
 ### Implementation and failure-fixture map
 

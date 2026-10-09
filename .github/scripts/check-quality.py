@@ -1006,7 +1006,7 @@ def source_policy_changes(old, new, *, preserve_annotations=True):
                             repr(bindings.signature(resolved)))] += 1
         return result
     extra = suppressions(new) - suppressions(old)
-    findings = [finding("suppression-growth", "", 0, "New suppression requires protected review")] if extra else []
+    findings = [finding("suppression-growth", "", 0, "New suppression exceeds protected policy")] if extra else []
     if not preserve_annotations:
         return findings
 
@@ -1324,7 +1324,7 @@ def run_checks(root, base, requested, *, test_evidence=None):
     if "policy" in requested:
         output = findings["policy"]
         if not base_policy_text:
-            output.append(finding("bootstrap-review", "", 0, "Protected base has no policy; maintainer bootstrap approval and administrator activation required"))
+            output.append(finding("bootstrap-review", "", 0, "Protected base has no policy; adopt the protected evaluator and verify required checks before claiming enforcement"))
         else:
             output.extend(policy_changes(set(base_records["typing-scope"]["module_ids"]),
                                          set(records["typing-scope"]["module_ids"]),
@@ -1334,7 +1334,7 @@ def run_checks(root, base, requested, *, test_evidence=None):
                                          before_sources, {paths[name]: source for name, source in sources.items()}))
             for field in ("runtime_roots", "toolchain", "forbidden", "private_allowances", "required_checks", "dynamic_imports", "review"):
                 if minimum[field] != records["policy"][field]:
-                    output.append(finding("policy-change", "", 0, f"Protected review required: {field}"))
+                    output.append(finding("policy-change", "", 0, f"Protected policy differs: {field}"))
             protected_modules = {m["id"]: m for m in minimum["modules"]}
             for module in modules:
                 old_module = protected_modules.get(module["id"])
@@ -1355,13 +1355,13 @@ def run_checks(root, base, requested, *, test_evidence=None):
                 old = base_text(root, base_sha, name)
                 current = (root / name).read_text(encoding="utf-8") if (root / name).exists() else None
                 if old != current:
-                    output.append(finding("policy-change", "", 0, f"Protected review required: {name}"))
+                    output.append(finding("policy-change", "", 0, f"Protected file differs: {name}"))
             old_config = tomllib.loads(base_text(root, base_sha, "pyproject.toml"))
             current_config = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
             if old_config.get("tool", {}).get("mypy") != current_config.get("tool", {}).get("mypy") or (
                 old_config.get("tool", {}).get("ruff") != current_config.get("tool", {}).get("ruff")
             ) or old_config.get("tool", {}).get("importlinter") != current_config.get("tool", {}).get("importlinter"):
-                output.append(finding("policy-change", "", 0, "Tool settings require protected review"))
+                output.append(finding("policy-change", "", 0, "Tool settings differ from protected policy"))
         output.extend(validate_moves([], modules, {}))
         output.extend(finding("unclassified-module", name, 0, "New runtime modules need inventory and blocking typing") for name in sorted(unknown))
         inventory_paths = {m["path"] for m in modules}
