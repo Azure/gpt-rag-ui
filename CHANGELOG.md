@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Technically validate candidate exception registry updates without mandatory
+  independent approval or registry-only policy blocking. Preserve expiry,
+  source-bound passing behavior evidence, protected evaluator/tool/workflow
+  integrity and fail-closed CI aggregation. Protected-checker adoption remains
+  required; this does not change runtime behavior or repository review settings.
+
 ## [v3.2.1] - 2026-10-08
 
 ### Security
