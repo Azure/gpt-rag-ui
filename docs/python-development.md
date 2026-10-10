@@ -270,8 +270,9 @@ unchanged boundaries retain their existing propagation/static-diagnostic behavio
 Changed handler fingerprints are now `active`, meaning eligible for technical
 validation under the revised policy, not independently approved. Each must
 match current source and passing bound evidence; no approval is inherited.
-The old protected checker still rejects these changes until authorized adoption
-of the new evaluator. This assessment
+The new evaluator was adopted into the protected `develop` base by PR #144
+(merged `ec18a73`), so the protected checker now applies it to subsequent
+PRs. This assessment
 does not extend expiry, reduce typing coverage, suppress checks or authorize
 production deployment.
 
@@ -280,10 +281,12 @@ accepts these exact existing records and the policy for initial administrative
 adoption under Q5. It is not an independent GitHub review, a claim that bootstrap
 checks pass, or authorization for production deployment. Only exact active,
 unexpired records with same-source passing evidence can authorize an exception.
-The initial PR still reports a missing protected policy as `bootstrap-review`;
-candidate data cannot change the evaluator's rules. A real reference PR against the
-adopted `develop` base and coordinator-owned required-check controls remain
-necessary before enforcement can be claimed.
+The initial PR (#144) reported a missing protected policy as `bootstrap-review`
+because its base predated adoption; candidate data still cannot change the
+evaluator's rules. This reference PR runs against the adopted `develop` base,
+exercising coordinator-owned required-check controls. Independent human
+review of the recorded exception decisions remains outstanding (see
+issue #695); this PR demonstrates base adoption, not completed review.
 Installed acceptance covers real auth order, upload writes/cleanup and
 standalone download/OpenAPI failures outside the checkout. Linux acceptance
 is supplied by the actual `container-tests` job for the PR head, not inferred
