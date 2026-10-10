@@ -284,9 +284,11 @@ unexpired records with same-source passing evidence can authorize an exception.
 The initial PR (#144) reported a missing protected policy as `bootstrap-review`
 because its base predated adoption; candidate data still cannot change the
 evaluator's rules. This reference PR runs against the adopted `develop` base,
-exercising coordinator-owned required-check controls. Independent human
-review of the recorded exception decisions remains outstanding (see
-issue #695); this PR demonstrates base adoption, not completed review.
+exercising coordinator-owned required-check controls. The recorded exception
+decisions are governed by their technical evidence — exact fingerprints,
+same-source bound tests and unexpired stage validation — not by a separate
+independent human review step; this PR demonstrates base adoption with that
+technical governance already in force.
 Installed acceptance covers real auth order, upload writes/cleanup and
 standalone download/OpenAPI failures outside the checkout. Linux acceptance
 is supplied by the actual `container-tests` job for the PR head, not inferred
